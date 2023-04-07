@@ -1,0 +1,25 @@
+[package]
+name = "cphasing"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cphasing-rs"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 1
+overflow-checks = false
+
+[dependencies]
+anyhow = "1.0.70"
+bio = "*"
+clap = { version = "4.2.1" }
+chrono = { version = "0.4.24" }
+csv = { version = "1.1.6" }
+flate2 = {version = "~1", default-features = false}
+gzp = { version = "*" }
+log = { version = "0.4.17" }
+env_logger = { version = "0.10.0" }
+itertools = { version = "0.10.5"}
+serde = { version = "1.0", features = ["derive"]}

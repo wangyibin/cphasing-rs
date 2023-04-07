@@ -1,0 +1,65 @@
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use clap::{arg, Arg, Command, value_parser};
+
+pub fn cli() -> Command {
+    Command::new("cphasing")
+        .about("Phasing and scaffolding based on Pore-C or Hi-C data")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .allow_external_subcommands(true)
+        .subcommand(
+            Command::new("cutsite")
+                .about("cut restriction site on pore-c reads")
+                .arg(arg!(<FASTQ> "pore-c reads"))
+                .arg(
+                    Arg::new("PATTERN")
+                        .long("pattern")
+                        .value_parser(value_parser!(String))
+                        .default_value("GATCGATC"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("paf2table")
+                .about("convert paf to pore-c table")
+                .arg(arg!(<PAF> "paf"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg(
+                    Arg::new("MIN_MAPQ")
+                        .long("min-mapq")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(
+                    Arg::new("MIN_IDENTITY")
+                        .long("min-identity")
+                        .short('p')
+                        .value_parser(value_parser!(f32))
+                        .default_value("0.75"))
+                .arg(
+                    Arg::new("MIN_LENGTH")
+                        .long("min-length")
+                        .short('l')
+                        .value_parser(value_parser!(u32))
+                        .default_value("30"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porec2pairs")
+                .about("convert pore-c table to pairs")
+                .arg(arg!(<TABLE> "pore-c table"))
+                .arg(arg!(<CHROMSIZES> "chromsizes"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+}

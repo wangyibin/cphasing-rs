@@ -1,0 +1,5 @@
+filter_reason	count
+low_mq	5475
+pass	4044
+singleton	481
+total alignments	10000
