@@ -28,7 +28,7 @@ pub trait BaseTable {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChromSizeRecord {
     pub chrom: String,
-    pub size: u32,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ impl ChromSize {
         Ok(rdr)
     }
 
-    pub fn data(&self) -> Result<HashMap<String, u32>, Box<dyn Error>> {
+    pub fn data(&self) -> Result<HashMap<String, u64>, Box<dyn Error>> {
         let parse_result = self.parse();
 
         let mut rdr = match parse_result {
@@ -76,7 +76,7 @@ impl ChromSize {
             Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
         };
 
-        let mut db: HashMap<String, u32> = HashMap::new();
+        let mut db: HashMap<String, u64> = HashMap::new();
 
         for line in rdr.deserialize() {
             let record: ChromSizeRecord = line?;

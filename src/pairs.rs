@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use anyhow::Result as anyResult;
 use std::borrow::Cow;
 use std::error::Error;
 use std::path::Path;
@@ -7,6 +7,7 @@ use serde::{ Deserialize, Serialize};
 
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ChromSizeRecord };
+use crate::mnd::MndRecord;
 use crate::porec::PoreCRecord;
 
 
@@ -19,8 +20,8 @@ pub struct PairHeader {
 
 impl PairHeader {
     pub fn new() -> PairHeader {
-        let mut chromsizes: Vec<ChromSizeRecord> = Vec::new();
-        let mut header: Vec<String> = Vec::new();
+        let chromsizes: Vec<ChromSizeRecord> = Vec::new();
+        let header: Vec<String> = Vec::new();
 
         PairHeader { chromsizes: chromsizes, header: header }
     }
@@ -34,7 +35,7 @@ impl PairHeader {
                         let s: String = line.replace("#chromsize: ", "");
                         let s: Vec<&str> = s.split(" ").collect();
                         
-                        let size: u32 = s[1].clone().parse::<u32>().unwrap();
+                        let size: u64 = s[1].clone().parse::<u64>().unwrap();
                         let chrom: String = s[0].to_string();
                         let c: ChromSizeRecord = ChromSizeRecord { chrom: chrom, size: size };
                         self.chromsizes.push(c);
@@ -91,9 +92,9 @@ impl PairHeader {
 pub struct PairRecord {
     pub readID: u64,
     pub chrom1: String,
-    pub pos1: u32,
+    pub pos1: u64,
     pub chrom2: String,
-    pub pos2: u32,
+    pub pos2: u64,
     pub strand1: char,
     pub strand2: char,
 }
@@ -102,8 +103,8 @@ impl PairRecord {
     pub fn from_pore_c_pair(pair: Vec<PoreCRecord>, readID: u64) -> PairRecord {
         let (pair1, pair2) = (pair[0].clone(), pair[1].clone());
         
-        let pos1: u32 = (pair1.target_end + pair1.target_start) / 2;
-        let pos2: u32 = (pair2.target_end + pair2.target_start) / 2;
+        let pos1: u64 = (pair1.target_end + pair1.target_start) / 2;
+        let pos2: u64 = (pair2.target_end + pair2.target_start) / 2;
 
         PairRecord {
             readID: readID,
@@ -140,6 +141,72 @@ impl BaseTable for Pairs {
         let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
 
         (*file_prefix).to_string()
+    }
+}
+
+impl Pairs {
+    pub fn parse(&self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
+        let input = common_reader(&self.file);
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .delimiter(b'\t')
+            .comment(Some(b'#'))
+            .from_reader(input);
+
+        Ok(rdr)
+    }
+
+    pub fn to_mnd(&self, output: &String) -> anyResult<()>{
+        let parse_result = self.parse();
+        let mnd_defualt = MndRecord::default();
+
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let wtr = common_writer(output);
+        let mut wtr = csv::WriterBuilder::new()
+                .has_headers(false)
+                .delimiter(b' ')
+                .from_writer(wtr);
+
+        for result in rdr.deserialize() {
+            if result.is_err() {
+                println!("{:?}", result);
+                continue
+            }
+            let record: PairRecord = result?;
+            let strand1 = if record.strand1 == '+' { 0 } else { -1 };
+            let strand2 = if record.strand2 == '+' { 0 } else { -1 };
+            let mnd_record = MndRecord {
+                strand1: strand1,
+                chrom1: record.chrom1,
+                pos1: record.pos1,
+                frag1: mnd_defualt.frag1,
+                strand2: strand2,
+                chrom2: record.chrom2,
+                pos2: record.pos2,
+                frag2: mnd_defualt.frag2,
+                mapq1: mnd_defualt.mapq1,
+                cigar1: mnd_defualt.cigar1,
+                sequence1: mnd_defualt.sequence1,
+                mapq2: mnd_defualt.mapq2,
+                cigar2: mnd_defualt.cigar2,
+                sequence2: mnd_defualt.sequence2,
+                readname1: mnd_defualt.readname1,
+                readname2: mnd_defualt.readname2,
+            };
+
+
+            wtr.serialize(mnd_record)?;
+        }
+
+        wtr.flush()?;
+
+        log::info!("Successful output mnd file `{}`", output);
+        
+        Ok(())
     }
 }
 

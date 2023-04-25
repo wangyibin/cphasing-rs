@@ -8,7 +8,7 @@ use std::error::Error;
 use std::path::Path;
 use crate::core::{common_reader, common_writer};
 
-pub fn cut_site(fastq: String, pattern: String, output: String) -> Result<()>{
+pub fn cut_site(fastq: String, pattern: &[u8], output: String) -> Result<()>{
     let fastq_path = Path::new(&fastq);
     
     let buffered = common_reader(&fastq);
@@ -17,7 +17,7 @@ pub fn cut_site(fastq: String, pattern: String, output: String) -> Result<()>{
     let write_buffered = common_writer(&output);
     let mut writer = fastq::Writer::new(write_buffered);
 
-    let pattern = b"GATCGATC";
+    // let pattern = b"GATCGATC";
     let horspool = Horspool::new(pattern);
 
     for result in reader.records() {

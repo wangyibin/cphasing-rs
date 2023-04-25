@@ -24,9 +24,9 @@ pub struct PAFLine {
     pub query_end: u32,
     pub query_strand: char,
     pub target: String, 
-    pub target_length: u32,
-    pub target_start: u32, 
-    pub target_end: u32,
+    pub target_length: u64,
+    pub target_start: u64, 
+    pub target_end: u64,
     pub match_n: u32,
     pub alignment_length: u32,
     pub mapq: u8,
@@ -66,10 +66,10 @@ pub struct ReadSummary {
 
 impl ReadSummary {
     fn new() -> ReadSummary {
-        let mut pass: u64 = 0;
-        let mut singleton: u64 = 0;
-        let mut low_mq: u64 = 0;
-        let mut mapping: u64 = 0;
+        let pass: u64 = 0;
+        let singleton: u64 = 0;
+        let low_mq: u64 = 0;
+        let mapping: u64 = 0;
 
         ReadSummary {
             pass: pass,
@@ -145,6 +145,26 @@ impl Concatemer {
         }
     }
 
+    // pub fn is_complex(&self, max_order: &u32 ) -> bool {
+    //     let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
+    //     if pass_count > max_order {
+    //         true
+    //     } else {
+    //         false
+    //     }
+    // }
+
+    // pub fn parse_complex(&mut self) {
+    //     for (i, record) in self.records.iter_mut().enumerate() {
+    //         if record.filter_reason == "pass" {
+    //             record.filter_reason = String::from("complex");
+    //             self.filter_reasons[i] = String::from("complex");
+    //         }
+    //     }
+    // }
+
+
+
     pub fn stat(&self) -> HashMap<String, u32> {
         let mut pass_count: u32 = 0;
         let mut singleton_count: u32 = 0;
@@ -205,10 +225,10 @@ impl PAFTable {
 
         let mut rdr = match parse_result {
             Ok(v) => v,
-            Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
+            Err(error) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
         };
         
-        let mut output = common_writer(output);
+        let output = common_writer(output);
         let mut wtr = csv::WriterBuilder::new()
                             .has_headers(false)
                             .delimiter(b'\t')

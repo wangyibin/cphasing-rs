@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{arg, Arg, Command, value_parser};
+use clap::{arg, Arg, Command, Subcommand, value_parser};
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -61,5 +61,28 @@ pub fn cli() -> Command {
                         .short('o')
                         .value_parser(value_parser!(String))
                         .default_value("-"))
+        )
+        .subcommand(
+            Command::new("pairs2mnd")
+                .about("convert pairs to mnd file")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+        .subcommand(
+            Command::new("chromsizes")
+                .about("generate chromsizes file")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+
         )
 }

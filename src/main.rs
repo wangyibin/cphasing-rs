@@ -1,7 +1,9 @@
 use cphasing::cli::cli;
-use cphasing::core::BaseTable;
+use cphasing::core::{ BaseTable, common_writer };
 use cphasing::cutsite::cut_site;
+use cphasing::fastx::Fastx;
 use cphasing::paf::PAFTable;
+use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
 use std::io::Write; 
 use chrono::Local;
@@ -28,7 +30,7 @@ fn main() {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
 
-            cut_site(fastq.to_string(), pattern.to_string(), "-".to_string());
+            cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string());
         }
         Some(("paf2table", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
@@ -52,6 +54,30 @@ fn main() {
 
             prt.to_pairs(&chromsizes, &output);
         }
-        _ => unreachable!(),
+        Some(("pairs2mnd", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let pairs = Pairs::new(&pairs);
+
+            pairs.to_mnd(&output);
+        }
+   
+        Some(("chromsizes", sub_matches)) => {
+            let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let fasta = Fastx::new(&fasta);
+            let mut writer = common_writer(&output);
+            let chromsizes = fasta.get_chrom_size().unwrap();
+            let mut chromsizes: Vec<_> = chromsizes.into_iter().collect();
+            chromsizes.sort_by(|a, b| a.0.cmp(&b.0));
+            for (k, v) in chromsizes {
+                writer.write(format!("{}\t{}\n", k, v).as_bytes()).unwrap();
+            }
+        }
+        _ => {
+            eprintln!("No such subcommand.");
+        },
     }
 }
