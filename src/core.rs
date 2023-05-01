@@ -100,6 +100,25 @@ impl ChromSize {
     }
 }
 
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct ContigPair {
+    pub Contig1: String,
+    pub Contig2: String,
+}
+
+impl ContigPair {
+    pub fn new(contig1: String, contig2: String) -> ContigPair {
+        ContigPair { Contig1: contig1, Contig2: contig2 }
+    }
+
+    pub fn from_vec(vec: Vec<&String>) -> ContigPair {
+        ContigPair { Contig1: (*vec[0].clone()).to_string(), 
+                    Contig2: (*vec[1].clone()).to_string()}
+    }
+
+}
+
 // {parse_input, parse_output, common_reader, common_writer} learn from https://github.com/mrvollger/rustybam/blob/main/src/myio.rs
 pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 'static>> {
     let fp: Box<dyn BufRead + Send + 'static> = match path {

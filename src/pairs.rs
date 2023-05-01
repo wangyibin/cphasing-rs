@@ -1,12 +1,13 @@
 use anyhow::Result as anyResult;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::Path;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 
 use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ChromSizeRecord };
+use crate::core::{ BaseTable, ChromSizeRecord, ContigPair};
 use crate::mnd::MndRecord;
 use crate::porec::PoreCRecord;
 
@@ -145,9 +146,12 @@ impl BaseTable for Pairs {
 }
 
 impl Pairs {
-    pub fn parse(&self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
+    pub fn parse(&mut self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
         let input = common_reader(&self.file);
-        let mut rdr = csv::ReaderBuilder::new()
+        self.header = PairHeader::new();
+        self.header.from_pairs(&self.file);
+
+        let rdr = csv::ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
             .comment(Some(b'#'))
@@ -156,7 +160,37 @@ impl Pairs {
         Ok(rdr)
     }
 
-    pub fn to_mnd(&self, output: &String) -> anyResult<()>{
+    pub fn remove_by_contig_pairs(&mut self, contigs: HashSet<ContigPair>, output: &String) -> anyResult<()> {
+        let parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let ph = self.header.clone();
+        let mut writer = common_writer(output);
+        writer.write_all(ph.to_string().as_bytes());
+        let mut wtr = csv::WriterBuilder::new()
+            .has_headers(false)
+            .delimiter(b'\t')
+            .from_writer(writer);
+
+        for result in rdr.deserialize() {
+            if result.is_err() {
+                println!("{:?}", result);
+                continue
+            }
+            let record: PairRecord = result?;
+            let cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+            if !contigs.contains(&cp) {
+                wtr.serialize(record)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn to_mnd(&mut self, output: &String) -> anyResult<()>{
         let parse_result = self.parse();
         let mnd_defualt = MndRecord::default();
 

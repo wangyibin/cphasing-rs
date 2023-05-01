@@ -8,6 +8,7 @@ pub mod optimize;
 pub mod paf;
 pub mod pairs;
 pub mod porec;
+pub mod prune;
 pub mod sketch;
 
 #[cfg(test)]
@@ -94,7 +95,7 @@ mod tests {
     #[test]
     fn test_contig_score_table() {
         use crate::optimize::ContigScoreTable;
-        let mut cst = ContigScoreTable::new(&String::from("test/so.score.txt"));
+        let cst = ContigScoreTable::new(&String::from("test/so.score.txt"));
         let mut co = cst.read();
         // println!("{:?}", co.contig_units[2].orderidx);
         // println!("{:?}", co.contig_units[3].orderidx);
@@ -122,8 +123,8 @@ mod tests {
     #[test]
     fn test_simulated_annealing() {
         use crate::optimize::ContigScoreTable;
-        let mut cst = ContigScoreTable::new(&String::from("test/so.score.txt"));
-        let mut co = cst.read();
+        let cst = ContigScoreTable::new(&String::from("test/so.score.txt"));
+        let co = cst.read();
         let mut sa = optimize::SimulatedAnnealing::new(co, 2000.0, 0.999, 0.01, 1000000);
         let best = sa.run();
         
@@ -149,4 +150,28 @@ mod tests {
    
     }
 
+    #[test]
+    fn test_prunetable() {
+        use crate::prune::PruneTable;
+        let pt = PruneTable::new(&String::from("test/prune.contig.table"));
+
+        println!("{:?}", pt.contig_pairs());
+    
+    }
+
+    #[test]
+    fn test_remove_by_contig_pairs() {
+        use std::collections::HashSet;
+        use crate::core::ContigPair;
+        use crate::prune::PruneTable;
+        
+        let pt = PruneTable::new(&String::from("test/prune.contig.table"));
+        let pairs = String::from("test/test.pairs");
+        let mut pairs = pairs::Pairs::new(&pairs);
+        let output = String::from("test/test.pairs.prune");
+        let contigs: HashSet<ContigPair> = pt.contig_pairs().unwrap().into_iter().collect();
+        pairs.remove_by_contig_pairs(contigs, &output);
+
+
+    }
 }

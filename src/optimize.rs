@@ -251,7 +251,7 @@ impl ContigScoreTable {
                                                 orientation.as_str())
                                                             .unwrap()
                                                             .clone() as usize] = score;
-                    let mut contig_unit = ContigUnit::new(contig1.clone(), int_order_idx, 0 as u8, scores);
+                    let contig_unit = ContigUnit::new(contig1.clone(), int_order_idx, 0 as u8, scores);
                     contig_score_data.insert(contig1.clone(), contig_unit);
                     int_order_idx += 1;
                 }
@@ -268,7 +268,7 @@ impl ContigScoreTable {
                             .unwrap()[ORIENTATION_TO_IDX.get(
                                                 orientation_reverse.as_str())
                                                         .unwrap().clone() as usize] = score;
-                    let mut contig_unit = ContigUnit::new(contig2.clone(), int_order_idx, 0 as u8, scores);
+                    let contig_unit = ContigUnit::new(contig2.clone(), int_order_idx, 0 as u8, scores);
                     contig_score_data.insert(contig2.clone(), contig_unit);
                     int_order_idx += 1;
                 }
@@ -492,8 +492,8 @@ impl GeneticAlgorithm {
         while i < self.max_iteration {
             let mut new_population = Vec::<ContigOrder>::new();
             for _ in 0..self.population_size {
-                let mut parent1 = self.select(&population);
-                let mut parent2 = self.select(&population);
+                let parent1 = self.select(&population);
+                let parent2 = self.select(&population);
                 let mut child = self.crossover(&parent1, &parent2);
                 self.mutate(&mut child);
                 new_population.push(child);

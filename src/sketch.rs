@@ -79,7 +79,7 @@ pub fn sketch (seq: &String, rid: u64, k: usize, w: usize) -> Vec<MinimierData> 
         if i + k + w > seq.len() {
             break;
         }
-        let mut m = minimizer(&seq[i..(i + k + w - 1)], &rid, i.try_into().unwrap(), k);
+        let m = minimizer(&seq[i..(i + k + w - 1)], &rid, i.try_into().unwrap(), k);
         sketch.push(m);
 
     }

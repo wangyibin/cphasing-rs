@@ -1,10 +1,12 @@
 use cphasing::cli::cli;
-use cphasing::core::{ BaseTable, common_writer };
+use cphasing::core::{ BaseTable, common_writer, ContigPair };
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::Fastx;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
+use cphasing::prune::PruneTable;
+use std::collections::HashSet;
 use std::io::Write; 
 use chrono::Local;
 use env_logger::Builder;
@@ -39,10 +41,11 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
 
             let pt = PAFTable::new(&paf);
 
-            pt.paf2table(output, min_quality, min_identity, min_length);
+            pt.paf2table(output, min_quality, min_identity, min_length, max_order);
 
         }
         Some(("porec2pairs", sub_matches)) => {
@@ -58,7 +61,7 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
-            let pairs = Pairs::new(&pairs);
+            let mut pairs = Pairs::new(&pairs);
 
             pairs.to_mnd(&output);
         }
@@ -75,6 +78,19 @@ fn main() {
             for (k, v) in chromsizes {
                 writer.write(format!("{}\t{}\n", k, v).as_bytes()).unwrap();
             }
+        }
+
+        Some(("prunepairs", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let prune = sub_matches.get_one::<String>("PRUNE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut pairs = Pairs::new(&pairs);
+            let prunetable = PruneTable::new(&prune);
+            let contigs:HashSet<ContigPair> = prunetable.contig_pairs().unwrap().into_iter().collect();
+
+            pairs.remove_by_contig_pairs(contigs, &output);
+
         }
         _ => {
             eprintln!("No such subcommand.");

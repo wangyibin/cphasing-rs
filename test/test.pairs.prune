@@ -1,0 +1,1849 @@
+## pairs format 1.0
+#shape: upper triangle
+#chromsize: Chr1.ctg1 96024
+#chromsize: Chr1.ctg2 92330
+#chromsize: Chr1.ctg3 75660
+#chromsize: Chr1.ctg4 90179
+#chromsize: Chr1.ctg5 86398
+#chromsize: Chr1.ctg6 14567
+#chromsize: Chr1.ctg7 67095
+#chromsize: Chr1.ctg8 22528
+#chromsize: Chr1.ctg9 95173
+#chromsize: Chr1.ctg10 477615
+#chromsize: Chr1.ctg11 49365
+#chromsize: Chr1.ctg12 49612
+#chromsize: Chr1.ctg13 84126
+#chromsize: Chr1.ctg14 91424
+#chromsize: Chr1.ctg15 46624
+#chromsize: Chr1.ctg16 84740
+#chromsize: Chr1.ctg17 87148
+#chromsize: Chr1.ctg18 26499
+#chromsize: Chr1.ctg19 482556
+#chromsize: Chr1.ctg20 14889
+#chromsize: Chr1.ctg21 99715
+#chromsize: Chr1.ctg22 81402
+#chromsize: Chr1.ctg23 98641
+#chromsize: Chr1.ctg24 52229
+#chromsize: Chr1.ctg25 209275
+#chromsize: Chr1.ctg26 24580
+#chromsize: Chr1.ctg27 419371
+#chromsize: Chr1.ctg28 30862
+#chromsize: Chr1.ctg29 60611
+#chromsize: Chr1.ctg30 121165
+#chromsize: Chr1.ctg31 36360
+#chromsize: Chr1.ctg32 72427
+#chromsize: Chr1.ctg33 67041
+#chromsize: Chr1.ctg34 89570
+#chromsize: Chr1.ctg35 64164
+#chromsize: Chr1.ctg36 12253
+#chromsize: Chr1.ctg37 41416
+#chromsize: Chr1.ctg38 86585
+#chromsize: Chr1.ctg39 28435
+#chromsize: Chr1.ctg40 71538
+#chromsize: Chr1.ctg41 74436
+#chromsize: Chr1.ctg42 31237
+#chromsize: Chr1.ctg43 65108
+#chromsize: Chr1.ctg44 481387
+#chromsize: Chr1.ctg45 41376
+#chromsize: Chr1.ctg46 51683
+#chromsize: Chr1.ctg47 366127
+#chromsize: Chr1.ctg48 78566
+#chromsize: Chr1.ctg49 65191
+#chromsize: Chr1.ctg50 48443
+#chromsize: Chr1.ctg51 71883
+#chromsize: Chr1.ctg52 96211
+#chromsize: Chr1.ctg53 82953
+#chromsize: Chr1.ctg54 77256
+#chromsize: Chr1.ctg55 10281
+#chromsize: Chr1.ctg56 66407
+#chromsize: Chr1.ctg57 92415
+#chromsize: Chr1.ctg58 20237
+#chromsize: Chr1.ctg59 270925
+#chromsize: Chr1.ctg60 460196
+#chromsize: Chr1.ctg61 76386
+#chromsize: Chr1.ctg62 102432
+#chromsize: Chr1.ctg63 64285
+#chromsize: Chr1.ctg64 90541
+#chromsize: Chr1.ctg65 27641
+#chromsize: Chr1.ctg66 82130
+#chromsize: Chr1.ctg67 53520
+#chromsize: Chr1.ctg68 94766
+#chromsize: Chr1.ctg69 80842
+#chromsize: Chr1.ctg70 59679
+#chromsize: Chr1.ctg71 21982
+#chromsize: Chr1.ctg72 22277
+#chromsize: Chr1.ctg73 92691
+#chromsize: Chr1.ctg74 77298
+#chromsize: Chr1.ctg75 27421
+#chromsize: Chr1.ctg76 28371
+#chromsize: Chr1.ctg77 83529
+#chromsize: Chr1.ctg78 87513
+#chromsize: Chr1.ctg79 81832
+#chromsize: Chr1.ctg80 18058
+#chromsize: Chr1.ctg81 66002
+#chromsize: Chr1.ctg82 77672
+#chromsize: Chr1.ctg83 76565
+#chromsize: Chr1.ctg84 190835
+#chromsize: Chr1.ctg85 37875
+#chromsize: Chr1.ctg86 30753
+#chromsize: Chr1.ctg87 59155
+#chromsize: Chr1.ctg88 84188
+#chromsize: Chr1.ctg89 44354
+#chromsize: Chr1.ctg90 69944
+#chromsize: Chr1.ctg91 29305
+#chromsize: Chr1.ctg92 70894
+#chromsize: Chr1.ctg93 88198
+#chromsize: Chr1.ctg94 69062
+#chromsize: Chr1.ctg95 89682
+#chromsize: Chr1.ctg96 11648
+#chromsize: Chr1.ctg97 138002
+#chromsize: Chr1.ctg98 67306
+#chromsize: Chr1.ctg99 240164
+#chromsize: Chr1.ctg100 28362
+#chromsize: Chr1.ctg101 22715
+#chromsize: Chr1.ctg102 89194
+#chromsize: Chr1.ctg103 73056
+#chromsize: Chr1.ctg104 447220
+#chromsize: Chr1.ctg105 455783
+#chromsize: Chr1.ctg106 72230
+#chromsize: Chr1.ctg107 53201
+#chromsize: Chr1.ctg108 99963
+#chromsize: Chr1.ctg109 52781
+#chromsize: Chr1.ctg110 62490
+#chromsize: Chr1.ctg111 11654
+#chromsize: Chr1.ctg112 44219
+#chromsize: Chr1.ctg113 72279
+#chromsize: Chr1.ctg114 60145
+#chromsize: Chr1.ctg115 75175
+#chromsize: Chr1.ctg116 23565
+#chromsize: Chr1.ctg117 90392
+#chromsize: Chr1.ctg118 10915
+#chromsize: Chr1.ctg119 195607
+#chromsize: Chr1.ctg120 17897
+#chromsize: Chr1.ctg121 86522
+#chromsize: Chr1.ctg122 54385
+#chromsize: Chr1.ctg123 63037
+#chromsize: Chr1.ctg124 39466
+#chromsize: Chr1.ctg125 55719
+#chromsize: Chr1.ctg126 311389
+#chromsize: Chr1.ctg127 21040
+#chromsize: Chr1.ctg128 77493
+#chromsize: Chr1.ctg129 32386
+#chromsize: Chr1.ctg130 76930
+#chromsize: Chr1.ctg131 77166
+#chromsize: Chr1.ctg132 75200
+#chromsize: Chr1.ctg133 90807
+#chromsize: Chr1.ctg134 24867
+#chromsize: Chr1.ctg135 42008
+#chromsize: Chr1.ctg136 18891
+#chromsize: Chr1.ctg137 89088
+#chromsize: Chr1.ctg138 20680
+#chromsize: Chr1.ctg139 437871
+#chromsize: Chr1.ctg140 45508
+#chromsize: Chr1.ctg141 41629
+#chromsize: Chr1.ctg142 86025
+#chromsize: Chr1.ctg143 89728
+#chromsize: Chr1.ctg144 76040
+#chromsize: Chr1.ctg145 99921
+#chromsize: Chr1.ctg146 36575
+#chromsize: Chr1.ctg147 61622
+#chromsize: Chr1.ctg148 10437
+#chromsize: Chr1.ctg149 86060
+#chromsize: Chr1.ctg150 495043
+#chromsize: Chr1.ctg151 285902
+#chromsize: Chr1.ctg152 92511
+#chromsize: Chr1.ctg153 54153
+#chromsize: Chr1.ctg154 42402
+#chromsize: Chr1.ctg155 454884
+#chromsize: Chr1.ctg156 54442
+#chromsize: Chr1.ctg157 24802
+#chromsize: Chr1.ctg158 140921
+#chromsize: Chr1.ctg159 38210
+#chromsize: Chr1.ctg160 80768
+#chromsize: Chr1.ctg161 50885
+#chromsize: Chr1.ctg162 271335
+#chromsize: Chr1.ctg163 30886
+#chromsize: Chr1.ctg164 53691
+#chromsize: Chr1.ctg165 10506
+#chromsize: Chr1.ctg166 21311
+#chromsize: Chr1.ctg167 22349
+#chromsize: Chr1.ctg168 21899
+#chromsize: Chr1.ctg169 61777
+#chromsize: Chr1.ctg170 54090
+#chromsize: Chr1.ctg171 36517
+#chromsize: Chr1.ctg172 20318
+#chromsize: Chr1.ctg173 74303
+#chromsize: Chr1.ctg174 79409
+#chromsize: Chr1.ctg175 96342
+#chromsize: Chr1.ctg176 93985
+#chromsize: Chr1.ctg177 14755
+#chromsize: Chr1.ctg178 56833
+#chromsize: Chr1.ctg179 93879
+#chromsize: Chr1.ctg180 195845
+#chromsize: Chr1.ctg181 203336
+#chromsize: Chr1.ctg182 63653
+#chromsize: Chr1.ctg183 92758
+#chromsize: Chr1.ctg184 92389
+#chromsize: Chr1.ctg185 397142
+#chromsize: Chr1.ctg186 96295
+#chromsize: Chr1.ctg187 51193
+#chromsize: Chr1.ctg188 19239
+#chromsize: Chr1.ctg189 397895
+#chromsize: Chr1.ctg190 99337
+#chromsize: Chr1.ctg191 14570
+#chromsize: Chr1.ctg192 99223
+#chromsize: Chr1.ctg193 29430
+#chromsize: Chr1.ctg194 23267
+#chromsize: Chr1.ctg195 42171
+#chromsize: Chr1.ctg196 65446
+#chromsize: Chr1.ctg197 83863
+#chromsize: Chr1.ctg198 53227
+#chromsize: Chr1.ctg199 64075
+#chromsize: Chr1.ctg200 31811
+#chromsize: Chr1.ctg201 79227
+#chromsize: Chr1.ctg202 53184
+#chromsize: Chr1.ctg203 121727
+#chromsize: Chr1.ctg204 55124
+#chromsize: Chr1.ctg205 56655
+#chromsize: Chr1.ctg206 260697
+#chromsize: Chr1.ctg207 123132
+#chromsize: Chr1.ctg208 12117
+#chromsize: Chr1.ctg209 58001
+#chromsize: Chr1.ctg210 53521
+#chromsize: Chr1.ctg211 96197
+#chromsize: Chr1.ctg212 287791
+#chromsize: Chr1.ctg213 90824
+#chromsize: Chr1.ctg214 23678
+#chromsize: Chr1.ctg215 108620
+#chromsize: Chr1.ctg216 357789
+#chromsize: Chr1.ctg217 78557
+#chromsize: Chr1.ctg218 37668
+#chromsize: Chr1.ctg219 328188
+#chromsize: Chr1.ctg220 16582
+#chromsize: Chr1.ctg221 86850
+#chromsize: Chr1.ctg222 21400
+#chromsize: Chr1.ctg223 95479
+#chromsize: Chr1.ctg224 65809
+#chromsize: Chr1.ctg225 16361
+#chromsize: Chr1.ctg226 71857
+#chromsize: Chr1.ctg227 22409
+#chromsize: Chr1.ctg228 460829
+#chromsize: Chr1.ctg229 40936
+#chromsize: Chr1.ctg230 48715
+#chromsize: Chr1.ctg231 53863
+#chromsize: Chr1.ctg232 77472
+#chromsize: Chr1.ctg233 88529
+#chromsize: Chr1.ctg234 375190
+#chromsize: Chr1.ctg235 93401
+#chromsize: Chr1.ctg236 67308
+#chromsize: Chr1.ctg237 50363
+#chromsize: Chr1.ctg238 98112
+#chromsize: Chr1.ctg239 96965
+#chromsize: Chr1.ctg240 283227
+#chromsize: Chr1.ctg241 54931
+#chromsize: Chr1.ctg242 63075
+#chromsize: Chr1.ctg243 40638
+#chromsize: Chr1.ctg244 18648
+#chromsize: Chr1.ctg245 90120
+#chromsize: Chr1.ctg246 37886
+#chromsize: Chr1.ctg247 76484
+#chromsize: Chr1.ctg248 98498
+#chromsize: Chr1.ctg249 39782
+#chromsize: Chr1.ctg250 29906
+#chromsize: Chr1.ctg251 19685
+#chromsize: Chr1.ctg252 20725
+#chromsize: Chr1.ctg253 25987
+#chromsize: Chr1.ctg254 32483
+#chromsize: Chr1.ctg255 80193
+#chromsize: Chr1.ctg256 54332
+#chromsize: Chr1.ctg257 83387
+#chromsize: Chr1.ctg258 22290
+#chromsize: Chr1.ctg259 10018
+#chromsize: Chr1.ctg260 13968
+#chromsize: Chr1.ctg261 64187
+#chromsize: Chr1.ctg262 18820
+#chromsize: Chr1.ctg263 52150
+#chromsize: Chr1.ctg264 10222
+#chromsize: Chr1.ctg265 55458
+#chromsize: Chr1.ctg266 43274
+#chromsize: Chr1.ctg267 64315
+#chromsize: Chr1.ctg268 83013
+#chromsize: Chr1.ctg269 3954
+#chromsize: Chr1.ctg270 75203
+#chromsize: Chr1.ctg271 461234
+#chromsize: Chr1.ctg272 10719
+#chromsize: Chr1.ctg273 52287
+#chromsize: Chr1.ctg274 80358
+#chromsize: Chr1.ctg275 94885
+#chromsize: Chr1.ctg276 58119
+#chromsize: Chr1.ctg277 42600
+#chromsize: Chr1.ctg278 62134
+#chromsize: Chr1.ctg279 90658
+#chromsize: Chr1.ctg280 91991
+#chromsize: Chr1.ctg281 38107
+#chromsize: Chr1.ctg282 172836
+#chromsize: Chr1.ctg283 295821
+#chromsize: Chr1.ctg284 77690
+#chromsize: Chr1.ctg285 85202
+#chromsize: Chr1.ctg286 235494
+#chromsize: Chr1.ctg287 62754
+#chromsize: Chr1.ctg288 16682
+#chromsize: Chr1.ctg289 13658
+#chromsize: Chr1.ctg290 12282
+#chromsize: Chr1.ctg291 52209
+#chromsize: Chr1.ctg292 54733
+#chromsize: Chr1.ctg293 26696
+#chromsize: Chr1.ctg294 67016
+#chromsize: Chr1.ctg295 17101
+#chromsize: Chr1.ctg296 325994
+#chromsize: Chr1.ctg297 270155
+#chromsize: Chr1.ctg298 58368
+#chromsize: Chr1.ctg299 98079
+#chromsize: Chr1.ctg300 25226
+#chromsize: Chr1.ctg301 361272
+#chromsize: Chr1.ctg302 99593
+#chromsize: Chr1.ctg303 93878
+#chromsize: Chr1.ctg304 90836
+#chromsize: Chr1.ctg305 10102
+#chromsize: Chr1.ctg306 21215
+#chromsize: Chr1.ctg307 28997
+#chromsize: Chr1.ctg308 99654
+#chromsize: Chr1.ctg309 61481
+#chromsize: Chr1.ctg310 98831
+#chromsize: Chr1.ctg311 51100
+#chromsize: Chr1.ctg312 97354
+#chromsize: Chr1.ctg313 472390
+#chromsize: Chr1.ctg314 26918
+#chromsize: Chr1.ctg315 78598
+#chromsize: Chr1.ctg316 35590
+#chromsize: Chr1.ctg317 56221
+#chromsize: Chr1.ctg318 34548
+#chromsize: Chr1.ctg319 69188
+#chromsize: Chr1.ctg320 327260
+#chromsize: Chr1.ctg321 55740
+#chromsize: Chr1.ctg322 153398
+#chromsize: Chr1.ctg323 18769
+#chromsize: Chr1.ctg324 80949
+#chromsize: Chr1.ctg325 89245
+#chromsize: Chr1.ctg326 365991
+#chromsize: Chr1.ctg327 17447
+#chromsize: Chr1.ctg328 87126
+#chromsize: Chr1.ctg329 17702
+#chromsize: Chr1.ctg330 28343
+#chromsize: Chr1.ctg331 178961
+#chromsize: Chr1.ctg332 60702
+#chromsize: Chr1.ctg333 386364
+#chromsize: Chr1.ctg334 41213
+#chromsize: Chr1.ctg335 224271
+#chromsize: Chr1.ctg336 51824
+#chromsize: Chr1.ctg337 58973
+#chromsize: Chr1.ctg338 74093
+#chromsize: Chr1.ctg339 11178
+#chromsize: Chr1.ctg340 39316
+#chromsize: Chr1.ctg341 188910
+#chromsize: Chr1.ctg342 297798
+#chromsize: Chr1.ctg343 45795
+#chromsize: Chr2.ctg1 405598
+#chromsize: Chr2.ctg2 447683
+#chromsize: Chr2.ctg3 38152
+#chromsize: Chr2.ctg4 178756
+#chromsize: Chr2.ctg5 370923
+#chromsize: Chr2.ctg6 50816
+#chromsize: Chr2.ctg7 74047
+#chromsize: Chr2.ctg8 97229
+#chromsize: Chr2.ctg9 78340
+#chromsize: Chr2.ctg10 43498
+#chromsize: Chr2.ctg11 81042
+#chromsize: Chr2.ctg12 37139
+#chromsize: Chr2.ctg13 71097
+#chromsize: Chr2.ctg14 78567
+#chromsize: Chr2.ctg15 55157
+#chromsize: Chr2.ctg16 40971
+#chromsize: Chr2.ctg17 77447
+#chromsize: Chr2.ctg18 35172
+#chromsize: Chr2.ctg19 69648
+#chromsize: Chr2.ctg20 47869
+#chromsize: Chr2.ctg21 65452
+#chromsize: Chr2.ctg22 81975
+#chromsize: Chr2.ctg23 60378
+#chromsize: Chr2.ctg24 18703
+#chromsize: Chr2.ctg25 44845
+#chromsize: Chr2.ctg26 78746
+#chromsize: Chr2.ctg27 20097
+#chromsize: Chr2.ctg28 45075
+#chromsize: Chr2.ctg29 106213
+#chromsize: Chr2.ctg30 16437
+#chromsize: Chr2.ctg31 20371
+#chromsize: Chr2.ctg32 487582
+#chromsize: Chr2.ctg33 96298
+#chromsize: Chr2.ctg34 97934
+#chromsize: Chr2.ctg35 54022
+#chromsize: Chr2.ctg36 86411
+#chromsize: Chr2.ctg37 85509
+#chromsize: Chr2.ctg38 42836
+#chromsize: Chr2.ctg39 285227
+#chromsize: Chr2.ctg40 83513
+#chromsize: Chr2.ctg41 69160
+#chromsize: Chr2.ctg42 62667
+#chromsize: Chr2.ctg43 20341
+#chromsize: Chr2.ctg44 53026
+#chromsize: Chr2.ctg45 477622
+#chromsize: Chr2.ctg46 62597
+#chromsize: Chr2.ctg47 75004
+#chromsize: Chr2.ctg48 13716
+#chromsize: Chr2.ctg49 81403
+#chromsize: Chr2.ctg50 11994
+#chromsize: Chr2.ctg51 33040
+#chromsize: Chr2.ctg52 63196
+#chromsize: Chr2.ctg53 46918
+#chromsize: Chr2.ctg54 34016
+#chromsize: Chr2.ctg55 104854
+#chromsize: Chr2.ctg56 34877
+#chromsize: Chr2.ctg57 43220
+#chromsize: Chr2.ctg58 15008
+#chromsize: Chr2.ctg59 92409
+#chromsize: Chr2.ctg60 96450
+#chromsize: Chr2.ctg61 480387
+#chromsize: Chr2.ctg62 124266
+#chromsize: Chr2.ctg63 44835
+#chromsize: Chr2.ctg64 27470
+#chromsize: Chr2.ctg65 81299
+#chromsize: Chr2.ctg66 94680
+#chromsize: Chr2.ctg67 93602
+#chromsize: Chr2.ctg68 12231
+#chromsize: Chr2.ctg69 57435
+#chromsize: Chr2.ctg70 65117
+#chromsize: Chr2.ctg71 25392
+#chromsize: Chr2.ctg72 70114
+#chromsize: Chr2.ctg73 79872
+#chromsize: Chr2.ctg74 79333
+#chromsize: Chr2.ctg75 49832
+#chromsize: Chr2.ctg76 112068
+#chromsize: Chr2.ctg77 14233
+#chromsize: Chr2.ctg78 39843
+#chromsize: Chr2.ctg79 63747
+#chromsize: Chr2.ctg80 57541
+#chromsize: Chr2.ctg81 39529
+#chromsize: Chr2.ctg82 79552
+#chromsize: Chr2.ctg83 21345
+#chromsize: Chr2.ctg84 292764
+#chromsize: Chr2.ctg85 32778
+#chromsize: Chr2.ctg86 41378
+#chromsize: Chr2.ctg87 18911
+#chromsize: Chr2.ctg88 422541
+#chromsize: Chr2.ctg89 52951
+#chromsize: Chr2.ctg90 337756
+#chromsize: Chr2.ctg91 99391
+#chromsize: Chr2.ctg92 98512
+#chromsize: Chr2.ctg93 496888
+#chromsize: Chr2.ctg94 49339
+#chromsize: Chr2.ctg95 85182
+#chromsize: Chr2.ctg96 103343
+#chromsize: Chr2.ctg97 77558
+#chromsize: Chr2.ctg98 30735
+#chromsize: Chr2.ctg99 63770
+#chromsize: Chr2.ctg100 95246
+#chromsize: Chr2.ctg101 54458
+#chromsize: Chr2.ctg102 73186
+#chromsize: Chr2.ctg103 466570
+#chromsize: Chr2.ctg104 489617
+#chromsize: Chr2.ctg105 41193
+#chromsize: Chr2.ctg106 25557
+#chromsize: Chr2.ctg107 50354
+#chromsize: Chr2.ctg108 19859
+#chromsize: Chr2.ctg109 50945
+#chromsize: Chr2.ctg110 311359
+#chromsize: Chr2.ctg111 67784
+#chromsize: Chr2.ctg112 32957
+#chromsize: Chr2.ctg113 181068
+#chromsize: Chr2.ctg114 82653
+#chromsize: Chr2.ctg115 88955
+#chromsize: Chr2.ctg116 23139
+#chromsize: Chr2.ctg117 22515
+#chromsize: Chr2.ctg118 94936
+#chromsize: Chr2.ctg119 84312
+#chromsize: Chr2.ctg120 34074
+#chromsize: Chr2.ctg121 77767
+#chromsize: Chr2.ctg122 70601
+#chromsize: Chr2.ctg123 81416
+#chromsize: Chr2.ctg124 52732
+#chromsize: Chr2.ctg125 415013
+#chromsize: Chr2.ctg126 47525
+#chromsize: Chr2.ctg127 33272
+#chromsize: Chr2.ctg128 38459
+#chromsize: Chr2.ctg129 32402
+#chromsize: Chr2.ctg130 31607
+#chromsize: Chr2.ctg131 61891
+#chromsize: Chr2.ctg132 19250
+#chromsize: Chr2.ctg133 291635
+#chromsize: Chr2.ctg134 63345
+#chromsize: Chr2.ctg135 61882
+#chromsize: Chr2.ctg136 119671
+#chromsize: Chr2.ctg137 123726
+#chromsize: Chr2.ctg138 96988
+#chromsize: Chr2.ctg139 24213
+#chromsize: Chr2.ctg140 82767
+#chromsize: Chr2.ctg141 74618
+#chromsize: Chr2.ctg142 105761
+#chromsize: Chr2.ctg143 36656
+#chromsize: Chr2.ctg144 75424
+#chromsize: Chr2.ctg145 93033
+#chromsize: Chr2.ctg146 32714
+#chromsize: Chr2.ctg147 25652
+#chromsize: Chr2.ctg148 72163
+#chromsize: Chr2.ctg149 33575
+#chromsize: Chr2.ctg150 224261
+#chromsize: Chr2.ctg151 351530
+#chromsize: Chr2.ctg152 56391
+#chromsize: Chr2.ctg153 90908
+#chromsize: Chr2.ctg154 78694
+#chromsize: Chr2.ctg155 69103
+#chromsize: Chr2.ctg156 99248
+#chromsize: Chr2.ctg157 40439
+#chromsize: Chr2.ctg158 50293
+#chromsize: Chr2.ctg159 39132
+#chromsize: Chr2.ctg160 28545
+#chromsize: Chr2.ctg161 18219
+#chromsize: Chr2.ctg162 306219
+#chromsize: Chr2.ctg163 244861
+#chromsize: Chr2.ctg164 94336
+#chromsize: Chr2.ctg165 13144
+#chromsize: Chr2.ctg166 33257
+#chromsize: Chr2.ctg167 95575
+#chromsize: Chr2.ctg168 89924
+#chromsize: Chr2.ctg169 99272
+#chromsize: Chr2.ctg170 32068
+#chromsize: Chr2.ctg171 70009
+#chromsize: Chr2.ctg172 359416
+#chromsize: Chr2.ctg173 97719
+#chromsize: Chr2.ctg174 15322
+#chromsize: Chr2.ctg175 83189
+#chromsize: Chr2.ctg176 93618
+#chromsize: Chr2.ctg177 70536
+#chromsize: Chr2.ctg178 79401
+#chromsize: Chr2.ctg179 66832
+#chromsize: Chr2.ctg180 73125
+#chromsize: Chr2.ctg181 25295
+#chromsize: Chr2.ctg182 78284
+#chromsize: Chr2.ctg183 84252
+#chromsize: Chr2.ctg184 220882
+#chromsize: Chr2.ctg185 222734
+#chromsize: Chr2.ctg186 57387
+#chromsize: Chr2.ctg187 63779
+#chromsize: Chr2.ctg188 47329
+#chromsize: Chr2.ctg189 50462
+#chromsize: Chr2.ctg190 86920
+#chromsize: Chr2.ctg191 20078
+#chromsize: Chr2.ctg192 43322
+#chromsize: Chr2.ctg193 71674
+#chromsize: Chr2.ctg194 53109
+#chromsize: Chr2.ctg195 49437
+#chromsize: Chr2.ctg196 11134
+#chromsize: Chr2.ctg197 71250
+#chromsize: Chr2.ctg198 12244
+#chromsize: Chr2.ctg199 37975
+#chromsize: Chr2.ctg200 78278
+#chromsize: Chr2.ctg201 74487
+#chromsize: Chr2.ctg202 11942
+#chromsize: Chr2.ctg203 452072
+#chromsize: Chr2.ctg204 52023
+#chromsize: Chr2.ctg205 379406
+#chromsize: Chr2.ctg206 41138
+#chromsize: Chr2.ctg207 425865
+#chromsize: Chr2.ctg208 19354
+#chromsize: Chr2.ctg209 21450
+#chromsize: Chr2.ctg210 44458
+#chromsize: Chr2.ctg211 81504
+#chromsize: Chr2.ctg212 94664
+#chromsize: Chr2.ctg213 61854
+#chromsize: Chr2.ctg214 14677
+#chromsize: Chr2.ctg215 71577
+#chromsize: Chr2.ctg216 43979
+#chromsize: Chr2.ctg217 76080
+#chromsize: Chr2.ctg218 86017
+#chromsize: Chr2.ctg219 88507
+#chromsize: Chr2.ctg220 75498
+#chromsize: Chr2.ctg221 99890
+#chromsize: Chr2.ctg222 40723
+#chromsize: Chr2.ctg223 14835
+#chromsize: Chr2.ctg224 95198
+#chromsize: Chr2.ctg225 237529
+#chromsize: Chr2.ctg226 79142
+#chromsize: Chr2.ctg227 13390
+#chromsize: Chr2.ctg228 63398
+#chromsize: Chr2.ctg229 85951
+#chromsize: Chr2.ctg230 87757
+#chromsize: Chr3.ctg1 67093
+#chromsize: Chr3.ctg2 21144
+#chromsize: Chr3.ctg3 50878
+#chromsize: Chr3.ctg4 88167
+#chromsize: Chr3.ctg5 82877
+#chromsize: Chr3.ctg6 49793
+#chromsize: Chr3.ctg7 12868
+#chromsize: Chr3.ctg8 77051
+#chromsize: Chr3.ctg9 95397
+#chromsize: Chr3.ctg10 87151
+#chromsize: Chr3.ctg11 61173
+#chromsize: Chr3.ctg12 55742
+#chromsize: Chr3.ctg13 16673
+#chromsize: Chr3.ctg14 110855
+#chromsize: Chr3.ctg15 63960
+#chromsize: Chr3.ctg16 12580
+#chromsize: Chr3.ctg17 33310
+#chromsize: Chr3.ctg18 23222
+#chromsize: Chr3.ctg19 28534
+#chromsize: Chr3.ctg20 63570
+#chromsize: Chr3.ctg21 50131
+#chromsize: Chr3.ctg22 40476
+#chromsize: Chr3.ctg23 64177
+#chromsize: Chr3.ctg24 62459
+#chromsize: Chr3.ctg25 12538
+#chromsize: Chr3.ctg26 37326
+#chromsize: Chr3.ctg27 107216
+#chromsize: Chr3.ctg28 86396
+#chromsize: Chr3.ctg29 79975
+#chromsize: Chr3.ctg30 62292
+#chromsize: Chr3.ctg31 13791
+#chromsize: Chr3.ctg32 266867
+#chromsize: Chr3.ctg33 111116
+#chromsize: Chr3.ctg34 14243
+#chromsize: Chr3.ctg35 92871
+#chromsize: Chr3.ctg36 16745
+#chromsize: Chr3.ctg37 18627
+#chromsize: Chr3.ctg38 348140
+#chromsize: Chr3.ctg39 87312
+#chromsize: Chr3.ctg40 211301
+#chromsize: Chr3.ctg41 65870
+#chromsize: Chr3.ctg42 48859
+#chromsize: Chr3.ctg43 11506
+#chromsize: Chr3.ctg44 66935
+#chromsize: Chr3.ctg45 25594
+#chromsize: Chr3.ctg46 137189
+#chromsize: Chr3.ctg47 73628
+#chromsize: Chr3.ctg48 65322
+#chromsize: Chr3.ctg49 27661
+#chromsize: Chr3.ctg50 35634
+#chromsize: Chr3.ctg51 71096
+#chromsize: Chr3.ctg52 36237
+#chromsize: Chr3.ctg53 259689
+#chromsize: Chr3.ctg54 71966
+#chromsize: Chr3.ctg55 54781
+#chromsize: Chr3.ctg56 24384
+#chromsize: Chr3.ctg57 38894
+#chromsize: Chr3.ctg58 79184
+#chromsize: Chr3.ctg59 58746
+#chromsize: Chr3.ctg60 27091
+#chromsize: Chr3.ctg61 31956
+#chromsize: Chr3.ctg62 83073
+#chromsize: Chr3.ctg63 50966
+#chromsize: Chr3.ctg64 26983
+#chromsize: Chr3.ctg65 29728
+#chromsize: Chr3.ctg66 71185
+#chromsize: Chr3.ctg67 35383
+#chromsize: Chr3.ctg68 20660
+#chromsize: Chr3.ctg69 52652
+#chromsize: Chr3.ctg70 56304
+#chromsize: Chr3.ctg71 47055
+#chromsize: Chr3.ctg72 481404
+#chromsize: Chr3.ctg73 368506
+#chromsize: Chr3.ctg74 37817
+#chromsize: Chr3.ctg75 57576
+#chromsize: Chr3.ctg76 77349
+#chromsize: Chr3.ctg77 85910
+#chromsize: Chr3.ctg78 40559
+#chromsize: Chr3.ctg79 10497
+#chromsize: Chr3.ctg80 43418
+#chromsize: Chr3.ctg81 402483
+#chromsize: Chr3.ctg82 40053
+#chromsize: Chr3.ctg83 32552
+#chromsize: Chr3.ctg84 214267
+#chromsize: Chr3.ctg85 36704
+#chromsize: Chr3.ctg86 78296
+#chromsize: Chr3.ctg87 367333
+#chromsize: Chr3.ctg88 61824
+#chromsize: Chr3.ctg89 30155
+#chromsize: Chr3.ctg90 64705
+#chromsize: Chr3.ctg91 69222
+#chromsize: Chr3.ctg92 207468
+#chromsize: Chr3.ctg93 55104
+#chromsize: Chr3.ctg94 93806
+#chromsize: Chr3.ctg95 30140
+#chromsize: Chr3.ctg96 19641
+#chromsize: Chr3.ctg97 46110
+#chromsize: Chr3.ctg98 91031
+#chromsize: Chr3.ctg99 478140
+#chromsize: Chr3.ctg100 49801
+#chromsize: Chr3.ctg101 40269
+#chromsize: Chr3.ctg102 98944
+#chromsize: Chr3.ctg103 66254
+#chromsize: Chr3.ctg104 56629
+#chromsize: Chr3.ctg105 68677
+#chromsize: Chr3.ctg106 40557
+#chromsize: Chr3.ctg107 72777
+#chromsize: Chr3.ctg108 48143
+#chromsize: Chr3.ctg109 58720
+#chromsize: Chr3.ctg110 77087
+#chromsize: Chr3.ctg111 42662
+#chromsize: Chr3.ctg112 84694
+#chromsize: Chr3.ctg113 98459
+#chromsize: Chr3.ctg114 97480
+#chromsize: Chr3.ctg115 85675
+#chromsize: Chr3.ctg116 75202
+#chromsize: Chr3.ctg117 22187
+#chromsize: Chr3.ctg118 14732
+#chromsize: Chr3.ctg119 25666
+#chromsize: Chr3.ctg120 79980
+#chromsize: Chr3.ctg121 52115
+#chromsize: Chr3.ctg122 66696
+#chromsize: Chr3.ctg123 29072
+#chromsize: Chr3.ctg124 25263
+#chromsize: Chr3.ctg125 95740
+#chromsize: Chr3.ctg126 94585
+#chromsize: Chr3.ctg127 190515
+#chromsize: Chr3.ctg128 80866
+#chromsize: Chr3.ctg129 32288
+#chromsize: Chr3.ctg130 37382
+#chromsize: Chr3.ctg131 66556
+#chromsize: Chr3.ctg132 435912
+#chromsize: Chr3.ctg133 37728
+#chromsize: Chr3.ctg134 94282
+#chromsize: Chr3.ctg135 54789
+#chromsize: Chr3.ctg136 30291
+#chromsize: Chr3.ctg137 232981
+#chromsize: Chr3.ctg138 69654
+#chromsize: Chr3.ctg139 54118
+#chromsize: Chr3.ctg140 327875
+#chromsize: Chr3.ctg141 72834
+#chromsize: Chr3.ctg142 52479
+#chromsize: Chr3.ctg143 25038
+#chromsize: Chr3.ctg144 63665
+#chromsize: Chr3.ctg145 87964
+#chromsize: Chr3.ctg146 91571
+#chromsize: Chr3.ctg147 70524
+#chromsize: Chr3.ctg148 67262
+#chromsize: Chr3.ctg149 240838
+#chromsize: Chr3.ctg150 28027
+#chromsize: Chr3.ctg151 61532
+#chromsize: Chr3.ctg152 94995
+#chromsize: Chr3.ctg153 32410
+#chromsize: Chr3.ctg154 31340
+#chromsize: Chr3.ctg155 73092
+#chromsize: Chr3.ctg156 41814
+#chromsize: Chr3.ctg157 82073
+#chromsize: Chr3.ctg158 333860
+#chromsize: Chr3.ctg159 373126
+#chromsize: Chr3.ctg160 57395
+#chromsize: Chr3.ctg161 27138
+#chromsize: Chr3.ctg162 58721
+#chromsize: Chr3.ctg163 20098
+#chromsize: Chr3.ctg164 29101
+#chromsize: Chr3.ctg165 76405
+#chromsize: Chr3.ctg166 59276
+#chromsize: Chr3.ctg167 96141
+#chromsize: Chr3.ctg168 61936
+#chromsize: Chr3.ctg169 291670
+#chromsize: Chr3.ctg170 74451
+#chromsize: Chr3.ctg171 63717
+#chromsize: Chr3.ctg172 361434
+#chromsize: Chr3.ctg173 67252
+#chromsize: Chr3.ctg174 86801
+#chromsize: Chr3.ctg175 361985
+#chromsize: Chr3.ctg176 50093
+#chromsize: Chr3.ctg177 55694
+#chromsize: Chr3.ctg178 11140
+#chromsize: Chr3.ctg179 64388
+#chromsize: Chr3.ctg180 41586
+#chromsize: Chr3.ctg181 93719
+#chromsize: Chr3.ctg182 67993
+#chromsize: Chr3.ctg183 15117
+#chromsize: Chr3.ctg184 35355
+#chromsize: Chr3.ctg185 395310
+#chromsize: Chr3.ctg186 334474
+#chromsize: Chr3.ctg187 61922
+#chromsize: Chr3.ctg188 67696
+#chromsize: Chr3.ctg189 42224
+#chromsize: Chr3.ctg190 48933
+#chromsize: Chr3.ctg191 94327
+#chromsize: Chr3.ctg192 477278
+#chromsize: Chr3.ctg193 20366
+#chromsize: Chr3.ctg194 47025
+#chromsize: Chr3.ctg195 32498
+#chromsize: Chr3.ctg196 17482
+#chromsize: Chr3.ctg197 91915
+#chromsize: Chr3.ctg198 94359
+#chromsize: Chr3.ctg199 94412
+#chromsize: Chr3.ctg200 86326
+#chromsize: Chr3.ctg201 17472
+#chromsize: Chr3.ctg202 90981
+#chromsize: Chr3.ctg203 95190
+#chromsize: Chr3.ctg204 91090
+#chromsize: Chr3.ctg205 479670
+#chromsize: Chr3.ctg206 63292
+#chromsize: Chr3.ctg207 42540
+#chromsize: Chr3.ctg208 21676
+#chromsize: Chr3.ctg209 273286
+#chromsize: Chr3.ctg210 10444
+#chromsize: Chr3.ctg211 76184
+#chromsize: Chr3.ctg212 330390
+#chromsize: Chr3.ctg213 311221
+#chromsize: Chr3.ctg214 74191
+#chromsize: Chr3.ctg215 59550
+#chromsize: Chr3.ctg216 142092
+#chromsize: Chr3.ctg217 26256
+#chromsize: Chr3.ctg218 62211
+#chromsize: Chr3.ctg219 54037
+#chromsize: Chr3.ctg220 64729
+#chromsize: Chr3.ctg221 27250
+#chromsize: Chr3.ctg222 356945
+#chromsize: Chr3.ctg223 88717
+#chromsize: Chr3.ctg224 69643
+#chromsize: Chr3.ctg225 243794
+#chromsize: Chr3.ctg226 67606
+#chromsize: Chr3.ctg227 40984
+#chromsize: Chr3.ctg228 75410
+#chromsize: Chr3.ctg229 70349
+#chromsize: Chr3.ctg230 87222
+#chromsize: Chr3.ctg231 82136
+#chromsize: Chr3.ctg232 223712
+#chromsize: Chr3.ctg233 21420
+#chromsize: Chr3.ctg234 75335
+#chromsize: Chr3.ctg235 186449
+#chromsize: Chr3.ctg236 18203
+#chromsize: Chr3.ctg237 16111
+#chromsize: Chr3.ctg238 60774
+#chromsize: Chr3.ctg239 86846
+#chromsize: Chr3.ctg240 69738
+#chromsize: Chr3.ctg241 46776
+#chromsize: Chr3.ctg242 39117
+#chromsize: Chr3.ctg243 13806
+#chromsize: Chr3.ctg244 51543
+#chromsize: Chr3.ctg245 81731
+#chromsize: Chr3.ctg246 12243
+#chromsize: Chr3.ctg247 87889
+#chromsize: Chr3.ctg248 20142
+#chromsize: Chr3.ctg249 22825
+#chromsize: Chr3.ctg250 53535
+#chromsize: Chr3.ctg251 390661
+#chromsize: Chr3.ctg252 55413
+#chromsize: Chr3.ctg253 87057
+#chromsize: Chr3.ctg254 11654
+#chromsize: Chr3.ctg255 82232
+#chromsize: Chr3.ctg256 40905
+#chromsize: Chr3.ctg257 69378
+#chromsize: Chr3.ctg258 91191
+#chromsize: Chr3.ctg259 89664
+#chromsize: Chr3.ctg260 96653
+#chromsize: Chr3.ctg261 446713
+#chromsize: Chr3.ctg262 42958
+#chromsize: Chr3.ctg263 17387
+#chromsize: Chr3.ctg264 88269
+#chromsize: Chr3.ctg265 25605
+#chromsize: Chr3.ctg266 88910
+#chromsize: Chr3.ctg267 72303
+#chromsize: Chr3.ctg268 363228
+#chromsize: Chr3.ctg269 10354
+#chromsize: Chr3.ctg270 264290
+#chromsize: Chr3.ctg271 41404
+#chromsize: Chr3.ctg272 40974
+#chromsize: Chr3.ctg273 80949
+#chromsize: Chr3.ctg274 223790
+#chromsize: Chr3.ctg275 95038
+#chromsize: Chr3.ctg276 69010
+#chromsize: Chr3.ctg277 105551
+#chromsize: Chr4.ctg1 29954
+#chromsize: Chr4.ctg2 73841
+#chromsize: Chr4.ctg3 67257
+#chromsize: Chr4.ctg4 41837
+#chromsize: Chr4.ctg5 105219
+#chromsize: Chr4.ctg6 177907
+#chromsize: Chr4.ctg7 372365
+#chromsize: Chr4.ctg8 72271
+#chromsize: Chr4.ctg9 66130
+#chromsize: Chr4.ctg10 89892
+#chromsize: Chr4.ctg11 67328
+#chromsize: Chr4.ctg12 385163
+#chromsize: Chr4.ctg13 34585
+#chromsize: Chr4.ctg14 12891
+#chromsize: Chr4.ctg15 55780
+#chromsize: Chr4.ctg16 38994
+#chromsize: Chr4.ctg17 69176
+#chromsize: Chr4.ctg18 47980
+#chromsize: Chr4.ctg19 88518
+#chromsize: Chr4.ctg20 55510
+#chromsize: Chr4.ctg21 30830
+#chromsize: Chr4.ctg22 97515
+#chromsize: Chr4.ctg23 97173
+#chromsize: Chr4.ctg24 94938
+#chromsize: Chr4.ctg25 19279
+#chromsize: Chr4.ctg26 62407
+#chromsize: Chr4.ctg27 46918
+#chromsize: Chr4.ctg28 18603
+#chromsize: Chr4.ctg29 19866
+#chromsize: Chr4.ctg30 357348
+#chromsize: Chr4.ctg31 89846
+#chromsize: Chr4.ctg32 24245
+#chromsize: Chr4.ctg33 76967
+#chromsize: Chr4.ctg34 87381
+#chromsize: Chr4.ctg35 176366
+#chromsize: Chr4.ctg36 40328
+#chromsize: Chr4.ctg37 85269
+#chromsize: Chr4.ctg38 408876
+#chromsize: Chr4.ctg39 109821
+#chromsize: Chr4.ctg40 64438
+#chromsize: Chr4.ctg41 58166
+#chromsize: Chr4.ctg42 84168
+#chromsize: Chr4.ctg43 410900
+#chromsize: Chr4.ctg44 423720
+#chromsize: Chr4.ctg45 469973
+#chromsize: Chr4.ctg46 445073
+#chromsize: Chr4.ctg47 67948
+#chromsize: Chr4.ctg48 84860
+#chromsize: Chr4.ctg49 18983
+#chromsize: Chr4.ctg50 74393
+#chromsize: Chr4.ctg51 91089
+#chromsize: Chr4.ctg52 86370
+#chromsize: Chr4.ctg53 58969
+#chromsize: Chr4.ctg54 52566
+#chromsize: Chr4.ctg55 20907
+#chromsize: Chr4.ctg56 86208
+#chromsize: Chr4.ctg57 19415
+#chromsize: Chr4.ctg58 76930
+#chromsize: Chr4.ctg59 42113
+#chromsize: Chr4.ctg60 51627
+#chromsize: Chr4.ctg61 50524
+#chromsize: Chr4.ctg62 54449
+#chromsize: Chr4.ctg63 30860
+#chromsize: Chr4.ctg64 97510
+#chromsize: Chr4.ctg65 20715
+#chromsize: Chr4.ctg66 60350
+#chromsize: Chr4.ctg67 209405
+#chromsize: Chr4.ctg68 50591
+#chromsize: Chr4.ctg69 72528
+#chromsize: Chr4.ctg70 338412
+#chromsize: Chr4.ctg71 46758
+#chromsize: Chr4.ctg72 30422
+#chromsize: Chr4.ctg73 78440
+#chromsize: Chr4.ctg74 19869
+#chromsize: Chr4.ctg75 48598
+#chromsize: Chr4.ctg76 48379
+#chromsize: Chr4.ctg77 58872
+#chromsize: Chr4.ctg78 60782
+#chromsize: Chr4.ctg79 23346
+#chromsize: Chr4.ctg80 39389
+#chromsize: Chr4.ctg81 71846
+#chromsize: Chr4.ctg82 72246
+#chromsize: Chr4.ctg83 149567
+#chromsize: Chr4.ctg84 199919
+#chromsize: Chr4.ctg85 93068
+#chromsize: Chr4.ctg86 71499
+#chromsize: Chr4.ctg87 44989
+#chromsize: Chr4.ctg88 105030
+#chromsize: Chr4.ctg89 62968
+#chromsize: Chr4.ctg90 47598
+#chromsize: Chr4.ctg91 95997
+#chromsize: Chr4.ctg92 23309
+#chromsize: Chr4.ctg93 51355
+#chromsize: Chr4.ctg94 84481
+#chromsize: Chr4.ctg95 38570
+#chromsize: Chr4.ctg96 50970
+#chromsize: Chr4.ctg97 88127
+#chromsize: Chr4.ctg98 34025
+#chromsize: Chr4.ctg99 60672
+#chromsize: Chr4.ctg100 86075
+#chromsize: Chr4.ctg101 21972
+#chromsize: Chr4.ctg102 18332
+#chromsize: Chr4.ctg103 40126
+#chromsize: Chr4.ctg104 70531
+#chromsize: Chr4.ctg105 52848
+#chromsize: Chr4.ctg106 71357
+#chromsize: Chr4.ctg107 12163
+#chromsize: Chr4.ctg108 300265
+#chromsize: Chr4.ctg109 37455
+#chromsize: Chr4.ctg110 64003
+#chromsize: Chr4.ctg111 58095
+#chromsize: Chr4.ctg112 274576
+#chromsize: Chr4.ctg113 341426
+#chromsize: Chr4.ctg114 67024
+#chromsize: Chr4.ctg115 99296
+#chromsize: Chr4.ctg116 134252
+#chromsize: Chr4.ctg117 86343
+#chromsize: Chr4.ctg118 376776
+#chromsize: Chr4.ctg119 16938
+#chromsize: Chr4.ctg120 24625
+#chromsize: Chr4.ctg121 66534
+#chromsize: Chr4.ctg122 25600
+#chromsize: Chr4.ctg123 42229
+#chromsize: Chr4.ctg124 75640
+#chromsize: Chr4.ctg125 62591
+#chromsize: Chr4.ctg126 80843
+#chromsize: Chr4.ctg127 79591
+#chromsize: Chr4.ctg128 68301
+#chromsize: Chr4.ctg129 29395
+#chromsize: Chr4.ctg130 412968
+#chromsize: Chr4.ctg131 99744
+#chromsize: Chr4.ctg132 57653
+#chromsize: Chr4.ctg133 338542
+#chromsize: Chr4.ctg134 32306
+#chromsize: Chr4.ctg135 31091
+#chromsize: Chr4.ctg136 27862
+#chromsize: Chr4.ctg137 72968
+#chromsize: Chr4.ctg138 49248
+#chromsize: Chr4.ctg139 51335
+#chromsize: Chr4.ctg140 22168
+#chromsize: Chr4.ctg141 80633
+#chromsize: Chr4.ctg142 15459
+#chromsize: Chr4.ctg143 83891
+#chromsize: Chr4.ctg144 25926
+#chromsize: Chr4.ctg145 102357
+#chromsize: Chr4.ctg146 89865
+#chromsize: Chr4.ctg147 26923
+#chromsize: Chr4.ctg148 173703
+#chromsize: Chr4.ctg149 330078
+#chromsize: Chr4.ctg150 80288
+#chromsize: Chr4.ctg151 65227
+#chromsize: Chr4.ctg152 32486
+#chromsize: Chr4.ctg153 92583
+#chromsize: Chr4.ctg154 81369
+#chromsize: Chr4.ctg155 44045
+#chromsize: Chr4.ctg156 203460
+#chromsize: Chr4.ctg157 96824
+#chromsize: Chr4.ctg158 34252
+#chromsize: Chr4.ctg159 98042
+#chromsize: Chr4.ctg160 28967
+#chromsize: Chr4.ctg161 95143
+#chromsize: Chr4.ctg162 38961
+#chromsize: Chr4.ctg163 75516
+#chromsize: Chr4.ctg164 37830
+#chromsize: Chr4.ctg165 22078
+#chromsize: Chr4.ctg166 77075
+#chromsize: Chr4.ctg167 51387
+#chromsize: Chr4.ctg168 47593
+#chromsize: Chr4.ctg169 92195
+#chromsize: Chr4.ctg170 19902
+#chromsize: Chr4.ctg171 97454
+#chromsize: Chr4.ctg172 67945
+#chromsize: Chr4.ctg173 82352
+#chromsize: Chr4.ctg174 86052
+#chromsize: Chr4.ctg175 17169
+#chromsize: Chr4.ctg176 195460
+#chromsize: Chr4.ctg177 65683
+#chromsize: Chr4.ctg178 187168
+#chromsize: Chr4.ctg179 92533
+#chromsize: Chr4.ctg180 88373
+#chromsize: Chr4.ctg181 77430
+#chromsize: Chr4.ctg182 46877
+#chromsize: Chr4.ctg183 12559
+#chromsize: Chr4.ctg184 398763
+#chromsize: Chr4.ctg185 94564
+#chromsize: Chr4.ctg186 30012
+#chromsize: Chr4.ctg187 76642
+#chromsize: Chr4.ctg188 65760
+#chromsize: Chr4.ctg189 61320
+#chromsize: Chr4.ctg190 16754
+#chromsize: Chr4.ctg191 83250
+#chromsize: Chr4.ctg192 77010
+#chromsize: Chr4.ctg193 22243
+#chromsize: Chr4.ctg194 88869
+#chromsize: Chr4.ctg195 80937
+#chromsize: Chr4.ctg196 46011
+#chromsize: Chr4.ctg197 45952
+#chromsize: Chr4.ctg198 27992
+#chromsize: Chr4.ctg199 29833
+#chromsize: Chr4.ctg200 52838
+#chromsize: Chr4.ctg201 81838
+#chromsize: Chr4.ctg202 481102
+#chromsize: Chr4.ctg203 369972
+#chromsize: Chr4.ctg204 90114
+#chromsize: Chr4.ctg205 81540
+#chromsize: Chr4.ctg206 68958
+#chromsize: Chr4.ctg207 47083
+#chromsize: Chr4.ctg208 15099
+#chromsize: Chr4.ctg209 14878
+#chromsize: Chr4.ctg210 92593
+#chromsize: Chr4.ctg211 113137
+#chromsize: Chr4.ctg212 61330
+#chromsize: Chr4.ctg213 231668
+#chromsize: Chr4.ctg214 394842
+#chromsize: Chr4.ctg215 20849
+#chromsize: Chr4.ctg216 22716
+#chromsize: Chr4.ctg217 26564
+#chromsize: Chr4.ctg218 36110
+#chromsize: Chr4.ctg219 35309
+#chromsize: Chr4.ctg220 116350
+#chromsize: Chr4.ctg221 58238
+#chromsize: Chr4.ctg222 55601
+#chromsize: Chr4.ctg223 38636
+#chromsize: Chr4.ctg224 24763
+#chromsize: Chr4.ctg225 80282
+#chromsize: Chr4.ctg226 90293
+#chromsize: Chr4.ctg227 85554
+#chromsize: Chr4.ctg228 43142
+#chromsize: Chr4.ctg229 70975
+#chromsize: Chr4.ctg230 232979
+#chromsize: Chr4.ctg231 52320
+#chromsize: Chr4.ctg232 30463
+#chromsize: Chr5.ctg1 21378
+#chromsize: Chr5.ctg2 72077
+#chromsize: Chr5.ctg3 88249
+#chromsize: Chr5.ctg4 27592
+#chromsize: Chr5.ctg5 62695
+#chromsize: Chr5.ctg6 43677
+#chromsize: Chr5.ctg7 67197
+#chromsize: Chr5.ctg8 77768
+#chromsize: Chr5.ctg9 77423
+#chromsize: Chr5.ctg10 38641
+#chromsize: Chr5.ctg11 80477
+#chromsize: Chr5.ctg12 392586
+#chromsize: Chr5.ctg13 26979
+#chromsize: Chr5.ctg14 13527
+#chromsize: Chr5.ctg15 23142
+#chromsize: Chr5.ctg16 20801
+#chromsize: Chr5.ctg17 87619
+#chromsize: Chr5.ctg18 23642
+#chromsize: Chr5.ctg19 32766
+#chromsize: Chr5.ctg20 85860
+#chromsize: Chr5.ctg21 78870
+#chromsize: Chr5.ctg22 85101
+#chromsize: Chr5.ctg23 49672
+#chromsize: Chr5.ctg24 17306
+#chromsize: Chr5.ctg25 68607
+#chromsize: Chr5.ctg26 95333
+#chromsize: Chr5.ctg27 88258
+#chromsize: Chr5.ctg28 45754
+#chromsize: Chr5.ctg29 454354
+#chromsize: Chr5.ctg30 25145
+#chromsize: Chr5.ctg31 24915
+#chromsize: Chr5.ctg32 202711
+#chromsize: Chr5.ctg33 73310
+#chromsize: Chr5.ctg34 99340
+#chromsize: Chr5.ctg35 27934
+#chromsize: Chr5.ctg36 79137
+#chromsize: Chr5.ctg37 60729
+#chromsize: Chr5.ctg38 57132
+#chromsize: Chr5.ctg39 19971
+#chromsize: Chr5.ctg40 490727
+#chromsize: Chr5.ctg41 69659
+#chromsize: Chr5.ctg42 47256
+#chromsize: Chr5.ctg43 54871
+#chromsize: Chr5.ctg44 92783
+#chromsize: Chr5.ctg45 77760
+#chromsize: Chr5.ctg46 98770
+#chromsize: Chr5.ctg47 54714
+#chromsize: Chr5.ctg48 10689
+#chromsize: Chr5.ctg49 31983
+#chromsize: Chr5.ctg50 300969
+#chromsize: Chr5.ctg51 28202
+#chromsize: Chr5.ctg52 139401
+#chromsize: Chr5.ctg53 76230
+#chromsize: Chr5.ctg54 39028
+#chromsize: Chr5.ctg55 100272
+#chromsize: Chr5.ctg56 39610
+#chromsize: Chr5.ctg57 30531
+#chromsize: Chr5.ctg58 52780
+#chromsize: Chr5.ctg59 238805
+#chromsize: Chr5.ctg60 40121
+#chromsize: Chr5.ctg61 94021
+#chromsize: Chr5.ctg62 79062
+#chromsize: Chr5.ctg63 45142
+#chromsize: Chr5.ctg64 16141
+#chromsize: Chr5.ctg65 26344
+#chromsize: Chr5.ctg66 31861
+#chromsize: Chr5.ctg67 98862
+#chromsize: Chr5.ctg68 99082
+#chromsize: Chr5.ctg69 16406
+#chromsize: Chr5.ctg70 98268
+#chromsize: Chr5.ctg71 33836
+#chromsize: Chr5.ctg72 24296
+#chromsize: Chr5.ctg73 62772
+#chromsize: Chr5.ctg74 36118
+#chromsize: Chr5.ctg75 38499
+#chromsize: Chr5.ctg76 53243
+#chromsize: Chr5.ctg77 54091
+#chromsize: Chr5.ctg78 14565
+#chromsize: Chr5.ctg79 228998
+#chromsize: Chr5.ctg80 72619
+#chromsize: Chr5.ctg81 234675
+#chromsize: Chr5.ctg82 60261
+#chromsize: Chr5.ctg83 55827
+#chromsize: Chr5.ctg84 94229
+#chromsize: Chr5.ctg85 315701
+#chromsize: Chr5.ctg86 95535
+#chromsize: Chr5.ctg87 334175
+#chromsize: Chr5.ctg88 12418
+#chromsize: Chr5.ctg89 44365
+#chromsize: Chr5.ctg90 89599
+#chromsize: Chr5.ctg91 84896
+#chromsize: Chr5.ctg92 96468
+#chromsize: Chr5.ctg93 65672
+#chromsize: Chr5.ctg94 408568
+#chromsize: Chr5.ctg95 84340
+#chromsize: Chr5.ctg96 86140
+#chromsize: Chr5.ctg97 98243
+#chromsize: Chr5.ctg98 45921
+#chromsize: Chr5.ctg99 69303
+#chromsize: Chr5.ctg100 94146
+#chromsize: Chr5.ctg101 57006
+#chromsize: Chr5.ctg102 10583
+#chromsize: Chr5.ctg103 259243
+#chromsize: Chr5.ctg104 243773
+#chromsize: Chr5.ctg105 95963
+#chromsize: Chr5.ctg106 92955
+#chromsize: Chr5.ctg107 60440
+#chromsize: Chr5.ctg108 93845
+#chromsize: Chr5.ctg109 74873
+#chromsize: Chr5.ctg110 44407
+#chromsize: Chr5.ctg111 51429
+#chromsize: Chr5.ctg112 71701
+#chromsize: Chr5.ctg113 11648
+#chromsize: Chr5.ctg114 166929
+#chromsize: Chr5.ctg115 81218
+#chromsize: Chr5.ctg116 55679
+#chromsize: Chr5.ctg117 195230
+#chromsize: Chr5.ctg118 80729
+#chromsize: Chr5.ctg119 92262
+#chromsize: Chr5.ctg120 72581
+#chromsize: Chr5.ctg121 83201
+#chromsize: Chr5.ctg122 42594
+#chromsize: Chr5.ctg123 35895
+#chromsize: Chr5.ctg124 283550
+#chromsize: Chr5.ctg125 81264
+#chromsize: Chr5.ctg126 91840
+#chromsize: Chr5.ctg127 111998
+#chromsize: Chr5.ctg128 162128
+#chromsize: Chr5.ctg129 88027
+#chromsize: Chr5.ctg130 27642
+#chromsize: Chr5.ctg131 77336
+#chromsize: Chr5.ctg132 34704
+#chromsize: Chr5.ctg133 36445
+#chromsize: Chr5.ctg134 88595
+#chromsize: Chr5.ctg135 12945
+#chromsize: Chr5.ctg136 76717
+#chromsize: Chr5.ctg137 35397
+#chromsize: Chr5.ctg138 41201
+#chromsize: Chr5.ctg139 87484
+#chromsize: Chr5.ctg140 12143
+#chromsize: Chr5.ctg141 98413
+#chromsize: Chr5.ctg142 86855
+#chromsize: Chr5.ctg143 10104
+#chromsize: Chr5.ctg144 62112
+#chromsize: Chr5.ctg145 75506
+#chromsize: Chr5.ctg146 26447
+#chromsize: Chr5.ctg147 45484
+#chromsize: Chr5.ctg148 31904
+#chromsize: Chr5.ctg149 280357
+#chromsize: Chr5.ctg150 81309
+#chromsize: Chr5.ctg151 10965
+#chromsize: Chr5.ctg152 96119
+#chromsize: Chr5.ctg153 402334
+#chromsize: Chr5.ctg154 56166
+#chromsize: Chr5.ctg155 79899
+#chromsize: Chr5.ctg156 45405
+#chromsize: Chr5.ctg157 39267
+#chromsize: Chr5.ctg158 22915
+#chromsize: Chr5.ctg159 136034
+#chromsize: Chr5.ctg160 20079
+#chromsize: Chr5.ctg161 55203
+#chromsize: Chr5.ctg162 90582
+#chromsize: Chr5.ctg163 98278
+#chromsize: Chr5.ctg164 83256
+#chromsize: Chr5.ctg165 75312
+#chromsize: Chr5.ctg166 142653
+#chromsize: Chr5.ctg167 15197
+#chromsize: Chr5.ctg168 45492
+#chromsize: Chr5.ctg169 30573
+#chromsize: Chr5.ctg170 26751
+#chromsize: Chr5.ctg171 18141
+#chromsize: Chr5.ctg172 297189
+#chromsize: Chr5.ctg173 100437
+#chromsize: Chr5.ctg174 70279
+#chromsize: Chr5.ctg175 42037
+#chromsize: Chr5.ctg176 89644
+#chromsize: Chr5.ctg177 13129
+#chromsize: Chr5.ctg178 84266
+#chromsize: Chr5.ctg179 31153
+#chromsize: Chr5.ctg180 18311
+#chromsize: Chr5.ctg181 115752
+#chromsize: Chr5.ctg182 271049
+#chromsize: Chr5.ctg183 238423
+#chromsize: Chr5.ctg184 331440
+#chromsize: Chr5.ctg185 91464
+#chromsize: Chr5.ctg186 29536
+#chromsize: Chr5.ctg187 40946
+#chromsize: Chr5.ctg188 88826
+#chromsize: Chr5.ctg189 357702
+#chromsize: Chr5.ctg190 359067
+#chromsize: Chr5.ctg191 94142
+#chromsize: Chr5.ctg192 46976
+#chromsize: Chr5.ctg193 17624
+#chromsize: Chr5.ctg194 252434
+#chromsize: Chr5.ctg195 87849
+#chromsize: Chr5.ctg196 69047
+#chromsize: Chr5.ctg197 69210
+#chromsize: Chr5.ctg198 87798
+#chromsize: Chr5.ctg199 39378
+#chromsize: Chr5.ctg200 66693
+#chromsize: Chr5.ctg201 89116
+#chromsize: Chr5.ctg202 34027
+#chromsize: Chr5.ctg203 99422
+#chromsize: Chr5.ctg204 28349
+#chromsize: Chr5.ctg205 71996
+#chromsize: Chr5.ctg206 97669
+#chromsize: Chr5.ctg207 24477
+#chromsize: Chr5.ctg208 73602
+#chromsize: Chr5.ctg209 10071
+#chromsize: Chr5.ctg210 203463
+#chromsize: Chr5.ctg211 11225
+#chromsize: Chr5.ctg212 338337
+#chromsize: Chr5.ctg213 40313
+#chromsize: Chr5.ctg214 22128
+#chromsize: Chr5.ctg215 467988
+#chromsize: Chr5.ctg216 54645
+#chromsize: Chr5.ctg217 87776
+#chromsize: Chr5.ctg218 62771
+#chromsize: Chr5.ctg219 35747
+#chromsize: Chr5.ctg220 96085
+#chromsize: Chr5.ctg221 56471
+#chromsize: Chr5.ctg222 21132
+#chromsize: Chr5.ctg223 90458
+#chromsize: Chr5.ctg224 19254
+#chromsize: Chr5.ctg225 65802
+#chromsize: Chr5.ctg226 308999
+#chromsize: Chr5.ctg227 37945
+#chromsize: Chr5.ctg228 46658
+#chromsize: Chr5.ctg229 38492
+#chromsize: Chr5.ctg230 23833
+#chromsize: Chr5.ctg231 74423
+#chromsize: Chr5.ctg232 31840
+#chromsize: Chr5.ctg233 393755
+#chromsize: Chr5.ctg234 291982
+#chromsize: Chr5.ctg235 328241
+#chromsize: Chr5.ctg236 81343
+#chromsize: Chr5.ctg237 89710
+#chromsize: Chr5.ctg238 46806
+#chromsize: Chr5.ctg239 29219
+#chromsize: Chr5.ctg240 65775
+#chromsize: Chr5.ctg241 73653
+#chromsize: Chr5.ctg242 74827
+#chromsize: Chr5.ctg243 77987
+#chromsize: Chr5.ctg244 90741
+#chromsize: Chr5.ctg245 27696
+#chromsize: Chr5.ctg246 89975
+#chromsize: Chr5.ctg247 28106
+#chromsize: Chr5.ctg248 86700
+#chromsize: Chr5.ctg249 82514
+#chromsize: Chr5.ctg250 13121
+#chromsize: Chr5.ctg251 263355
+#chromsize: Chr5.ctg252 33063
+#chromsize: Chr5.ctg253 33126
+#chromsize: Chr5.ctg254 91355
+#chromsize: Chr5.ctg255 72290
+#chromsize: Chr5.ctg256 68285
+#chromsize: Chr5.ctg257 82771
+#chromsize: Chr5.ctg258 65206
+#chromsize: Chr5.ctg259 30956
+#chromsize: Chr5.ctg260 487570
+#chromsize: Chr5.ctg261 35883
+#chromsize: Chr5.ctg262 12568
+#chromsize: Chr5.ctg263 25126
+#chromsize: Chr5.ctg264 80866
+#chromsize: Chr5.ctg265 41207
+#chromsize: Chr5.ctg266 32049
+#chromsize: Chr5.ctg267 74622
+#chromsize: Chr5.ctg268 24152
+#chromsize: Chr5.ctg269 75277
+#chromsize: Chr5.ctg270 42278
+#chromsize: Chr5.ctg271 66385
+#chromsize: Chr5.ctg272 427597
+#chromsize: Chr5.ctg273 85400
+#chromsize: Chr5.ctg274 70984
+#chromsize: Chr5.ctg275 42478
+#chromsize: Chr5.ctg276 46932
+#chromsize: Chr5.ctg277 15112
+#chromsize: Chr5.ctg278 492876
+#chromsize: Chr5.ctg279 60113
+#chromsize: Chr5.ctg280 483693
+#chromsize: Chr5.ctg281 74186
+#chromsize: Chr5.ctg282 18675
+#chromsize: Chr5.ctg283 88188
+#chromsize: Chr5.ctg284 46716
+#chromsize: Chr5.ctg285 63134
+#chromsize: Chr5.ctg286 62234
+#chromsize: Chr5.ctg287 16670
+#chromsize: Chr5.ctg288 65432
+#chromsize: Chr5.ctg289 49226
+#chromsize: Chr5.ctg290 78282
+#chromsize: Chr5.ctg291 39753
+#chromsize: Chr5.ctg292 77831
+#chromsize: Chr5.ctg293 159023
+#chromsize: Chr5.ctg294 74270
+#chromsize: Chr5.ctg295 468794
+#chromsize: Chr5.ctg296 66625
+#chromsize: Chr5.ctg297 19847
+#chromsize: Chr5.ctg298 86805
+#chromsize: Chr5.ctg299 51906
+#chromsize: Chr5.ctg300 203042
+#chromsize: Chr5.ctg301 48309
+#chromsize: Chr5.ctg302 18534
+#chromsize: Chr5.ctg303 99915
+#chromsize: Chr5.ctg304 22683
+#chromsize: Chr5.ctg305 47597
+#chromsize: Chr5.ctg306 91576
+#chromsize: Chr5.ctg307 453764
+#chromsize: Chr5.ctg308 20038
+#chromsize: Chr5.ctg309 74736
+#chromsize: Chr5.ctg310 339058
+#chromsize: Chr5.ctg311 77466
+#chromsize: Chr5.ctg312 34273
+#chromsize: ChrC.ctg1 43431
+#chromsize: ChrC.ctg2 18016
+#chromsize: ChrC.ctg3 93031
+#chromsize: ChrM.ctg1 15791
+#chromsize: ChrM.ctg2 65491
+#chromsize: ChrM.ctg3 103799
+#chromsize: ChrM.ctg4 67144
+#chromsize: ChrM.ctg5 101397
+#chromsize: ChrM.ctg6 13302
+#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2
+100	Chr5.ctg7	23902	Chr5.ctg303	56189	+	-
+101	Chr5.ctg7	23902	Chr2.ctg229	7820	+	-
+102	Chr5.ctg7	23902	Chr5.ctg306	74661	+	-
+103	Chr5.ctg7	23902	Chr5.ctg303	53406	+	-
+104	Chr5.ctg7	23902	Chr2.ctg215	53993	+	-
+105	Chr5.ctg7	23902	Chr2.ctg229	7263	+	-
+106	Chr5.ctg7	23902	Chr5.ctg303	42465	+	-
+107	Chr5.ctg303	56189	Chr2.ctg229	7820	+	-
+108	Chr5.ctg303	56189	Chr5.ctg306	74661	+	-
+109	Chr5.ctg303	56189	Chr5.ctg303	53406	+	-
+110	Chr5.ctg303	56189	Chr2.ctg215	53993	+	-
+111	Chr5.ctg303	56189	Chr2.ctg229	7263	+	-
+112	Chr5.ctg303	56189	Chr5.ctg303	42465	+	-
+113	Chr2.ctg229	7820	Chr5.ctg306	74661	+	-
+114	Chr2.ctg229	7820	Chr5.ctg303	53406	+	-
+115	Chr2.ctg229	7820	Chr2.ctg215	53993	+	-
+116	Chr2.ctg229	7820	Chr2.ctg229	7263	+	-
+117	Chr2.ctg229	7820	Chr5.ctg303	42465	+	-
+118	Chr5.ctg306	74661	Chr5.ctg303	53406	+	-
+119	Chr5.ctg306	74661	Chr2.ctg215	53993	+	-
+120	Chr5.ctg306	74661	Chr2.ctg229	7263	+	-
+121	Chr5.ctg306	74661	Chr5.ctg303	42465	+	-
+122	Chr5.ctg303	53406	Chr2.ctg215	53993	+	-
+123	Chr5.ctg303	53406	Chr2.ctg229	7263	+	-
+124	Chr5.ctg303	53406	Chr5.ctg303	42465	+	-
+125	Chr2.ctg215	53993	Chr2.ctg229	7263	+	-
+126	Chr2.ctg215	53993	Chr5.ctg303	42465	+	-
+127	Chr2.ctg229	7263	Chr5.ctg303	42465	+	-
+129	ChrC.ctg3	15940	ChrC.ctg1	970	+	-
+131	ChrC.ctg3	20044	ChrC.ctg1	970	+	-
+133	ChrC.ctg1	970	ChrC.ctg3	17460	+	-
+134	Chr3.ctg267	49853	Chr5.ctg29	111961	+	-
+135	Chr3.ctg267	49853	Chr3.ctg267	50478	+	-
+136	Chr3.ctg267	49853	Chr5.ctg29	126144	+	-
+137	Chr5.ctg29	111961	Chr3.ctg267	50478	+	-
+138	Chr5.ctg29	111961	Chr5.ctg29	126144	+	-
+139	Chr3.ctg267	50478	Chr5.ctg29	126144	+	-
+140	Chr2.ctg76	33709	Chr5.ctg212	293681	+	-
+141	ChrC.ctg2	4741	ChrC.ctg3	1057	+	-
+142	ChrC.ctg1	32709	Chr2.ctg35	10022	+	-
+145	Chr2.ctg35	10022	ChrC.ctg1	24219	+	-
+146	Chr2.ctg35	10022	ChrC.ctg1	25629	+	-
+149	Chr4.ctg6	135669	Chr4.ctg12	205085	+	-
+150	Chr4.ctg6	135669	Chr4.ctg216	14494	+	-
+151	Chr4.ctg6	135669	Chr4.ctg216	3553	+	-
+152	Chr4.ctg12	205085	Chr4.ctg216	14494	+	-
+153	Chr4.ctg12	205085	Chr4.ctg216	3553	+	-
+154	Chr4.ctg216	14494	Chr4.ctg216	3553	+	-
+155	Chr4.ctg43	99652	Chr2.ctg190	60834	+	-
+178	ChrC.ctg2	9878	ChrC.ctg1	9169	+	-
+179	ChrC.ctg2	9878	ChrC.ctg1	25199	+	-
+181	ChrC.ctg2	9878	ChrC.ctg1	19984	+	-
+182	ChrC.ctg2	9632	ChrC.ctg1	9169	+	-
+183	ChrC.ctg2	9632	ChrC.ctg1	25199	+	-
+185	ChrC.ctg2	9632	ChrC.ctg1	19984	+	-
+191	ChrC.ctg2	9476	ChrC.ctg1	19984	+	-
+192	Chr5.ctg64	13373	Chr5.ctg64	13928	+	-
+193	Chr3.ctg106	28281	Chr3.ctg106	19826	+	-
+194	Chr3.ctg106	28281	Chr3.ctg4	68048	+	-
+195	Chr3.ctg106	28281	Chr5.ctg2	18676	+	-
+196	Chr3.ctg106	19826	Chr3.ctg4	68048	+	-
+197	Chr3.ctg106	19826	Chr5.ctg2	18676	+	-
+198	Chr3.ctg4	68048	Chr5.ctg2	18676	+	-
+199	Chr2.ctg162	96038	Chr2.ctg171	25119	+	-
+200	Chr2.ctg162	96038	Chr2.ctg162	224369	+	-
+201	Chr2.ctg162	96038	Chr2.ctg154	11538	+	-
+202	Chr2.ctg171	25119	Chr2.ctg162	224369	+	-
+203	Chr2.ctg171	25119	Chr2.ctg154	11538	+	-
+204	Chr2.ctg162	224369	Chr2.ctg154	11538	+	-
+205	Chr3.ctg72	25114	Chr1.ctg12	8418	+	-
+206	Chr3.ctg72	25114	Chr1.ctg11	9825	+	-
+207	Chr3.ctg72	25114	Chr5.ctg307	428433	+	-
+208	Chr3.ctg72	25114	Chr1.ctg10	453527	+	-
+209	Chr3.ctg72	25114	Chr3.ctg84	81682	+	-
+210	Chr1.ctg12	8418	Chr1.ctg11	9825	+	-
+211	Chr1.ctg12	8418	Chr5.ctg307	428433	+	-
+212	Chr1.ctg12	8418	Chr1.ctg10	453527	+	-
+213	Chr1.ctg12	8418	Chr3.ctg84	81682	+	-
+214	Chr1.ctg11	9825	Chr5.ctg307	428433	+	-
+215	Chr1.ctg11	9825	Chr1.ctg10	453527	+	-
+216	Chr1.ctg11	9825	Chr3.ctg84	81682	+	-
+217	Chr5.ctg307	428433	Chr1.ctg10	453527	+	-
+218	Chr5.ctg307	428433	Chr3.ctg84	81682	+	-
+219	Chr1.ctg10	453527	Chr3.ctg84	81682	+	-
+220	Chr1.ctg135	38753	Chr1.ctg126	271756	+	-
+221	Chr1.ctg135	38753	Chr1.ctg126	239901	+	-
+222	Chr1.ctg135	38753	Chr1.ctg137	11439	+	-
+223	Chr1.ctg135	38753	Chr1.ctg126	271649	+	-
+224	Chr1.ctg126	271756	Chr1.ctg126	239901	+	-
+225	Chr1.ctg126	271756	Chr1.ctg137	11439	+	-
+226	Chr1.ctg126	271756	Chr1.ctg126	271649	+	-
+227	Chr1.ctg126	239901	Chr1.ctg137	11439	+	-
+228	Chr1.ctg126	239901	Chr1.ctg126	271649	+	-
+229	Chr1.ctg137	11439	Chr1.ctg126	271649	+	-
+230	ChrC.ctg3	60724	ChrC.ctg2	9627	+	-
+231	ChrC.ctg3	60724	ChrC.ctg1	24546	+	-
+232	ChrC.ctg2	9627	ChrC.ctg1	24546	+	-
+233	Chr4.ctg38	199195	Chr5.ctg166	67939	+	-
+236	Chr1.ctg139	124204	Chr1.ctg139	104585	+	-
+237	Chr1.ctg139	124204	Chr3.ctg126	23113	+	-
+238	Chr1.ctg139	104585	Chr3.ctg126	23113	+	-
+239	Chr3.ctg226	11865	Chr3.ctg213	189655	+	-
+240	Chr3.ctg226	11865	Chr3.ctg226	14307	+	-
+241	Chr3.ctg226	11865	Chr3.ctg226	9831	+	-
+242	Chr3.ctg226	11865	Chr3.ctg213	207049	+	-
+243	Chr3.ctg213	189655	Chr3.ctg226	14307	+	-
+244	Chr3.ctg213	189655	Chr3.ctg226	9831	+	-
+245	Chr3.ctg213	189655	Chr3.ctg213	207049	+	-
+246	Chr3.ctg226	14307	Chr3.ctg226	9831	+	-
+247	Chr3.ctg226	14307	Chr3.ctg213	207049	+	-
+248	Chr3.ctg226	9831	Chr3.ctg213	207049	+	-
+249	Chr2.ctg176	34204	Chr3.ctg23	61282	+	-
+250	Chr2.ctg176	34204	Chr2.ctg136	106881	+	-
+251	Chr2.ctg176	34204	Chr2.ctg176	32379	+	-
+252	Chr2.ctg176	34204	Chr2.ctg176	32712	+	-
+253	Chr3.ctg23	61282	Chr2.ctg136	106881	+	-
+254	Chr3.ctg23	61282	Chr2.ctg176	32379	+	-
+255	Chr3.ctg23	61282	Chr2.ctg176	32712	+	-
+256	Chr2.ctg136	106881	Chr2.ctg176	32379	+	-
+257	Chr2.ctg136	106881	Chr2.ctg176	32712	+	-
+258	Chr2.ctg176	32379	Chr2.ctg176	32712	+	-
+259	Chr3.ctg235	17094	Chr5.ctg266	23643	+	-
+260	Chr3.ctg235	17094	Chr5.ctg54	10260	+	-
+261	Chr3.ctg235	17094	Chr3.ctg252	54826	+	-
+262	Chr5.ctg266	23643	Chr5.ctg54	10260	+	-
+263	Chr5.ctg266	23643	Chr3.ctg252	54826	+	-
+264	Chr5.ctg54	10260	Chr3.ctg252	54826	+	-
+265	Chr4.ctg2	289	Chr1.ctg321	29781	+	-
+266	Chr3.ctg230	11573	Chr3.ctg212	274882	+	-
+267	Chr3.ctg230	11573	Chr3.ctg158	27775	+	-
+268	Chr3.ctg230	11573	Chr3.ctg158	32682	+	-
+269	Chr3.ctg230	11573	Chr5.ctg172	95478	+	-
+270	Chr3.ctg212	274882	Chr3.ctg158	27775	+	-
+271	Chr3.ctg212	274882	Chr3.ctg158	32682	+	-
+272	Chr3.ctg212	274882	Chr5.ctg172	95478	+	-
+273	Chr3.ctg158	27775	Chr3.ctg158	32682	+	-
+274	Chr3.ctg158	27775	Chr5.ctg172	95478	+	-
+275	Chr3.ctg158	32682	Chr5.ctg172	95478	+	-
+276	Chr5.ctg147	9629	Chr5.ctg142	27392	+	-
+277	Chr2.ctg94	47644	Chr2.ctg95	35148	+	-
+278	Chr2.ctg94	47644	Chr2.ctg94	34253	+	-
+279	Chr2.ctg94	47644	Chr2.ctg95	18661	+	-
+280	Chr2.ctg95	35148	Chr2.ctg94	34253	+	-
+281	Chr2.ctg95	35148	Chr2.ctg95	18661	+	-
+282	Chr2.ctg94	34253	Chr2.ctg95	18661	+	-
+283	Chr2.ctg2	18027	Chr2.ctg2	73643	+	-
+284	Chr2.ctg2	18027	Chr4.ctg15	36752	+	-
+285	Chr2.ctg2	73643	Chr4.ctg15	36752	+	-
+286	Chr1.ctg150	350619	Chr1.ctg206	64510	+	-
+287	Chr1.ctg150	350619	Chr1.ctg150	277490	+	-
+288	Chr1.ctg150	350619	Chr1.ctg119	111806	+	-
+289	Chr1.ctg150	350619	Chr1.ctg150	73248	+	-
+290	Chr1.ctg150	350619	Chr1.ctg150	342422	+	-
+291	Chr1.ctg150	350619	Chr1.ctg215	7124	+	-
+292	Chr1.ctg150	350619	Chr1.ctg150	163883	+	-
+293	Chr1.ctg150	350619	Chr1.ctg150	57705	+	-
+294	Chr1.ctg150	350619	Chr1.ctg150	61060	+	-
+295	Chr1.ctg206	64510	Chr1.ctg150	277490	+	-
+296	Chr1.ctg206	64510	Chr1.ctg119	111806	+	-
+297	Chr1.ctg206	64510	Chr1.ctg150	73248	+	-
+298	Chr1.ctg206	64510	Chr1.ctg150	342422	+	-
+299	Chr1.ctg206	64510	Chr1.ctg215	7124	+	-
+300	Chr1.ctg206	64510	Chr1.ctg150	163883	+	-
+301	Chr1.ctg206	64510	Chr1.ctg150	57705	+	-
+302	Chr1.ctg206	64510	Chr1.ctg150	61060	+	-
+303	Chr1.ctg150	277490	Chr1.ctg119	111806	+	-
+304	Chr1.ctg150	277490	Chr1.ctg150	73248	+	-
+305	Chr1.ctg150	277490	Chr1.ctg150	342422	+	-
+306	Chr1.ctg150	277490	Chr1.ctg215	7124	+	-
+307	Chr1.ctg150	277490	Chr1.ctg150	163883	+	-
+308	Chr1.ctg150	277490	Chr1.ctg150	57705	+	-
+309	Chr1.ctg150	277490	Chr1.ctg150	61060	+	-
+310	Chr1.ctg119	111806	Chr1.ctg150	73248	+	-
+311	Chr1.ctg119	111806	Chr1.ctg150	342422	+	-
+312	Chr1.ctg119	111806	Chr1.ctg215	7124	+	-
+313	Chr1.ctg119	111806	Chr1.ctg150	163883	+	-
+314	Chr1.ctg119	111806	Chr1.ctg150	57705	+	-
+315	Chr1.ctg119	111806	Chr1.ctg150	61060	+	-
+316	Chr1.ctg150	73248	Chr1.ctg150	342422	+	-
+317	Chr1.ctg150	73248	Chr1.ctg215	7124	+	-
+318	Chr1.ctg150	73248	Chr1.ctg150	163883	+	-
+319	Chr1.ctg150	73248	Chr1.ctg150	57705	+	-
+320	Chr1.ctg150	73248	Chr1.ctg150	61060	+	-
+321	Chr1.ctg150	342422	Chr1.ctg215	7124	+	-
+322	Chr1.ctg150	342422	Chr1.ctg150	163883	+	-
+323	Chr1.ctg150	342422	Chr1.ctg150	57705	+	-
+324	Chr1.ctg150	342422	Chr1.ctg150	61060	+	-
+325	Chr1.ctg215	7124	Chr1.ctg150	163883	+	-
+326	Chr1.ctg215	7124	Chr1.ctg150	57705	+	-
+327	Chr1.ctg215	7124	Chr1.ctg150	61060	+	-
+328	Chr1.ctg150	163883	Chr1.ctg150	57705	+	-
+329	Chr1.ctg150	163883	Chr1.ctg150	61060	+	-
+330	Chr1.ctg150	57705	Chr1.ctg150	61060	+	-
+331	ChrC.ctg3	8680	ChrC.ctg2	4563	+	-
+332	ChrC.ctg3	8680	ChrC.ctg2	3459	+	-
+333	ChrC.ctg3	8680	ChrC.ctg1	35961	+	-
+334	ChrC.ctg3	8680	ChrC.ctg2	4373	+	-
+336	ChrC.ctg2	4563	ChrC.ctg1	35961	+	-
+338	ChrC.ctg2	3459	ChrC.ctg1	35961	+	-
+341	Chr1.ctg105	42417	Chr1.ctg332	50944	+	-
+342	Chr1.ctg105	42417	Chr1.ctg299	62170	+	-
+343	Chr1.ctg105	42417	Chr1.ctg310	11143	+	-
+344	Chr1.ctg105	42417	Chr1.ctg271	169348	+	-
+345	Chr1.ctg105	42417	Chr1.ctg333	18780	+	-
+346	Chr1.ctg105	42417	Chr1.ctg317	39900	+	-
+347	Chr1.ctg105	42417	Chr1.ctg297	57574	+	-
+348	Chr1.ctg105	42417	Chr1.ctg317	36173	+	-
+349	Chr1.ctg105	42417	Chr1.ctg297	10389	+	-
+350	Chr1.ctg332	50944	Chr1.ctg299	62170	+	-
+351	Chr1.ctg332	50944	Chr1.ctg310	11143	+	-
+352	Chr1.ctg332	50944	Chr1.ctg271	169348	+	-
+353	Chr1.ctg332	50944	Chr1.ctg333	18780	+	-
+354	Chr1.ctg332	50944	Chr1.ctg317	39900	+	-
+355	Chr1.ctg332	50944	Chr1.ctg297	57574	+	-
+356	Chr1.ctg332	50944	Chr1.ctg317	36173	+	-
+357	Chr1.ctg332	50944	Chr1.ctg297	10389	+	-
+358	Chr1.ctg299	62170	Chr1.ctg310	11143	+	-
+359	Chr1.ctg299	62170	Chr1.ctg271	169348	+	-
+360	Chr1.ctg299	62170	Chr1.ctg333	18780	+	-
+361	Chr1.ctg299	62170	Chr1.ctg317	39900	+	-
+362	Chr1.ctg299	62170	Chr1.ctg297	57574	+	-
+363	Chr1.ctg299	62170	Chr1.ctg317	36173	+	-
+364	Chr1.ctg299	62170	Chr1.ctg297	10389	+	-
+365	Chr1.ctg310	11143	Chr1.ctg271	169348	+	-
+366	Chr1.ctg310	11143	Chr1.ctg333	18780	+	-
+367	Chr1.ctg310	11143	Chr1.ctg317	39900	+	-
+368	Chr1.ctg310	11143	Chr1.ctg297	57574	+	-
+369	Chr1.ctg310	11143	Chr1.ctg317	36173	+	-
+370	Chr1.ctg310	11143	Chr1.ctg297	10389	+	-
+371	Chr1.ctg271	169348	Chr1.ctg333	18780	+	-
+372	Chr1.ctg271	169348	Chr1.ctg317	39900	+	-
+373	Chr1.ctg271	169348	Chr1.ctg297	57574	+	-
+374	Chr1.ctg271	169348	Chr1.ctg317	36173	+	-
+375	Chr1.ctg271	169348	Chr1.ctg297	10389	+	-
+376	Chr1.ctg333	18780	Chr1.ctg317	39900	+	-
+377	Chr1.ctg333	18780	Chr1.ctg297	57574	+	-
+378	Chr1.ctg333	18780	Chr1.ctg317	36173	+	-
+379	Chr1.ctg333	18780	Chr1.ctg297	10389	+	-
+380	Chr1.ctg317	39900	Chr1.ctg297	57574	+	-
+381	Chr1.ctg317	39900	Chr1.ctg317	36173	+	-
+382	Chr1.ctg317	39900	Chr1.ctg297	10389	+	-
+383	Chr1.ctg297	57574	Chr1.ctg317	36173	+	-
+384	Chr1.ctg297	57574	Chr1.ctg297	10389	+	-
+385	Chr1.ctg317	36173	Chr1.ctg297	10389	+	-
+386	Chr2.ctg95	65428	Chr2.ctg125	156503	+	-
+387	Chr4.ctg22	20712	Chr4.ctg15	13870	+	-
+388	Chr4.ctg2	31619	ChrC.ctg3	13722	+	-
+389	Chr4.ctg2	31619	ChrC.ctg2	237	+	-
+390	Chr4.ctg2	31619	ChrC.ctg1	43177	+	-
+391	Chr4.ctg2	31619	ChrC.ctg2	2	+	-
+392	Chr4.ctg2	31619	ChrC.ctg1	43296	+	-
+393	ChrC.ctg3	13722	ChrC.ctg2	237	+	-
+394	ChrC.ctg3	13722	ChrC.ctg1	43177	+	-
+395	ChrC.ctg3	13722	ChrC.ctg2	2	+	-
+396	ChrC.ctg3	13722	ChrC.ctg1	43296	+	-
+397	ChrC.ctg2	237	ChrC.ctg1	43177	+	-
+399	ChrC.ctg2	237	ChrC.ctg1	43296	+	-
+402	ChrC.ctg2	2	ChrC.ctg1	43296	+	-
+403	Chr3.ctg8	76228	Chr3.ctg270	4014	+	-
+404	Chr3.ctg8	76228	Chr4.ctg213	76390	+	-
+405	Chr3.ctg270	4014	Chr4.ctg213	76390	+	-
+406	Chr1.ctg105	292341	Chr1.ctg99	213003	+	-
+407	Chr1.ctg105	292341	Chr1.ctg84	29549	+	-
+408	Chr1.ctg105	292341	Chr1.ctg99	215121	+	-
+409	Chr1.ctg105	292341	Chr1.ctg84	24267	+	-
+410	Chr1.ctg99	213003	Chr1.ctg84	29549	+	-
+411	Chr1.ctg99	213003	Chr1.ctg99	215121	+	-
+412	Chr1.ctg99	213003	Chr1.ctg84	24267	+	-
+413	Chr1.ctg84	29549	Chr1.ctg99	215121	+	-
+414	Chr1.ctg84	29549	Chr1.ctg84	24267	+	-
+415	Chr1.ctg99	215121	Chr1.ctg84	24267	+	-
+416	Chr4.ctg15	18478	Chr4.ctg24	19636	+	-
+417	Chr4.ctg15	18478	Chr4.ctg12	127544	+	-
+418	Chr4.ctg15	18478	Chr5.ctg208	62872	+	-
+419	Chr4.ctg15	18478	Chr4.ctg12	127055	+	-
+420	Chr4.ctg15	18478	Chr5.ctg206	91817	+	-
+421	Chr4.ctg24	19636	Chr4.ctg12	127544	+	-
+422	Chr4.ctg24	19636	Chr5.ctg208	62872	+	-
+423	Chr4.ctg24	19636	Chr4.ctg12	127055	+	-
+424	Chr4.ctg24	19636	Chr5.ctg206	91817	+	-
+425	Chr4.ctg12	127544	Chr5.ctg208	62872	+	-
+426	Chr4.ctg12	127544	Chr4.ctg12	127055	+	-
+427	Chr4.ctg12	127544	Chr5.ctg206	91817	+	-
+428	Chr5.ctg208	62872	Chr4.ctg12	127055	+	-
+429	Chr5.ctg208	62872	Chr5.ctg206	91817	+	-
+430	Chr4.ctg12	127055	Chr5.ctg206	91817	+	-
+431	Chr4.ctg211	20938	Chr3.ctg205	218522	+	-
+432	Chr4.ctg211	20938	Chr1.ctg274	18368	+	-
+433	Chr4.ctg211	20938	Chr3.ctg205	408657	+	-
+434	Chr4.ctg211	20938	Chr4.ctg114	39365	+	-
+435	Chr4.ctg211	20938	Chr1.ctg53	42042	+	-
+436	Chr4.ctg211	20938	Chr3.ctg206	42566	+	-
+437	Chr4.ctg211	20938	Chr4.ctg118	66630	+	-
+438	Chr4.ctg211	20938	Chr4.ctg156	200280	+	-
+439	Chr4.ctg211	20938	Chr4.ctg156	111143	+	-
+440	Chr4.ctg211	20938	Chr3.ctg213	76214	+	-
+441	Chr3.ctg205	218522	Chr1.ctg274	18368	+	-
+442	Chr3.ctg205	218522	Chr3.ctg205	408657	+	-
+443	Chr3.ctg205	218522	Chr4.ctg114	39365	+	-
+444	Chr3.ctg205	218522	Chr1.ctg53	42042	+	-
+445	Chr3.ctg205	218522	Chr3.ctg206	42566	+	-
+446	Chr3.ctg205	218522	Chr4.ctg118	66630	+	-
+447	Chr3.ctg205	218522	Chr4.ctg156	200280	+	-
+448	Chr3.ctg205	218522	Chr4.ctg156	111143	+	-
+449	Chr3.ctg205	218522	Chr3.ctg213	76214	+	-
+450	Chr1.ctg274	18368	Chr3.ctg205	408657	+	-
+451	Chr1.ctg274	18368	Chr4.ctg114	39365	+	-
+452	Chr1.ctg274	18368	Chr1.ctg53	42042	+	-
+453	Chr1.ctg274	18368	Chr3.ctg206	42566	+	-
+454	Chr1.ctg274	18368	Chr4.ctg118	66630	+	-
+455	Chr1.ctg274	18368	Chr4.ctg156	200280	+	-
+456	Chr1.ctg274	18368	Chr4.ctg156	111143	+	-
+457	Chr1.ctg274	18368	Chr3.ctg213	76214	+	-
+458	Chr3.ctg205	408657	Chr4.ctg114	39365	+	-
+459	Chr3.ctg205	408657	Chr1.ctg53	42042	+	-
+460	Chr3.ctg205	408657	Chr3.ctg206	42566	+	-
+461	Chr3.ctg205	408657	Chr4.ctg118	66630	+	-
+462	Chr3.ctg205	408657	Chr4.ctg156	200280	+	-
+463	Chr3.ctg205	408657	Chr4.ctg156	111143	+	-
+464	Chr3.ctg205	408657	Chr3.ctg213	76214	+	-
+465	Chr4.ctg114	39365	Chr1.ctg53	42042	+	-
+466	Chr4.ctg114	39365	Chr3.ctg206	42566	+	-
+467	Chr4.ctg114	39365	Chr4.ctg118	66630	+	-
+468	Chr4.ctg114	39365	Chr4.ctg156	200280	+	-
+469	Chr4.ctg114	39365	Chr4.ctg156	111143	+	-
+470	Chr4.ctg114	39365	Chr3.ctg213	76214	+	-
+471	Chr1.ctg53	42042	Chr3.ctg206	42566	+	-
+472	Chr1.ctg53	42042	Chr4.ctg118	66630	+	-
+473	Chr1.ctg53	42042	Chr4.ctg156	200280	+	-
+474	Chr1.ctg53	42042	Chr4.ctg156	111143	+	-
+475	Chr1.ctg53	42042	Chr3.ctg213	76214	+	-
+476	Chr3.ctg206	42566	Chr4.ctg118	66630	+	-
+477	Chr3.ctg206	42566	Chr4.ctg156	200280	+	-
+478	Chr3.ctg206	42566	Chr4.ctg156	111143	+	-
+479	Chr3.ctg206	42566	Chr3.ctg213	76214	+	-
+480	Chr4.ctg118	66630	Chr4.ctg156	200280	+	-
+481	Chr4.ctg118	66630	Chr4.ctg156	111143	+	-
+482	Chr4.ctg118	66630	Chr3.ctg213	76214	+	-
+483	Chr4.ctg156	200280	Chr4.ctg156	111143	+	-
+484	Chr4.ctg156	200280	Chr3.ctg213	76214	+	-
+485	Chr4.ctg156	111143	Chr3.ctg213	76214	+	-
+490	Chr4.ctg145	52762	Chr4.ctg8	18815	+	-
+491	Chr4.ctg145	52762	Chr4.ctg143	74953	+	-
+492	Chr4.ctg8	18815	Chr4.ctg143	74953	+	-
+494	Chr2.ctg93	88300	Chr2.ctg93	37475	+	-
+495	Chr2.ctg93	88300	Chr2.ctg93	65863	+	-
+496	Chr2.ctg93	88300	Chr2.ctg93	196798	+	-
+497	Chr2.ctg93	88300	Chr2.ctg16	35438	+	-
+498	Chr2.ctg93	37475	Chr2.ctg93	65863	+	-
+499	Chr2.ctg93	37475	Chr2.ctg93	196798	+	-
+500	Chr2.ctg93	37475	Chr2.ctg16	35438	+	-
+501	Chr2.ctg93	65863	Chr2.ctg93	196798	+	-
+502	Chr2.ctg93	65863	Chr2.ctg16	35438	+	-
+503	Chr2.ctg93	196798	Chr2.ctg16	35438	+	-
+505	ChrC.ctg3	55548	Chr1.ctg212	10082	+	-
+506	ChrC.ctg3	55548	Chr1.ctg297	235539	+	-
+507	ChrC.ctg3	59499	Chr1.ctg212	10082	+	-
+508	ChrC.ctg3	59499	Chr1.ctg297	235539	+	-
+509	Chr1.ctg212	10082	Chr1.ctg297	235539	+	-
+510	Chr5.ctg56	10076	Chr5.ctg272	42338	+	-
+511	Chr5.ctg56	10076	Chr3.ctg268	98586	+	-
+512	Chr5.ctg56	10076	Chr5.ctg272	25190	+	-
+513	Chr5.ctg56	10076	Chr3.ctg232	12460	+	-
+514	Chr5.ctg272	42338	Chr3.ctg268	98586	+	-
+515	Chr5.ctg272	42338	Chr5.ctg272	25190	+	-
+516	Chr5.ctg272	42338	Chr3.ctg232	12460	+	-
+517	Chr3.ctg268	98586	Chr5.ctg272	25190	+	-
+518	Chr3.ctg268	98586	Chr3.ctg232	12460	+	-
+519	Chr5.ctg272	25190	Chr3.ctg232	12460	+	-
+520	Chr2.ctg195	18339	Chr4.ctg7	15977	+	-
+521	Chr2.ctg195	18339	Chr2.ctg176	8842	+	-
+522	Chr4.ctg7	15977	Chr2.ctg176	8842	+	-
+523	ChrC.ctg1	12679	Chr4.ctg2	4118	+	-
+524	ChrC.ctg1	12679	ChrC.ctg3	5002	+	-
+525	Chr4.ctg2	4118	ChrC.ctg3	5002	+	-
+526	Chr1.ctg219	272381	Chr1.ctg271	265422	+	-
+527	Chr5.ctg195	25794	Chr5.ctg217	22772	+	-
+528	Chr5.ctg195	25794	Chr5.ctg196	1832	+	-
+529	Chr5.ctg195	25794	Chr5.ctg217	18300	+	-
+530	Chr5.ctg217	22772	Chr5.ctg196	1832	+	-
+531	Chr5.ctg217	22772	Chr5.ctg217	18300	+	-
+532	Chr5.ctg196	1832	Chr5.ctg217	18300	+	-
+533	ChrC.ctg2	1157	ChrC.ctg1	32554	+	-
+534	ChrC.ctg3	17675	Chr1.ctg63	45627	+	-
+535	Chr4.ctg144	22427	Chr4.ctg192	24533	+	-
+536	Chr4.ctg144	22427	Chr4.ctg144	6183	+	-
+537	Chr4.ctg144	22427	Chr4.ctg139	14697	+	-
+538	Chr4.ctg144	22427	Chr4.ctg126	52695	+	-
+539	Chr4.ctg144	22427	Chr4.ctg139	15728	+	-
+540	Chr4.ctg144	22427	Chr4.ctg202	451762	+	-
+541	Chr4.ctg144	22427	Chr4.ctg126	78392	+	-
+542	Chr4.ctg144	22427	Chr4.ctg159	87692	+	-
+543	Chr4.ctg144	22427	Chr4.ctg127	26351	+	-
+544	Chr4.ctg144	22427	Chr4.ctg135	19282	+	-
+545	Chr4.ctg144	22427	Chr4.ctg202	469382	+	-
+546	Chr4.ctg144	22427	Chr4.ctg159	92414	+	-
+547	Chr4.ctg144	22427	Chr4.ctg138	25350	+	-
+548	Chr4.ctg144	22427	Chr4.ctg178	8170	+	-
+549	Chr4.ctg192	24533	Chr4.ctg144	6183	+	-
+550	Chr4.ctg192	24533	Chr4.ctg139	14697	+	-
+551	Chr4.ctg192	24533	Chr4.ctg126	52695	+	-
+552	Chr4.ctg192	24533	Chr4.ctg139	15728	+	-
+553	Chr4.ctg192	24533	Chr4.ctg202	451762	+	-
+554	Chr4.ctg192	24533	Chr4.ctg126	78392	+	-
+555	Chr4.ctg192	24533	Chr4.ctg159	87692	+	-
+556	Chr4.ctg192	24533	Chr4.ctg127	26351	+	-
+557	Chr4.ctg192	24533	Chr4.ctg135	19282	+	-
+558	Chr4.ctg192	24533	Chr4.ctg202	469382	+	-
+559	Chr4.ctg192	24533	Chr4.ctg159	92414	+	-
+560	Chr4.ctg192	24533	Chr4.ctg138	25350	+	-
+561	Chr4.ctg192	24533	Chr4.ctg178	8170	+	-
+562	Chr4.ctg144	6183	Chr4.ctg139	14697	+	-
+563	Chr4.ctg144	6183	Chr4.ctg126	52695	+	-
+564	Chr4.ctg144	6183	Chr4.ctg139	15728	+	-
+565	Chr4.ctg144	6183	Chr4.ctg202	451762	+	-
+566	Chr4.ctg144	6183	Chr4.ctg126	78392	+	-
+567	Chr4.ctg144	6183	Chr4.ctg159	87692	+	-
+568	Chr4.ctg144	6183	Chr4.ctg127	26351	+	-
+569	Chr4.ctg144	6183	Chr4.ctg135	19282	+	-
+570	Chr4.ctg144	6183	Chr4.ctg202	469382	+	-
+571	Chr4.ctg144	6183	Chr4.ctg159	92414	+	-
+572	Chr4.ctg144	6183	Chr4.ctg138	25350	+	-
+573	Chr4.ctg144	6183	Chr4.ctg178	8170	+	-
+574	Chr4.ctg139	14697	Chr4.ctg126	52695	+	-
+575	Chr4.ctg139	14697	Chr4.ctg139	15728	+	-
+576	Chr4.ctg139	14697	Chr4.ctg202	451762	+	-
+577	Chr4.ctg139	14697	Chr4.ctg126	78392	+	-
+578	Chr4.ctg139	14697	Chr4.ctg159	87692	+	-
+579	Chr4.ctg139	14697	Chr4.ctg127	26351	+	-
+580	Chr4.ctg139	14697	Chr4.ctg135	19282	+	-
+581	Chr4.ctg139	14697	Chr4.ctg202	469382	+	-
+582	Chr4.ctg139	14697	Chr4.ctg159	92414	+	-
+583	Chr4.ctg139	14697	Chr4.ctg138	25350	+	-
+584	Chr4.ctg139	14697	Chr4.ctg178	8170	+	-
+585	Chr4.ctg126	52695	Chr4.ctg139	15728	+	-
+586	Chr4.ctg126	52695	Chr4.ctg202	451762	+	-
+587	Chr4.ctg126	52695	Chr4.ctg126	78392	+	-
+588	Chr4.ctg126	52695	Chr4.ctg159	87692	+	-
+589	Chr4.ctg126	52695	Chr4.ctg127	26351	+	-
+590	Chr4.ctg126	52695	Chr4.ctg135	19282	+	-
+591	Chr4.ctg126	52695	Chr4.ctg202	469382	+	-
+592	Chr4.ctg126	52695	Chr4.ctg159	92414	+	-
+593	Chr4.ctg126	52695	Chr4.ctg138	25350	+	-

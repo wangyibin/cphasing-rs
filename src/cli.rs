@@ -48,6 +48,13 @@ pub fn cli() -> Command {
                         .short('l')
                         .value_parser(value_parser!(u32))
                         .default_value("30"))
+                .arg(
+                    Arg::new("MAX_ORDER")
+                        .long("max-order")
+                        .short('m')
+                        .value_parser(value_parser!(u32))
+                        .default_value("50")
+                )
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -84,5 +91,18 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-"))
 
+        )
+        .subcommand(
+            Command::new("prunepairs")
+                .about("prune pairs")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(arg!(<PRUNE> "Prune contigs"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                
         )
 }

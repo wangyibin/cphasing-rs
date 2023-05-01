@@ -61,6 +61,7 @@ pub struct ReadSummary {
     pass: u64,
     singleton: u64, 
     low_mq: u64,
+    complex: u64,
     mapping: u64,
 }
 
@@ -69,12 +70,15 @@ impl ReadSummary {
         let pass: u64 = 0;
         let singleton: u64 = 0;
         let low_mq: u64 = 0;
+        let complex: u64 = 0;
         let mapping: u64 = 0;
+
 
         ReadSummary {
             pass: pass,
             singleton: singleton,
             low_mq: low_mq,
+            complex: complex,
             mapping: mapping,
         }
     }
@@ -84,6 +88,7 @@ impl ReadSummary {
         result.push_str(&format!("{}\t{}\n", "pass", self.pass));
         result.push_str(&format!("{}\t{}\n", "singleton", self.singleton));
         result.push_str(&format!("{}\t{}\n", "low_mq", self.low_mq));
+        result.push_str(&format!("{}\t{}\n", "complex", self.complex));
         result.push_str(&format!("{}\t{}\n", "mapping", self.mapping));
 
         result 
@@ -145,23 +150,23 @@ impl Concatemer {
         }
     }
 
-    // pub fn is_complex(&self, max_order: &u32 ) -> bool {
-    //     let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
-    //     if pass_count > max_order {
-    //         true
-    //     } else {
-    //         false
-    //     }
-    // }
+    pub fn is_complex(&self, max_order: &u32 ) -> bool {
+        let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
+        if pass_count > *max_order as usize {
+            true
+        } else {
+            false
+        }
+    }
 
-    // pub fn parse_complex(&mut self) {
-    //     for (i, record) in self.records.iter_mut().enumerate() {
-    //         if record.filter_reason == "pass" {
-    //             record.filter_reason = String::from("complex");
-    //             self.filter_reasons[i] = String::from("complex");
-    //         }
-    //     }
-    // }
+    pub fn parse_complex(&mut self) {
+        for (i, record) in self.records.iter_mut().enumerate() {
+            if record.filter_reason == "pass" {
+                record.filter_reason = String::from("complex");
+                self.filter_reasons[i] = String::from("complex");
+            }
+        }
+    }
 
 
 
@@ -169,6 +174,7 @@ impl Concatemer {
         let mut pass_count: u32 = 0;
         let mut singleton_count: u32 = 0;
         let mut low_mq_count: u32 = 0;
+        let mut complex_count: u32 = 0;
         let mut stat_info: HashMap<String, u32> = HashMap::new();
 
         for filter_reason in self.filter_reasons.iter() {
@@ -178,6 +184,8 @@ impl Concatemer {
                 singleton_count +=1;
             } else if filter_reason == &String::from("low_mq") {
                 low_mq_count += 1;
+            } else if filter_reason == &String::from("complex") {
+                complex_count += 1;
             } else {
                 panic!("Unknown filter reason.");
             }
@@ -185,6 +193,7 @@ impl Concatemer {
             stat_info.insert("pass".to_string(), pass_count);
             stat_info.insert("singleton".to_string(), singleton_count);
             stat_info.insert("low_mq".to_string(), low_mq_count);
+            stat_info.insert("complex".to_string(), complex_count);
 
         }
         stat_info
@@ -197,6 +206,8 @@ impl Concatemer {
             return "pass";
         } else if stat_info["low_mq"] >=1 && self.records.len() > 1  {
             return "low_mq";
+        } else if stat_info["complex"] >= 1 && self.records.len() > 1 {
+            return "complex";
         } else {
            return "singleton";
         }
@@ -218,7 +229,8 @@ impl PAFTable {
     }
 
     pub fn paf2table(&self, output: &String, min_quality: &u8, 
-                     min_identity: &f32,  min_length: &u32
+                     min_identity: &f32,  min_length: &u32,
+                     max_order: &u32,
                     ) -> Result<(), Box<dyn Error>> {
         
         let parse_result = self.parse();
@@ -244,6 +256,7 @@ impl PAFTable {
         let mut read_pass_count: u64 = 0;
         let mut read_singleton_count: u64 = 0;
         let mut read_low_mq_count: u64 = 0;
+        let mut read_complex_count: u64 = 0;
 
         for line in rdr.deserialize() {
             let record: PAFLine = line?;
@@ -254,6 +267,10 @@ impl PAFTable {
                     concatemer.parse_singleton();
                 }
                 
+                if concatemer.is_complex(&max_order) {
+                    concatemer.parse_complex();
+                }
+
                 for pcr in concatemer.records.iter() {
                     if pcr.filter_reason == "pass" {
                         wtr.serialize(&pcr);
@@ -264,6 +281,7 @@ impl PAFTable {
                     "pass" => read_pass_count += 1,
                     "singleton" => read_singleton_count += 1,
                     "low_mq" => read_low_mq_count += 1,
+                    "complex" => read_complex_count += 1,
                     _ => todo!(),
                 }
                 concatemer.clear();
@@ -299,6 +317,7 @@ impl PAFTable {
             "pass" => read_pass_count += 1,
             "singleton" => read_singleton_count += 1,
             "low_mq" => read_low_mq_count += 1,
+            "complex" => read_complex_count += 1,
             _ => todo!(),
         }
 
@@ -309,6 +328,7 @@ impl PAFTable {
         summary.singleton = read_singleton_count;
         summary.low_mq = read_low_mq_count;
         summary.mapping = read_mapping_count;
+        summary.complex = read_complex_count;
 
         summary.save(&format!("{}.read.summary", self.prefix()));
 
