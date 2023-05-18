@@ -117,8 +117,8 @@ impl ContigOrder {
                 let score = contig.get_score(&self.contig_units[j]);
                 let distance = (j - i) as f64;
                 cost += score / distance;
-
-                // println!("{} {} {} {} {}", contig.contig, self.contig_units[j].contig, score, distance, score/distance);
+                
+                println!("{} {} {} {} {}", contig.contig, self.contig_units[j].contig, score, distance, score/distance);
             }
             
         }
@@ -320,6 +320,7 @@ impl SimulatedAnnealing {
         let mut t = self.temperature;
         let mut i = 0;
 
+        println!("{:.?}, {}", current, current.cost());
         fn acceptance_probability(current_cost: f64, new_cost: f64, temperature: f64) -> f64 {
             if new_cost > current_cost {
                 1.0
@@ -328,52 +329,52 @@ impl SimulatedAnnealing {
             }
         }
 
-        while t > self.mimimum_temperature && i < self.max_iteration {
-            let mut new = current.clone();
-            let mut i1 = rand::thread_rng().gen_range(0..new.contig_units.len());
-            let mut i2 = rand::thread_rng().gen_range(0..new.contig_units.len());
-            if i1 == i2 {
-                continue;
-            }
+        // while t > self.mimimum_temperature && i < self.max_iteration {
+        //     let mut new = current.clone();
+        //     let mut i1 = rand::thread_rng().gen_range(0..new.contig_units.len());
+        //     let mut i2 = rand::thread_rng().gen_range(0..new.contig_units.len());
+        //     if i1 == i2 {
+        //         continue;
+        //     }
+            
+        //     if i1 > i2 {
+        //         (i1, i2) = (i2, i1);
+        //     }
+            
+        //     let operate_idx = rand::thread_rng().gen_range(0..100);
+        //     match operate_idx {
+        //         0..=49 => {
+        //             new.swap(i1, i2);
+        //         }
 
-            if i1 > i2 {
-                (i1, i2) = (i2, i1);
-            }
+        //         // 50..=99 => {
+        //         //     new.crossover(i1, i2);
+        //         // }
+        //         50..=99 => {
+        //             new.reverse(i1, i2);
+        //         }
 
-            let operate_idx = rand::thread_rng().gen_range(0..100);
-            match operate_idx {
-                0..=49 => {
-                    new.swap(i1, i2);
-                }
-
-                // 50..=99 => {
-                //     new.crossover(i1, i2);
-                // }
-                50..=99 => {
-                    new.reverse(i1, i2);
-                }
-
-                // 90..=99 => {
-                //     new.rotate(i1);
-                // }
-                _ => todo!()
-            }
+        //         // 90..=99 => {
+        //         //     new.rotate(i1);
+        //         // }
+        //         _ => todo!()
+        //     }
     
-
-            let current_cost = current.cost();
-            let new_cost = new.cost();
-            let ap = acceptance_probability(current_cost, new_cost, t);
-            if ap > rand::thread_rng().gen_range(0.0..1.0) {
-                current = new;
-            }
-            if current_cost > best.cost() {
-                println!("Cost: {}, {}", current_cost, best.cost());
-                best = current.clone();
-            }
-            // println!("Cost: {}", current_cost);
-            t *= self.cooling_rate;
-            i += 1;
-        }
+            
+        //     let current_cost = current.cost();
+        //     let new_cost = new.cost();
+        //     let ap = acceptance_probability(current_cost, new_cost, t);
+        //     if ap > rand::thread_rng().gen_range(0.0..1.0) {
+        //         current = new;
+        //     }
+        //     if current_cost > best.cost() {
+        //         // println!("Cost: {}, {}", current_cost, best.cost());
+        //         best = current.clone();
+        //     }
+        //     // println!("Cost: {}", current_cost);
+        //     t *= self.cooling_rate;
+        //     i += 1;
+        // }
         println!("t: {}, i: {}", t, i);
         best
     }

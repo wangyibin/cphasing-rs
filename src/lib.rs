@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_simulated_annealing() {
         use crate::optimize::ContigScoreTable;
-        let cst = ContigScoreTable::new(&String::from("test/so.score.txt"));
+        let cst = ContigScoreTable::new(&String::from("test/test.so.score.txt"));
         let co = cst.read();
         let mut sa = optimize::SimulatedAnnealing::new(co, 2000.0, 0.999, 0.01, 1000000);
         let best = sa.run();
