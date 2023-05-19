@@ -1,4 +1,6 @@
 use lazy_static::lazy_static;
+use ndarray::array;
+use ndarray::prelude::*;
 use itertools::Itertools;
 use rand::Rng;
 use rand::prelude::SliceRandom;
@@ -18,10 +20,10 @@ lazy_static! {
     #[derive(Debug)]
     pub static ref ORIENTATION_TO_IDX: HashMap<&'static str, u8> = {
         let mut m = HashMap::new();
-        m.insert("++", 0);
-        m.insert("+-", 1);
-        m.insert("-+", 2);
-        m.insert("--", 3);
+        m.insert("++", 2);
+        m.insert("+-", 3);
+        m.insert("-+", 0);
+        m.insert("--", 1);
         m
     };
 }
@@ -39,6 +41,10 @@ lazy_static! {
     };
 }
 
+lazy_static! {
+    pub static ref BASE_MATRIX: Array2<f64> = 
+             Array2::from_shape_vec((2, 2), vec![2.0, 3.0, 1.0, 2.0]).unwrap();
+}
 
 #[derive(Debug, Clone)]
 pub struct ContigUnit {
@@ -53,15 +59,15 @@ impl ContigUnit {
         ContigUnit { contig, orderidx, orientation, scores }
     }
 
-    pub fn get_score(&self, contig: &ContigUnit) -> f64 {
+    pub fn get_score(&self, contig: &ContigUnit, distance: f64) -> Array2<f64> {
 
         let idx = (self.orientation * 2).pow(1) + (contig.orientation * 2).pow(0);
-
-        let score = self.scores.get(&contig.contig)
-            .map(|v| v[idx as usize])
-            .unwrap_or(0.0);
-        // println!("{} {} {} {} {} {}", self.contig, contig.contig, self.orientation, contig.orientation, idx, score);
-        score
+        let mut matrix = BASE_MATRIX.clone();
+        matrix.map_inplace(|x| *x = *x as f64 + (distance - 1.0) * 2.0);
+        let mut score: Array2<f64> = Array2::from_shape_vec((2, 2), self.scores.get(&contig.contig).unwrap_or(&vec![0.0, 0.0, 0.0, 0.0]).clone()).unwrap();
+        
+        let score = score / &matrix;
+        score   
     }
 
     pub fn get_orientation(&self) -> u8 {
@@ -77,6 +83,7 @@ impl ContigUnit {
     }
 
     pub fn insert_score(&mut self, contig: String, score: f64, orientation: &str) {
+        
         let idx = ORIENTATION_TO_IDX.get(orientation).unwrap().clone();
        
         match self.scores.get_mut(&contig) {
@@ -111,20 +118,20 @@ impl ContigOrder {
 
     pub fn cost(&self) -> f64 {
         let mut cost = 0.0;
-
-        for (i, contig) in self.contig_units.iter().sorted_by_key(|c| c.orderidx).enumerate() {
-            for j in (i + 1)..self.contig_units.len() {
-                let score = contig.get_score(&self.contig_units[j]);
+        let contigs: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
+        for (i, contig1) in contigs.iter().enumerate() {
+            for j in (i + 1)..contigs.len() {
+                let contig2 = &contigs[j];
                 let distance = (j - i) as f64;
-                cost += score / distance;
+                let score = contig1.get_score(&contig2, distance).sum();
                 
-                println!("{} {} {} {} {}", contig.contig, self.contig_units[j].contig, score, distance, score/distance);
+                cost += score;
             }
-            
         }
 
         cost
     }
+
     pub fn shuffle(&mut self) {
         let mut rng = rand::thread_rng();
         self.contig_units.shuffle(&mut rng);
@@ -181,7 +188,9 @@ impl ContigOrder {
 
 
     pub fn contigs(&self) -> Vec<String> {
-        self.contig_units.iter().map(|c| c.contig.clone()).collect()
+        let contigs: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
+        let contigs: Vec<String> = contigs.iter().map(|c| c.contig.clone()).collect();
+        contigs
     }
     
     
@@ -317,10 +326,11 @@ impl SimulatedAnnealing {
     pub fn run(&mut self) -> ContigOrder {
         let mut best = self.contig_order.clone();
         let mut current = self.contig_order.clone();
+        current.shuffle();
+        println!("{:.?}", current.contigs());
         let mut t = self.temperature;
         let mut i = 0;
 
-        println!("{:.?}, {}", current, current.cost());
         fn acceptance_probability(current_cost: f64, new_cost: f64, temperature: f64) -> f64 {
             if new_cost > current_cost {
                 1.0
@@ -329,52 +339,52 @@ impl SimulatedAnnealing {
             }
         }
 
-        // while t > self.mimimum_temperature && i < self.max_iteration {
-        //     let mut new = current.clone();
-        //     let mut i1 = rand::thread_rng().gen_range(0..new.contig_units.len());
-        //     let mut i2 = rand::thread_rng().gen_range(0..new.contig_units.len());
-        //     if i1 == i2 {
-        //         continue;
-        //     }
+        while t > self.mimimum_temperature && i < self.max_iteration {
+            let mut new = current.clone();
+            let mut i1 = rand::thread_rng().gen_range(0..new.contig_units.len());
+            let mut i2 = rand::thread_rng().gen_range(0..new.contig_units.len());
+            if i1 == i2 {
+                continue;
+            }
             
-        //     if i1 > i2 {
-        //         (i1, i2) = (i2, i1);
-        //     }
+            if i1 > i2 {
+                (i1, i2) = (i2, i1);
+            }
             
-        //     let operate_idx = rand::thread_rng().gen_range(0..100);
-        //     match operate_idx {
-        //         0..=49 => {
-        //             new.swap(i1, i2);
-        //         }
+            let operate_idx = rand::thread_rng().gen_range(0..100);
+            match operate_idx {
+                0..=49 => {
+                    new.swap(i1, i2);
+                }
 
-        //         // 50..=99 => {
-        //         //     new.crossover(i1, i2);
-        //         // }
-        //         50..=99 => {
-        //             new.reverse(i1, i2);
-        //         }
+                // 50..=99 => {
+                //     new.crossover(i1, i2);
+                // }
+                50..=89 => {
+                    new.reverse(i1, i2);
+                }
 
-        //         // 90..=99 => {
-        //         //     new.rotate(i1);
-        //         // }
-        //         _ => todo!()
-        //     }
+                90..=99 => {
+                    new.rotate(i1);
+                }
+                _ => todo!()
+            }
     
             
-        //     let current_cost = current.cost();
-        //     let new_cost = new.cost();
-        //     let ap = acceptance_probability(current_cost, new_cost, t);
-        //     if ap > rand::thread_rng().gen_range(0.0..1.0) {
-        //         current = new;
-        //     }
-        //     if current_cost > best.cost() {
-        //         // println!("Cost: {}, {}", current_cost, best.cost());
-        //         best = current.clone();
-        //     }
-        //     // println!("Cost: {}", current_cost);
-        //     t *= self.cooling_rate;
-        //     i += 1;
-        // }
+            let current_cost = current.cost();
+            let new_cost = new.cost();
+            let ap = acceptance_probability(current_cost, new_cost, t);
+            if ap > rand::thread_rng().gen_range(0.0..1.0) {
+                current = new;
+            }
+            if current_cost > best.cost() {
+                println!("Cost: {}, {}", current_cost, best.cost());
+                best = current.clone();
+            }
+            // println!("Cost: {}", current_cost);
+            t *= self.cooling_rate;
+            i += 1;
+        }
         println!("t: {}, i: {}", t, i);
         best
     }
