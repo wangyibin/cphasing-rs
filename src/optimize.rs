@@ -13,7 +13,7 @@ use std::path::Path;
 use crate::core::ChromSize;
 
 
-use crate::core::common_reader;
+use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 
 lazy_static! {
@@ -62,9 +62,29 @@ impl ContigUnit {
     pub fn get_score(&self, contig: &ContigUnit, distance: f64) -> Array2<f64> {
 
         let idx = (self.orientation * 2).pow(1) + (contig.orientation * 2).pow(0);
-        let mut matrix = BASE_MATRIX.clone();
-        matrix.map_inplace(|x| *x = *x as f64 + (distance - 1.0) * 2.0);
-        let mut score: Array2<f64> = Array2::from_shape_vec((2, 2), self.scores.get(&contig.contig).unwrap_or(&vec![0.0, 0.0, 0.0, 0.0]).clone()).unwrap();
+        // let mut matrix = BASE_MATRIX.clone();
+        // matrix.map_inplace(|x| *x = *x as f64 + (distance - 1.0) * 2.0);
+        let v1: f64 = ( distance * 2.0 - 1.0 ) * ( distance * 2.0 - 1.0 );
+        let v2: f64 = ( distance * 2.0) * ( distance * 2.0 - 1.0);
+        let v3: f64 = ( distance * 2.0) * ( distance * 2.0 - 1.0);
+        let v4: f64 = ( distance * 2.0 ) * ( distance * 2.0 );
+
+        let v: Vec<f64> = if self.orientation == 0 && contig.orientation == 0 {
+            vec![v2, v4, v1, v3]
+        } else if self.orientation == 1 && contig.orientation == 0 {
+            vec![v1, v3, v2, v4]
+        } else if self.orientation == 0 && contig.orientation == 1 {
+            vec![v4, v2, v3, v1]
+        } else {
+            vec![v3, v1, v4, v2]
+        }; 
+        
+        let mut matrix: Array2<f64> = Array2::from_shape_vec((2, 2), v).unwrap();
+        let mut score: Array2<f64> = 
+            Array2::from_shape_vec((2, 2), 
+                                    self.scores.get(&contig.contig)
+                                                    .unwrap_or(&vec![0.0, 0.0, 0.0, 0.0])
+                                                    .clone()).unwrap();
         
         let score = score / &matrix;
         score   
@@ -120,8 +140,11 @@ impl ContigOrder {
         let mut cost = 0.0;
         let contigs: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
         for (i, contig1) in contigs.iter().enumerate() {
+            
             for j in (i + 1)..contigs.len() {
+                
                 let contig2 = &contigs[j];
+                // eprintln!("{} {} {} {}", contig1.contig, contig1.orientation, contig2.contig, contig2.orientation);
                 let distance = (j - i) as f64;
                 let score = contig1.get_score(&contig2, distance).sum();
                 
@@ -134,15 +157,23 @@ impl ContigOrder {
 
     pub fn shuffle(&mut self) {
         let mut rng = rand::thread_rng();
-        self.contig_units.shuffle(&mut rng);
+        // self.contig_units.shuffle(&mut rng);
         for (i, contig) in self.contig_units.iter_mut().enumerate() {
             contig.orderidx = i;
+            contig.orientation = rng.gen_range(0..2);
+
         }
+        
     }
 
     pub fn swap(&mut self, i: usize, j: usize) {
-        self.contig_units[i].orderidx = j;
-        self.contig_units[j].orderidx = i;
+        for contig in self.contig_units.iter_mut() {
+            if contig.orderidx == i {
+                contig.orderidx = j;
+            } else if contig.orderidx == j {
+                contig.orderidx = i;
+            }
+        }
     }
 
     // pub fn crossover(&mut self, i: usize, j: usize) {
@@ -179,18 +210,87 @@ impl ContigOrder {
         self.contig_units[i].orientation = self.contig_units[i].orientation ^ 1;
     }
 
-    pub fn reverse(&mut self, i: usize, j: usize) {
-        for k in i..j + 1 {
-            self.contig_units[k].orientation = self.contig_units[k].orientation ^ 1;
-            self.contig_units[k].orderidx = j - self.contig_units[k].orderidx + i;
+    pub fn inversion(&mut self, i: usize, j: usize) {
+
+        for contig in self.contig_units.iter_mut() {
+            if contig.orderidx >= i && contig.orderidx <= j {
+                contig.orderidx = j - contig.orderidx + i;
+                contig.orientation = contig.orientation ^ 1;
+            }
         }
     }
 
+    pub fn insertion(&mut self, i: usize, j: usize) {
+
+        if rand::thread_rng().gen_range(0.0..1.0) < 0.5 {
+            // insertion i to j
+            for contig in self.contig_units.iter_mut() {
+                if contig.orderidx == i {
+                    contig.orderidx = j;
+                } else if contig.orderidx > i {
+                    if contig.orderidx <= j {
+                        contig.orderidx -= 1;
+                }
+                }
+            }
+        } else {
+            // insert j to i
+            for contig in self.contig_units.iter_mut() {
+                if contig.orderidx == j {
+                    contig.orderidx = i;
+                } else if contig.orderidx >= i {
+                    if contig.orderidx < j {
+                        contig.orderidx += 1;
+                    }
+                }
+            }
+        }
+        
+        
+    }
+
+    pub fn splice(&mut self, i: usize) {
+        let total_length: usize = self.contig_units.len();
+        let before_length: usize = i + 1;
+        let after_length: usize = total_length - before_length; 
+        
+        for k in 0..(before_length + 1) {
+            self.contig_units[k].orderidx = k + after_length;
+            
+        }
+        for k in before_length..total_length {
+            self.contig_units[k].orderidx = k - before_length;
+            
+        }
+    }
 
     pub fn contigs(&self) -> Vec<String> {
         let contigs: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
         let contigs: Vec<String> = contigs.iter().map(|c| c.contig.clone()).collect();
         contigs
+    }
+
+    pub fn orderidxes(&self) -> Vec<usize> {
+        let orderidxes: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
+        let orderidxes: Vec<usize> = orderidxes.iter().map(|c| c.orderidx.clone()).collect();
+        orderidxes
+    }
+
+    pub fn orientations(&self) -> Vec<u8> {
+        let orientations: Vec<ContigUnit> = self.contig_units.iter().sorted_by_key(|c| c.orderidx).cloned().collect();
+        let orientations: Vec<u8> = orientations.iter().map(|c| c.orientation.clone()).collect();
+        orientations
+    }
+
+    pub fn save(&self, output: &String) {
+        let mut wtr = common_writer(output);    
+
+        let contigs = self.contigs();
+    
+        wtr.write_all(contigs.join("\n").as_bytes());
+
+        log::info!("Successful output optimize result in `{}`", output);
+
     }
     
     
@@ -324,10 +424,11 @@ impl SimulatedAnnealing {
     
 
     pub fn run(&mut self) -> ContigOrder {
-        let mut best = self.contig_order.clone();
+        let tmp = self.contig_order.clone();
         let mut current = self.contig_order.clone();
         current.shuffle();
-        println!("{:.?}", current.contigs());
+        let mut best = current.clone();
+
         let mut t = self.temperature;
         let mut i = 0;
 
@@ -353,18 +454,23 @@ impl SimulatedAnnealing {
             
             let operate_idx = rand::thread_rng().gen_range(0..100);
             match operate_idx {
-                0..=49 => {
+                0..=9 => {
                     new.swap(i1, i2);
                 }
 
-                // 50..=99 => {
-                //     new.crossover(i1, i2);
-                // }
-                50..=89 => {
-                    new.reverse(i1, i2);
+                10..=49 => {
+                    new.insertion(i1, i2);
+                }
+                
+                50..=69 => {
+                    new.inversion(i1, i2);
                 }
 
-                90..=99 => {
+                70..=79 => {
+                    new.splice(i1);
+                }
+
+                80..=99 => {
                     new.rotate(i1);
                 }
                 _ => todo!()
@@ -374,20 +480,28 @@ impl SimulatedAnnealing {
             let current_cost = current.cost();
             let new_cost = new.cost();
             let ap = acceptance_probability(current_cost, new_cost, t);
-            if ap > rand::thread_rng().gen_range(0.0..1.0) {
-                current = new;
-            }
             if current_cost > best.cost() {
-                println!("Cost: {}, {}", current_cost, best.cost());
+                eprintln!("Cost: {}, {}", current_cost, best.cost());
                 best = current.clone();
+            } else {
+                if ap > rand::thread_rng().gen_range(0.0..1.0) {
+                current = new;
+                }
             }
-            // println!("Cost: {}", current_cost);
+            
+            // eprintln!("Cost: {}", current_cost);
             t *= self.cooling_rate;
             i += 1;
         }
-        println!("t: {}, i: {}", t, i);
+        // eprintln!("t: {}, i: {}", t, i);
+        eprintln!("{}", tmp.cost());
+        eprintln!("{:.?}", tmp.contigs());
+        eprintln!("{:.?}", tmp.orientations());
+        eprintln!("{:.?}", best.contigs());
+        eprintln!("{:.?}", best.orientations());
         best
     }
+
 }
 
 
@@ -461,7 +575,7 @@ impl GeneticAlgorithm {
         if i1 > i2 {
             (i1, i2) = (i2, i1);
         }
-        child.reverse(i1, i2);
+        child.inversion(i1, i2);
     }
 
     fn mutate2(&self, child: &mut ContigOrder) {
@@ -513,7 +627,7 @@ impl GeneticAlgorithm {
             for contig_order in &population {
                 if contig_order.cost() > best.cost() {
                     best = contig_order.clone();
-                    println!("{}", best.cost());
+                    eprintln!("{}", best.cost());
                 }
             }
             i += 1;

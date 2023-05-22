@@ -2,6 +2,8 @@ use cphasing::cli::cli;
 use cphasing::core::{ BaseTable, common_writer, ContigPair };
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::Fastx;
+use cphasing::optimize::ContigScoreTable;
+use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
@@ -90,6 +92,19 @@ fn main() {
             let contigs:HashSet<ContigPair> = prunetable.contig_pairs().unwrap().into_iter().collect();
 
             pairs.remove_by_contig_pairs(contigs, &output);
+
+        }
+
+        Some(("optimize", sub_matches)) => {
+            let score = sub_matches.get_one::<String>("SCORE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let cst = ContigScoreTable::new(&score);
+            let co = cst.read();
+            let mut sa = SimulatedAnnealing::new(co, 2000.0, 0.9999, 0.01, 100000000);
+            let best = sa.run();
+
+            best.save(&output);
 
         }
         _ => {

@@ -105,4 +105,16 @@ pub fn cli() -> Command {
                         .default_value("-"))
                 
         )
+        .subcommand(
+            Command::new("optimize")
+            .about("optimize contigs")
+            .arg(arg!(<SCORE> "score"))
+            .arg(
+                Arg::new("OUTPUT")
+                    .long("output")
+                    .short('o')
+                    .value_parser(value_parser!(String))
+                    .default_value("-"))
+      )
+        
 }

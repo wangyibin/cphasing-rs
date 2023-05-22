@@ -123,18 +123,18 @@ mod tests {
     #[test]
     fn test_simulated_annealing() {
         use crate::optimize::ContigScoreTable;
-        let cst = ContigScoreTable::new(&String::from("test/tail.150.so"));
+        let cst = ContigScoreTable::new(&String::from("test/test.so.score.txt"));
         let co = cst.read();
-        let mut sa = optimize::SimulatedAnnealing::new(co, 2000.0, 0.99, 0.01, 1000000);
+        let mut sa = optimize::SimulatedAnnealing::new(co, 1000.0, 0.999, 0.01, 1000000);
         let best = sa.run();
         
         println!("{:.?}", best.contigs());
 
         // write contig order to file
         use std::io::Write;
-        let mut file = std::fs::File::create("test.so.order").unwrap();
+        let mut file = std::fs::File::create("test/test.so.order").unwrap();
         for i in 0..best.contigs().len() {
-            let line = format!("{}\t{}\n", i, best.contigs()[i]);
+            let line = format!("{}\n", best.contigs()[i]);
             file.write_all(line.as_bytes()).unwrap();
         }
     }
