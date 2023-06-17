@@ -2,12 +2,13 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use nthash::ntc64;
 
 #[derive(Debug, Clone)]
 pub struct MinimizerInfo {
     pub rid: u64,
     pub pos: u64,
-    pub rev: u32,
+    // pub rev: u32,
     // pub span: u32,
 }
 
@@ -66,7 +67,33 @@ fn minimizer (seq: &str, rid: &u64, start: u64, k: usize) -> MinimierData {
         info: MinimizerInfo {
             rid: *rid,
             pos: pos,
-            rev: 0,
+            // rev: 0,
+        }
+    };
+    println!("{}, {:?}", seq, m);
+    m 
+}
+
+pub fn minimizer_nthash(seq: &[u8], rid: &u64, start: u64, k: usize) -> MinimierData {
+    println!("seq: {:?}", seq);
+    let mut h = ntc64(seq, 0, k);
+    let mut m = h;
+    let mut pos = 0;
+    for i in 1..(seq.len() - k + 1) {
+        h = ntc64(&seq[i..(i+k)], 0, k);
+        if h < m {
+            m = h;
+            pos = i as u64 ;
+        }
+    }
+
+    let pos = start + pos;
+    let m = MinimierData {
+        minimizer: m,
+        info: MinimizerInfo {
+            rid: *rid,
+            pos: pos,
+            // rev: 0,
         }
     };
     m 
@@ -74,12 +101,17 @@ fn minimizer (seq: &str, rid: &u64, start: u64, k: usize) -> MinimierData {
 
 pub fn sketch (seq: &String, rid: u64, k: usize, w: usize) -> Vec<MinimierData> {
     let mut sketch = Vec::new();
-    
-    for i in (0..=seq.len() + w + 1 ).step_by(w) {
-        if i + k + w > seq.len() {
-            break;
-        }
-        let m = minimizer(&seq[i..(i + k + w - 1)], &rid, i.try_into().unwrap(), k);
+    let seq = seq.as_bytes();
+    println!("seq len: {}", seq.len());
+    for i in (0..seq.len() - k + w + 1 ).step_by(k + w - 1) {
+        let m: MinimierData = if i + k + w > seq.len() {
+            if seq.len() - i < k {
+                break;
+            }
+            minimizer_nthash(&seq[i..], &rid, i.try_into().unwrap(), k)
+        } else {
+            minimizer_nthash(&seq[i..(i + k + w - 1)], &rid, i.try_into().unwrap(), k)
+        };
         sketch.push(m);
 
     }

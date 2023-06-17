@@ -72,9 +72,9 @@ mod tests {
 
     #[test]
     fn test_sketch() {
-        let seq = String::from("AAAAAAAAAATAAGCTTGACTTTTTTATATTCCCCCCCGAACCGGGGGGGGGGATACGA");
+        let seq = String::from("AAAAACAAAAATAAGCGGGTTGACTTTTTTATATTCCCCCCCGAACCGGAACCGGGGGGGGATACGA");
         let rid: u64 = 0;
-        let k: usize = 5;
+        let k: usize = 3;
         let w: usize = 3;
 
         let sketch = sketch::sketch(&seq, rid, k, w);
@@ -90,6 +90,15 @@ mod tests {
         for kmer in iter {
             println!("{:?}", kmer);
         }
+    }
+
+    #[test]
+    fn test_nthash() {
+        use nthash::ntc64;
+        let seq = b"AAAAAAAAAATAAGCTTGACTTTTTTATATTCCCCCCCGAACCGGGGGGGGGGATACGA";
+        let n = 5;
+        let hashes = ntc64(b"GCTT", 0, 4);
+        println!("{:?}", hashes);
     }
 
     #[test]

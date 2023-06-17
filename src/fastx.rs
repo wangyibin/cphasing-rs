@@ -45,7 +45,8 @@ impl Fastx {
 
         read_process_fastx_records(reader, 4, 2,
             |record, length| { // runs in worker
-                *length = record.seq().len();
+                *length = record.seq_lines()
+                                .fold(0, |l, seq| l + seq.len());
             },
             |record, length| { // runs in main thread
                 chrom_size.insert(record.id().unwrap().to_owned(), *length as u64); 
