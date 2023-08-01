@@ -12,7 +12,7 @@ pub struct PruneRecord {
     pub contig2: String,
     pub mz1: u64,
     pub mz2: u64,
-    pub mzShared: u64,
+    pub mz_shared: u64,
     pub similarity: f64,
     pub allele_type: u8,
 }

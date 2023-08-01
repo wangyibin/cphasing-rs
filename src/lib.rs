@@ -1,8 +1,10 @@
 #![allow(unused_variables, unused_imports)]
+pub mod bed;
 pub mod cli;
 pub mod cutsite;
 pub mod core;
 pub mod fastx;
+pub mod methy;
 pub mod mnd;
 pub mod optimize;
 pub mod paf;
@@ -82,15 +84,15 @@ mod tests {
 
     }
 
-    #[test]
-    fn test_seq2kminmers() {
-        use rust_seq2kminmers::KminmersIterator;
-        let seq = b"AAAAAAAAAATAAGCTTGACTTTTTTATATTCCCCCCCGAACCGGGGGGGGGGATACGA";
-        let iter = KminmersIterator::new(seq, 3, 5, 1.0, false).unwrap();
-        for kmer in iter {
-            println!("{:?}", kmer);
-        }
-    }
+    // #[test]
+    // fn test_seq2kminmers() {
+    //     use rust_seq2kminmers::KminmersIterator;
+    //     let seq = b"AAAAAAAAAATAAGCTTGACTTTTTTATATTCCCCCCCGAACCGGGGGGGGGGATACGA";
+    //     let iter = KminmersIterator::new(seq, 3, 5, 1.0, false).unwrap();
+    //     for kmer in iter {
+    //         println!("{:?}", kmer);
+    //     }
+    // }
 
     #[test]
     fn test_nthash() {
@@ -190,5 +192,36 @@ mod tests {
         pairs.remove_by_contig_pairs(contigs, &output);
 
 
+    }
+
+    #[test]
+    fn test_methy_bam2fastq() {
+        use crate::methy::modbam2fastq;
+        let bam = String::from("test/output.hifi.call_mods.modbam.bam");
+        let fastq = String::from("test/output.hifi.call_mods.modbam.fastq.gz");
+        let min_prob = 0.1f32;
+        let _ = modbam2fastq(&bam, min_prob, &fastq);
+        
+    }
+
+    #[test]
+    fn test_modify_fasta() {
+        use crate::methy::modify_fasta;
+        let fasta = String::from("test/hprc.chr20.100k.fasta");
+        let bed = String::from("test/hprc.output.hifi.call_mods.modbam.pbmm2.freq.aggregate.all.bed");
+        let output = String::from("test/hprc.chr20.100k.modify.fasta");
+        let min_score = 3u32;
+        let min_frac = 0.8f32;
+        let _ = modify_fasta(&fasta, &bed, min_score, min_frac, &output);
+    }
+
+    #[test]
+    fn test_bed() {
+        use crate::bed::Bed3;
+        let bed = String::from("test/output.hifi.call_mods.modbam.pbmm2.freq.aggregate.all.bed");
+        let bed = Bed3::new(&bed);
+        for b in bed {
+            println!("{:?}", b);
+        }
     }
 }

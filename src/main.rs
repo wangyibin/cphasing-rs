@@ -2,6 +2,7 @@ use cphasing::cli::cli;
 use cphasing::core::{ BaseTable, common_writer, ContigPair };
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::Fastx;
+use cphasing::methy::{ modbam2fastq, modify_fasta };
 use cphasing::optimize::ContigScoreTable;
 use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
@@ -93,6 +94,24 @@ fn main() {
 
             pairs.remove_by_contig_pairs(contigs, &output);
 
+        }
+
+        Some(("modbam2fq", sub_matches)) => {
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let min_prob = sub_matches.get_one::<f32>("MIN_PROB").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            modbam2fastq(&input_bam, *min_prob, &output).unwrap();
+        }
+
+        Some(("modfa", sub_matches)) => {
+            let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let bed_methy = sub_matches.get_one::<String>("BEDMETHY").expect("required");
+            let min_score = sub_matches.get_one::<u32>("MIN_SCORE").expect("error");
+            let min_frac = sub_matches.get_one::<f32>("MIN_FRAC").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            modify_fasta(&input_fasta, &bed_methy, *min_score, *min_frac, &output).unwrap();
         }
 
         Some(("optimize", sub_matches)) => {

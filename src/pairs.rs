@@ -205,35 +205,76 @@ impl Pairs {
                 .delimiter(b' ')
                 .from_writer(wtr);
 
-        for result in rdr.deserialize() {
-            if result.is_err() {
-                println!("{:?}", result);
-                continue
+        // for result in rdr.deserialize() {
+        //     if result.is_err() {
+        //         println!("{:?}", result);
+        //         continue
+        //     }
+        //     let record: PairRecord = result?;
+        //     let strand1 = if record.strand1 == '+' { 0 } else { -1 };
+        //     let strand2 = if record.strand2 == '+' { 0 } else { -1 };
+        //     let mnd_record = MndRecord {
+        //         strand1: strand1,
+        //         chrom1: record.chrom1,
+        //         pos1: record.pos1,
+        //         frag1: mnd_defualt.frag1,
+        //         strand2: strand2,
+        //         chrom2: record.chrom2,
+        //         pos2: record.pos2,
+        //         frag2: mnd_defualt.frag2,
+        //         mapq1: mnd_defualt.mapq1,
+        //         cigar1: mnd_defualt.cigar1,
+        //         sequence1: mnd_defualt.sequence1,
+        //         mapq2: mnd_defualt.mapq2,
+        //         cigar2: mnd_defualt.cigar2,
+        //         sequence2: mnd_defualt.sequence2,
+        //         readname1: mnd_defualt.readname1,
+        //         readname2: mnd_defualt.readname2,
+        //     };
+        
+        for (idx, record) in rdr.records().enumerate() {
+            match record {
+                Ok(record) => {
+                    
+                    let record = PairRecord {
+                        readID: idx as u64,
+                        chrom1: record[1].to_string(),
+                        pos1: record[2].parse::<u64>().unwrap(),
+                        chrom2: record[3].to_string(),
+                        pos2: record[4].parse::<u64>().unwrap(),
+                        strand1: record[5].parse::<char>().unwrap(),
+                        strand2: record[6].parse::<char>().unwrap(),
+                    };
+
+                    let strand1 = if record.strand1 == '+' { 0 } else { -1 };
+                    let strand2 = if record.strand2 == '+' { 0 } else { -1 };
+                    let mnd_record = MndRecord {
+                        strand1: strand1,
+                        chrom1: record.chrom1,
+                        pos1: record.pos1,
+                        frag1: mnd_defualt.frag1,
+                        strand2: strand2,
+                        chrom2: record.chrom2,
+                        pos2: record.pos2,
+                        frag2: mnd_defualt.frag2,
+                        mapq1: mnd_defualt.mapq1,
+                        cigar1: mnd_defualt.cigar1,
+                        sequence1: mnd_defualt.sequence1,
+                        mapq2: mnd_defualt.mapq2,
+                        cigar2: mnd_defualt.cigar2,
+                        sequence2: mnd_defualt.sequence2,
+                        readname1: mnd_defualt.readname1,
+                        readname2: mnd_defualt.readname2,
+                    };
+                    wtr.serialize(mnd_record)?;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                    continue
             }
-            let record: PairRecord = result?;
-            let strand1 = if record.strand1 == '+' { 0 } else { -1 };
-            let strand2 = if record.strand2 == '+' { 0 } else { -1 };
-            let mnd_record = MndRecord {
-                strand1: strand1,
-                chrom1: record.chrom1,
-                pos1: record.pos1,
-                frag1: mnd_defualt.frag1,
-                strand2: strand2,
-                chrom2: record.chrom2,
-                pos2: record.pos2,
-                frag2: mnd_defualt.frag2,
-                mapq1: mnd_defualt.mapq1,
-                cigar1: mnd_defualt.cigar1,
-                sequence1: mnd_defualt.sequence1,
-                mapq2: mnd_defualt.mapq2,
-                cigar2: mnd_defualt.cigar2,
-                sequence2: mnd_defualt.sequence2,
-                readname1: mnd_defualt.readname1,
-                readname2: mnd_defualt.readname2,
-            };
+        }
 
-
-            wtr.serialize(mnd_record)?;
+            // wtr.serialize(mnd_record)?;
         }
 
         wtr.flush()?;

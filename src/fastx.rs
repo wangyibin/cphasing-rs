@@ -15,7 +15,7 @@ use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 
 pub struct Fastx {
-    file: String,
+    pub file: String,
 }
 
 impl BaseTable for Fastx {
@@ -56,4 +56,5 @@ impl Fastx {
         Ok(chrom_size)
     }
 }
+
 

@@ -289,7 +289,7 @@ impl PAFTable {
             }
             let length: u32 = record.query_end - record.query_start;
             let identity = record.match_n as f32/ record.alignment_length as f32;
-        
+            
             if (&record.mapq < min_quality) || (&length < min_length) || (&identity < min_identity) {
                 filter_reason = "low_mq";
             } else {

@@ -1,7 +1,7 @@
 [package]
 name = "cphasing"
-version = "0.0.3"
-edition = "2023"
+version = "0.0.4"
+edition = "2021"
 
 [[bin]]
 name = "cphasing-rs"
@@ -21,11 +21,19 @@ flate2 = {version = "~1", default-features = false}
 gzp = { version = "*" }
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
+ndarray = { version = "0.15.6" }
+noodles = { version = "0.44.0", features = ["fasta", "bed"]}
 nthash = { version = "0.5.1" }
 env_logger = { version = "0.10.0" }
-ndarray = { version = "0.15.6" }
 itertools = { version = "0.10.5"}
 rand = { version = "0.8.5"}
-rust-seq2kminmers = { version = "0.1.0" }
+# rust-lapper = { version = "1.1.0"}
+rust-htslib = { version = "0.44.1", default-features = false }
+# rust-seq2kminmers = { version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"]}
 seq_io = { version = "0.4.0-alpha.0" }
+# tokio = { features = ["fs", "io-util"] }
+
+[profile.release]
+opt-level = 'z'
+lto = true

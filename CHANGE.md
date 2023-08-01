@@ -1,4 +1,9 @@
 
+
+## [v0.0.4]
+### New features
+- `modbam2fq`, convert modbam to fastq with moddified bases
+- `modfa`, modify fasta by methyation bed.
 ## [v0.0.3]
 ### Enhancement 
 - `optimize`

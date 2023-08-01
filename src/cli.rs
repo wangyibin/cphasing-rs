@@ -3,10 +3,13 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
+const VERSION: &str = "0.0.4";
+
 pub fn cli() -> Command {
     Command::new("cphasing")
         .about("Phasing and scaffolding based on Pore-C or Hi-C data")
         .subcommand_required(true)
+        .version(VERSION)
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
         .subcommand(
@@ -104,6 +107,47 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-"))
                 
+        )
+        .subcommand(
+            Command::new("modbam2fq")
+                .about("convert modified bam to fastq with modified base")
+                .arg(arg!(<BAM> "modified bam"))
+                .arg(
+                    Arg::new("MIN_PROB")
+                        .long("min-prob")
+                        .short('p')
+                        .value_parser(value_parser!(f32))
+                        .default_value("0.5"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+        .subcommand(
+            Command::new("modfa")
+                .about("modify fasta by bedMethy file")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(arg!(<BEDMETHY> "bedMethy"))
+                .arg(
+                    Arg::new("MIN_SCORE")
+                        .long("min-score")
+                        .short('s')
+                        .value_parser(value_parser!(u32))
+                        .default_value("1"))
+                .arg(
+                    Arg::new("MIN_FRAC")
+                        .long("min-frac")
+                        .short('f')
+                        .value_parser(value_parser!(f32))
+                        .default_value("0.5"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
         )
         .subcommand(
             Command::new("optimize")
