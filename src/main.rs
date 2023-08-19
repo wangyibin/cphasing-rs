@@ -106,12 +106,14 @@ fn main() {
 
         Some(("modfa", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
-            let bed_methy = sub_matches.get_one::<String>("BEDMETHY").expect("required");
+            let bed = sub_matches.get_one::<String>("BED").expect("required");
             let min_score = sub_matches.get_one::<u32>("MIN_SCORE").expect("error");
             let min_frac = sub_matches.get_one::<f32>("MIN_FRAC").expect("error");
+            let bed_fmt = sub_matches.get_one::<String>("BED_FORMAT").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-
-            modify_fasta(&input_fasta, &bed_methy, *min_score, *min_frac, &output).unwrap();
+            
+            modify_fasta(&input_fasta, &bed, *min_score, 
+                            *min_frac, &bed_fmt, &output).unwrap();
         }
 
         Some(("optimize", sub_matches)) => {

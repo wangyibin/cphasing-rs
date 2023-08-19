@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.4";
+const VERSION: &str = "0.0.5";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -129,7 +129,7 @@ pub fn cli() -> Command {
             Command::new("modfa")
                 .about("modify fasta by bedMethy file")
                 .arg(arg!(<FASTA> "fasta"))
-                .arg(arg!(<BEDMETHY> "bedMethy"))
+                .arg(arg!(<BED> "bed"))
                 .arg(
                     Arg::new("MIN_SCORE")
                         .long("min-score")
@@ -142,6 +142,12 @@ pub fn cli() -> Command {
                         .short('f')
                         .value_parser(value_parser!(f32))
                         .default_value("0.5"))
+                .arg(
+                    Arg::new("BED_FORMAT")
+                        .long("bed-fmt")
+                        .short('f')
+                        .default_value("bedMethy")
+                )
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

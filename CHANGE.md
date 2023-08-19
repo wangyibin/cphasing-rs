@@ -1,4 +1,7 @@
 
+## [v0.0.5]
+## Enhancement 
+- `modbam2fq`,  `modfa`, enhanced
 
 ## [v0.0.4]
 ### New features

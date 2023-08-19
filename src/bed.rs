@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
+use crate::methy::ModRecord;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed3Record {
     pub chrom: String,
@@ -53,6 +55,60 @@ impl Iterator for Bed3 {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BedCpGRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub frac: f32,
+    pub score: u32,
+}
+
+pub struct BedCpG {
+    pub file: File,
+    pub reader: csv::Reader<File>,
+}
+
+impl BedCpG {
+    pub fn new(bed: &String) -> Self {
+        let file = File::open(bed).unwrap();
+        let reader = csv::ReaderBuilder::new()
+            .flexible(true)
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_reader(file.try_clone().unwrap());
+        Self {
+            file: file,
+            reader: reader,
+        }
+    }
+    
+}
+
+impl Iterator for BedCpG {
+    type Item = ModRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let record = self.reader.records().next();
+        match record {
+            Some(Ok(record)) => {
+                let chrom = record[0].to_string();
+                let start = record[1].parse::<usize>().unwrap();
+                let end = record[2].parse::<usize>().unwrap();
+                let frac = record[3].parse::<f32>().unwrap();
+                let score = record[6].parse::<u32>().unwrap();
+                Some(ModRecord {
+                    chrom: chrom,
+                    start: start,
+                    end: end,
+                    frac: frac,
+                    score: score,
+                })
+            }
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BedMethylSimpleRecord {
@@ -87,7 +143,7 @@ impl BedMethylSimple {
 }
 
 impl Iterator for BedMethylSimple {
-    type Item = BedMethylSimpleRecord;
+    type Item = ModRecord;
 
     fn next(&mut self) -> Option<Self::Item> {
         let record = self.reader.records().next();
@@ -101,14 +157,12 @@ impl Iterator for BedMethylSimple {
                 let strand = record[5].parse::<char>().unwrap();
                 let frac = record[10].parse::<f32>().unwrap();
 
-                Some(BedMethylSimpleRecord {
+                Some(ModRecord {
                     chrom: chrom,
                     start: start,
                     end: end,
-                    mod_base: mod_base,
-                    score: score,
-                    strand: strand,
-                    frac: frac
+                    frac: frac,
+                    score: score
                 })
             }
             _ => None,

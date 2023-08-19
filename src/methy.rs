@@ -7,10 +7,22 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use crate::bed::{ BedMethylSimple, BedMethylSimpleRecord };
+use crate::bed::{ 
+    BedCpG,
+    BedCpGRecord,
+    BedMethylSimple, 
+    BedMethylSimpleRecord };
 use crate::core::BaseTable;
 use crate::core::{ common_reader, common_writer };
 
+
+pub struct ModRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub frac: f32,
+    pub score: u32,
+}
 
 fn qual_to_prob(qual: f32) -> f32 {
     let mut qual = qual as f32;
@@ -77,7 +89,7 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
 }
 
 pub fn modify_fasta(fasta_path: &String, bed: &String, 
-        min_score: u32, min_frac: f32,
+        min_score: u32, min_frac: f32, bedcpg: &String,
         output: &String) -> Result<(), Box<dyn std::error::Error>> {
     
     
@@ -94,13 +106,17 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
     let mut reader = fasta::indexed_reader::Builder::default().build_from_path(fasta_path).unwrap();
     let mut wtr = common_writer(output);
     let mut writer = fasta::Writer::new(wtr);
-    let mut hash: HashMap<String, Vec<BedMethylSimpleRecord>> = HashMap::new();
-    let bed = BedMethylSimple::new(bed);
-    
+    let mut hash = HashMap::<String, Vec<ModRecord>>::new();
+    let bed_iter = if bedcpg == "bedMethyl" {
+        BedCpG::new(bed)
+    } else {
+        BedCpG::new(bed)
+    };
     log::info!("Loading bed file");
-    for record in bed {
+    for record in bed_iter {
         if !hash.contains_key(&record.chrom) {
-            let mut ranges: Vec<BedMethylSimpleRecord> = Vec::new();
+            let mut ranges = Vec::<ModRecord>::new();
+
             hash.insert(record.chrom.clone(), ranges);
         } 
         
@@ -139,23 +155,6 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
 
         seq.retain(|&c| c != b'\0');
         
-        // for (idx, c) in seq.iter().enumerate() {
-        //     if replace_m_idx.contains(&idx) {
-        //         new_seq.push(&b'm');
-        //     } else if remove_g_idx.contains(&idx) {
-        //         continue;
-        //     } else {
-        //         new_seq.push(c);
-        //     }
-        // }
-        // for idx in replace_m_idx.iter() {
-        //     // seq[*idx] = b'm';
-        // }
-
-        // remove_G_idx.sort();
-        // for idx in remove_G_idx.iter().rev() {
-        //    seq.remove(*idx);
-        // }
 
         let definition = fasta::record::Definition::new(record.name().to_string(), None);
         let new_seq = fasta::record::Sequence::from(seq);
@@ -164,8 +163,7 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
         writer.write_record(&new_record).unwrap();
         
         log::info!("Finish to modify {}", chrom);
-        // wtr.write_all(format!(">{}\n{}\n", record.name(), 
-        //                     String::from_utf8(new_seq.iter().map(|&x| *x).collect()).unwrap()).as_bytes()).unwrap();
+ 
     }
     
     Ok(())
