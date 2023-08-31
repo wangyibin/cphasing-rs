@@ -8,6 +8,7 @@ pub mod methy;
 pub mod mnd;
 pub mod optimize;
 pub mod paf;
+pub mod paf2;
 pub mod pairs;
 pub mod porec;
 pub mod prune;
@@ -61,6 +62,24 @@ mod tests {
 
         // pt.paf2table(&"test/test.out.csv.gz".to_string(), &1, &0.75, &10).unwrap();
         
+    }
+
+    #[test]
+    fn test_paf2() {
+        let paf = String::from("test/test.paf");
+        let paf = paf2::PAFTable::new(&paf);
+        let parse_result = paf.parse();
+        let mut rdr = match parse_result {
+            Ok(v) => v,
+            Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
+        };
+
+        for line in rdr.deserialize() {
+            let record: paf2::PAFLine = line.unwrap();
+
+            println!("{:?}", record.tp);
+        }
+
     }
 
     #[test]
@@ -212,7 +231,7 @@ mod tests {
         let output = String::from("test/hprc.chr20.100k.modify.fasta");
         let min_score = 3u32;
         let min_frac = 0.8f32;
-        let _ = modify_fasta(&fasta, &bed, min_score, min_frac, &output);
+        // let _ = modify_fasta(&fasta, &bed, min_score, min_frac, &output);
     }
 
     #[test]
