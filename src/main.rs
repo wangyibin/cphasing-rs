@@ -3,6 +3,7 @@ use cphasing::core::{ BaseTable, common_writer, ContigPair };
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::Fastx;
 use cphasing::methy::{ modbam2fastq, modify_fasta };
+use cphasing::aligner::read_bam;
 use cphasing::optimize::ContigScoreTable;
 use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
@@ -31,6 +32,16 @@ fn main() {
 
     let matches = cli().get_matches();
     match matches.subcommand() {
+        Some(("aligner", sub_matches)) => {
+            let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let fa = Fastx::new(&fasta);
+            let seqs = fa.get_chrom_seqs().unwrap();
+            read_bam(&input_bam, &seqs, *min_quality, &output);
+        }
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");

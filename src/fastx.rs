@@ -55,6 +55,24 @@ impl Fastx {
     
         Ok(chrom_size)
     }
+
+    pub fn get_chrom_seqs (&self) -> AnyResult<HashMap<String, String>> {
+        let reader = common_reader(&self.file);
+        let reader = FastxReader::new(reader);
+        let mut chrom_seqs: HashMap<String, String> = HashMap::new();
+
+        read_process_fastx_records(reader, 4, 2,
+            |record, seq| { // runs in worker
+                *seq = record.seq_lines()
+                                .fold(String::new(), |s, seq| s + &String::from_utf8(seq.to_vec()).unwrap());
+            },
+            |record, seq| { // runs in main thread
+                chrom_seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
+                None::<()>
+            }).unwrap();
+    
+        Ok(chrom_seqs)
+    }
 }
 
 

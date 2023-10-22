@@ -1,4 +1,8 @@
 
+## [v0.0.6]
+## New features
+- `aligner`, realign alignments by mod(memory leak)
+
 ## [v0.0.5]
 ## Enhancement 
 - `modbam2fq`,  `modfa`, enhanced

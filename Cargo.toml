@@ -1,6 +1,6 @@
 [package]
 name = "cphasing"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 
 [[bin]]
@@ -12,6 +12,7 @@ opt-level = 1
 overflow-checks = false
 
 [dependencies]
+minimap2 = { path = "../minimap2-rs", features = ["default"]}
 anyhow = "1.0.70"
 bio = "*"
 clap = { version = "4.2.1" }

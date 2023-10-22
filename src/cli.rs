@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.5";
+const VERSION: &str = "0.0.6";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -13,6 +13,24 @@ pub fn cli() -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
         .subcommand(
+            Command::new("aligner")
+                .about("align methylation reads")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(arg!(<BAM> "align bam from `dorado`"))
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("10"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        ).subcommand(
             Command::new("cutsite")
                 .about("cut restriction site on pore-c reads")
                 .arg(arg!(<FASTQ> "pore-c reads"))

@@ -1,4 +1,5 @@
 #![allow(unused_variables, unused_imports)]
+pub mod aligner;
 pub mod bed;
 pub mod cli;
 pub mod cutsite;
@@ -15,7 +16,6 @@ pub mod prune;
 pub mod sketch;
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use crate::core::BaseTable;
@@ -243,4 +243,5 @@ mod tests {
             println!("{:?}", b);
         }
     }
+
 }

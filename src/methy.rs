@@ -24,7 +24,7 @@ pub struct ModRecord {
     pub score: u32,
 }
 
-fn qual_to_prob(qual: f32) -> f32 {
+pub fn qual_to_prob(qual: f32) -> f32 {
     let mut qual = qual as f32;
     qual = (qual + 0.5f32) / 256f32; 
     qual
@@ -55,6 +55,11 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
                     } else {
                         position - 1
                     };
+
+                    if position2 >= new_sequence.len() as i32 {
+                        continue;
+                    }
+
                     let qual = qual_to_prob(m.qual as f32);
                     if qual < min_prob {
                         continue;
@@ -64,7 +69,7 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
                     if new_sequence[position2 as usize] == b'G' 
                         || new_sequence[position2 as usize] == b'g' {
                         new_sequence[position as usize] = m.modified_base as u8;
-                        remove_g_idx.push(position2 as usize);
+                        // remove_g_idx.push(position2 as usize);
                     }
                 }
                 
@@ -108,9 +113,9 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
     let mut writer = fasta::Writer::new(wtr);
     let mut hash = HashMap::<String, Vec<ModRecord>>::new();
     let bed_iter = if bedcpg == "bedMethyl" {
-        BedCpG::new(bed)
+        BedMethylSimple::new(bed)
     } else {
-        BedCpG::new(bed)
+        BedMethylSimple::new(bed)
     };
     log::info!("Loading bed file");
     for record in bed_iter {
@@ -128,7 +133,7 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
     }
 
     log::info!("Start to modify fasta file");
-
+    
     for chrom in hash.keys() {
         let ranges = hash.get(chrom).unwrap();
         let region = chrom.parse().unwrap();
@@ -147,9 +152,9 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
         for (idx, c) in seq.iter_mut().enumerate() {
             if replace_m_idx.contains(&idx) {
                 *c = b'm';
-            } else if remove_g_idx.contains(&idx) {
-                // Remove element by setting it to a "null" value
-                *c = b'\0';
+            // } else if remove_g_idx.contains(&idx) {
+            //     // Remove element by setting it to a "null" value
+            //     *c = b'\0';
             }
         }
 
