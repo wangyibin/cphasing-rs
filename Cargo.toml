@@ -34,6 +34,7 @@ rust-htslib = { version = "0.44.1", default-features = false }
 # rust-seq2kminmers = { version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"]}
 seq_io = { version = "0.4.0-alpha.0" }
+tempfile = { version = "3.8.0" }
 # tokio = { features = ["fs", "io-util"] }
 
 [profile.release]
