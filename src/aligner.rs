@@ -9,12 +9,15 @@ use rust_htslib::bam::{
     Writer};
 use std::path::PathBuf;
 use std::collections::HashMap;
+use std::io::{Cursor, Read as StdRead, Write, Seek};
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::str;
 use std::mem;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{ Duration, Instant };
+use tempfile::NamedTempFile;
 
 use crate::fastx::Fastx;
 use crate::methy::qual_to_prob;
@@ -22,6 +25,12 @@ use crate::methy::qual_to_prob;
 enum WorkQueue<T> {
     Work(T),
     Result(T),
+}
+
+#[derive(Clone, Debug)]
+pub struct SeqRecord {
+    pub name: String,
+    pub seq: Vec<u8>,
 }
 
 
@@ -58,7 +67,7 @@ fn calculate_alignment_score_from_cigar(cigar: &Vec<(u32, u8)>) -> i32 {
 
 
 // calculate alignment score from CigarStringView
-fn calculate_alignment_score_from_cigar_string_view(cigar: CigarStringView) -> i32 {
+fn calculate_alignment_score_from_cigar_string_view(cigar: CigarStringView) -> anyResult<i32> {
     let mut score = 0;
     for op in cigar.iter() {
         match op {
@@ -69,8 +78,9 @@ fn calculate_alignment_score_from_cigar_string_view(cigar: CigarStringView) -> i
             _ => {} 
         }
     }
-
-    score.try_into().unwrap()
+   
+    let score: i32 = score.try_into().unwrap();
+    Ok(score)
 }
 
 fn mod_seq_complement(seq: &mut Vec<u8>) {
@@ -162,13 +172,90 @@ fn map_seq_to_seqs(mod_seq: &[u8], targets: Vec<Vec<u8>>) -> anyResult<Vec::<Map
     Ok(align_results)
 }
 
+// align modified seq to modified reference by meth-minimap2 (command)
+fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqRecord>, 
+                                ) -> anyResult<(Vec::<Record>, HeaderView)> {
+    let mut align_results = Vec::new();
+    let start_time = Instant::now();
+    let mut temp_file = NamedTempFile::new().unwrap();
+    temp_file.write_all(format!(">{}\n", read_id).as_bytes()).unwrap();
+    temp_file.write_all(mod_seq).unwrap();
+    let end_time = Instant::now();
+    let cpu_time = end_time - start_time;
+    // println!("CPU time: {:.10}s", cpu_time.as_secs_f64());
+    // temp_file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    // let mut contents = String::new();
+    // temp_file.read_to_string(&mut contents)?;
+    // println!("Temporary file contents: {}", contents);
+    // ">i\nseq\n"
+    let mut header = Header::new();
+   
+    let mut record = HeaderRecord::new(b"HD");
+    record.push_tag(b"VN", &"1.6") ;
+    record.push_tag(b"SO", &"coordinate");    
+    header.push_record(&record);
+    for i in 0..targets.len() {
+      
+        let mut record = HeaderRecord::new(b"SQ");
+        record.push_tag(b"SN", &targets[i].name);
+        record.push_tag(b"LN", &(targets[i].seq.len() as u64));   
+        header.push_record(&record);
+    }
+    let mut record = HeaderRecord::new(b"RG");
+    record.push_tag(b"ID", &read_id);
+    header.push_record(&record);
+    let header_view = HeaderView::from_header(&header);
+
+    let ref_seqs = targets.iter().map(|x| {
+        format!(">{}\n{}\n", x.name, String::from_utf8(x.seq.to_vec()).unwrap())
+    }).collect::<Vec<String>>().join("");
+
+    let mut child = Command::new("minimap2")
+                        .arg("-x")
+                        .arg("map-ont")
+                        .arg("-c")
+                        .arg("-a")
+                        .arg("-")
+                        .arg(temp_file.path())
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .expect("failed to execute child");
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin.write_all(ref_seqs.as_bytes()).expect("Failed to write to stdin");
+    }    
+
+    let output = child.wait_with_output().expect("Failed to read stdout");
+    let output = String::from_utf8_lossy(&output.stdout).to_string();
+   
+    let mut lines = output.lines();
+    
+    for line in lines {
+        if line.starts_with("@") {
+            continue;
+        }
+        let mut record = Record::from_sam(&header_view, &line.as_bytes()).unwrap();
+        if record.is_unmapped() {
+            continue;
+        }
+        align_results.push(record);
+    }
+
+    Ok((align_results, header_view))
+               
+}
+
 fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>, 
     bam_header: &HeaderView, min_quality: u8, writer: &mut Writer) {
        
     if !au.is_empty() {
         let read_id = au.read_id();
         'outer: for (p, s) in au.Primary.iter().zip(au.Secondary.iter()) {
+            let mut read_idx = 0;
             let seq_len = p.seq_len() as u64;
+    
             if p.mapq() >= min_quality || s.len() == 0 {
                 writer.write(&p).unwrap();
                 if s.len() > 0 {
@@ -179,7 +266,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                 continue 'outer;
             } else {
         
-                let mut targets = Vec::new();
+                let mut targets: Vec::<SeqRecord> = Vec::new();
                 let p_parser = RecordParser::parse(&p, &bam_header, seq_len);
                 match sub_seq(&seqs, &p_parser.target, 
                                             p_parser.target_start as u64, 
@@ -188,16 +275,26 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         if p_parser.is_reverse {
                             let mut seq = seq.as_bytes().to_vec();
                             mod_seq_complement(&mut seq);
-                            targets.push(seq);
+                            targets.push(SeqRecord {
+                                // name: p_parser.target.clone(),
+                                name: read_idx.to_string(),
+                                seq: seq,
+                            });
                          
                         } else {
                       
-                            targets.push(seq.as_bytes().to_vec());
+                            targets.push(SeqRecord {
+                                // name: p_parser.target.clone(), 
+                                name: read_idx.to_string(),
+                                seq: seq.as_bytes().to_vec(),
+                        });
                         }
                     
                     },
                     None => log::debug!("{}: {:?}", read_id, p_parser),
                 };
+                read_idx += 1;
+                
                 let mut seq = p.seq().as_bytes().clone();
                 let mut query_seq = &mut seq[p_parser.query_start as usize..p_parser.query_end as usize];
                
@@ -255,7 +352,8 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                 if p.is_reverse() {
                     mod_seq.reverse();
                 }
-                for ss in s {
+                for (ss_idx, ss) in s.iter().enumerate() {
+
                     let ss_parser = RecordParser::parse(&ss, &bam_header, seq_len);
                     match sub_seq(&seqs, &ss_parser.target, 
                                                 ss_parser.target_start as u64, 
@@ -264,39 +362,112 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                             if ss_parser.is_reverse {
                                 let mut seq = seq.as_bytes().to_vec();
                                 mod_seq_complement(&mut seq); // complementary
-                                targets.push(seq);
+                                targets.push(SeqRecord {
+                                    // name: ss_parser.target.clone(),
+                                    name: read_idx.to_string(),
+                                    seq: seq,
+                                });
                                 // targets.insert(format!("{}_{}", ss_parser.target, &ss_parser.target_start.to_string()), seq);
                             } else {
                                 // targets.insert(format!("{}_{}", ss_parser.target, &ss_parser.target_start.to_string()), seq.as_bytes().to_vec());
-                                targets.push(seq.as_bytes().to_vec());
+                                targets.push(SeqRecord {
+                                    // name: ss_parser.target.clone(),
+                                    name: read_idx.to_string(),
+                                    seq: seq.as_bytes().to_vec(),
+                                });
                             }
                         },
                         None => log::debug!("{}: {:?}", read_id, ss_parser),
                         }; 
-                }
-               
-               
-             
-
-                let mut align_results = map_seq_to_seqs(&mod_seq, targets).unwrap();
+                        read_idx += 1;
+                    }
                 
+  
+                let (mut align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
+
                 let align_result_len = align_results.len();
                 if align_result_len > 0 {
-                    align_results.sort_by(|a, b| a.alignment.as_ref().unwrap().nm.cmp(&b.alignment.as_ref().unwrap().nm));
-                    
-                    let mut a_mapq = match align_result_len == 1 {
-                        true => align_results[0].mapq,
-                        false => match align_results[0].alignment.as_ref().unwrap().nm == align_results[1].alignment.as_ref().unwrap().nm {
-                            true => 0,
-                            false => align_results[0].mapq,
-                        }
-                    };
 
                     for (a_idx, a) in align_results.iter().enumerate() {
-                        if a_idx > 0 {
-                            a_mapq = 0;
+                        let a_parser = RecordParser::parse(&a, &new_header_view, seq_len);
 
-                        } 
+                        let mut new_record = if a_parser.target == "0" {
+                            Record::from(p.clone())
+                            
+                        } else {
+                            Record::from(s[a_parser.target.parse::<usize>().unwrap() - 1 as usize].clone())
+                        };
+
+
+                        match a_idx {
+                            0 => {
+                                new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
+                            },
+                            _ => {
+                                new_record.set(p.qname(), None, &[], &[]);
+                            }
+                        }
+
+                        let new_score: u32 = match a.aux(b"AS") {
+                            Ok(value) => {
+                                match value {
+                                    Aux::U8(v) => v.try_into().unwrap(),
+                                    Aux::U16(v) => v.try_into().unwrap(),
+                                    Aux::U32(v) => v.try_into().unwrap(),
+                                    _ => 0,
+                            }
+                        },
+                            Err(e) => calculate_alignment_score_from_cigar_string_view(a.cigar()).unwrap().try_into().unwrap_or(0),
+                        };
+                        let new_nm: u32 = match a.aux(b"NM") {
+                            Ok(value) => {
+                                match value {
+                                    Aux::U8(v) => v.try_into().unwrap(),
+                                    Aux::U16(v) => v.try_into().unwrap(),
+                                    Aux::U32(v) => v.try_into().unwrap(),
+                                    _ => 0,
+                                }
+                                },
+                                Err(e) => 0,
+                        };
+                        
+                        new_record.set_mapq(a.mapq().try_into().unwrap());
+                        new_record.remove_aux(b"NM");
+                        new_record.remove_aux(b"AS");
+                        new_record.remove_aux(b"tp");
+                        new_record.push_aux(b"NM", Aux::U32(new_nm));
+                        new_record.push_aux(b"AS", Aux::U32(new_score));
+                        match a_idx {
+                            0 => {
+                                new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
+                            },
+                            _ => {
+                                new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
+                            }
+                        }
+                    
+
+
+                        writer.write(&new_record).unwrap();
+                    }
+                
+                    // align_results.sort_by(|a, b| a.alignment.as_ref().unwrap().nm.cmp(&b.alignment.as_ref().unwrap().nm));
+                    
+                    // let mut a_mapq = match align_result_len == 1 {
+                    //     true => align_results[0].mapq,
+                    //     false => match align_results[0].alignment.as_ref().unwrap().nm == align_results[1].alignment.as_ref().unwrap().nm {
+                    //         true => 0,
+                    //         false => align_results[0].mapq,
+                    //     }
+                    // };
+
+                
+
+                    // for (a_idx, a) in align_results.iter().enumerate() {
+                    //     if a_idx > 0 {
+                    //         a_mapq = 0;
+
+                    //     } 
                         // match p.aux(b"NM") {
                         // Ok(value) => {
                         //     println!("{} {} {:.?}", self.read_id(), p.mapq(), value);
@@ -307,70 +478,84 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         //                         a.target_name.as_ref().unwrap(),
                         //                         a_mapq,
                         //                        a.alignment.as_ref().unwrap().nm);
-                        let mut new_record = if a.target_name.as_ref().unwrap() == &"0".to_string() {
-                            Record::from(p.clone())
+                        // 
+                //         let mut new_record = if a.target_name.as_ref().unwrap() == &"0".to_string() {
+                //             Record::from(p.clone())
                             
-                        } else {
-                            Record::from(s[a.target_name.as_ref().unwrap().parse::<usize>().unwrap() - 1 as usize].clone())
-                        };
-                        let new_flag = match a_idx {
-                            0 => {
-                                match new_record.is_reverse() {
-                                    true => match new_record.is_supplementary() {
-                                        true => 0x910,
-                                        false => 0x10,
-                                    },
-                                    false => match new_record.is_supplementary() {
-                                        true => 0x900,
-                                        false => 0x0,
-                                    }
-                                }
-                            },
-                            _ => {
-                                match new_record.is_reverse() {
-                                    true => 0x110,
-                                    false => 0x100,
-                                }
-                            }
-                        };
-                        new_record.set_flags(new_flag);
+                //         } else {
+                //             Record::from(s[a.target_name.as_ref().unwrap().parse::<usize>().unwrap() - 1 as usize].clone())
+                //         };
+                //         let new_flag = match a_idx {
+                //             0 => {
+                //                 match new_record.is_reverse() {
+                //                     true => match new_record.is_supplementary() {
+                //                         true => 0x910,
+                //                         false => 0x10,
+                //                     },
+                //                     false => match new_record.is_supplementary() {
+                //                         true => 0x900,
+                //                         false => 0x0,
+                //                     }
+                //                 }
+                //             },
+                //             _ => {
+                //                 match new_record.is_reverse() {
+                //                     true => 0x110,
+                //                     false => 0x100,
+                //                 }
+                //             }
+                //         };
+                //         new_record.set_flags(new_flag);
                         
-                        match a_idx {
-                            0 => {
-                                new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
-                            },
-                            _ => {
-                                new_record.set(p.qname(), None, &[], &[]);
-                            }
+                //         match a_idx {
+                //             0 => {
+                //                 new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
+                //             },
+                //             _ => {
+                //                 new_record.set(p.qname(), None, &[], &[]);
+                //             }
+                //         }
+                        
+                        
+                //         let new_score = calculate_alignment_score_from_cigar(a.alignment.as_ref().unwrap().cigar.as_ref().unwrap());
+                //         new_record.set_mapq(a_mapq.try_into().unwrap());
+                //         new_record.remove_aux(b"NM");
+                //         new_record.remove_aux(b"AS");
+                        
+                //         new_record.push_aux(b"NM", Aux::I32(a.alignment.as_ref().unwrap().nm));
+                //         new_record.push_aux(b"AS", Aux::I32(new_score));
+                        
+                //         new_record.remove_aux(b"tp");
+                //         match a_idx {
+                //             0 => {
+                //                 new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
+                //             },
+                //             _ => {
+                //                 new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
+                //             }
+                //         }
+                //         writer.write(&new_record).unwrap();
+                        
+                //     }
+                // } 
+
+                    //     writer.write(&new_record).unwrap();
+                        
+                    // }
+                } else {
+                    writer.write(&p).unwrap();
+                    if s.len() > 0 {
+                        for ss in s {
+                            writer.write(&ss).unwrap();
                         }
-                        
-                        
-                        let new_score = calculate_alignment_score_from_cigar(a.alignment.as_ref().unwrap().cigar.as_ref().unwrap());
-                        new_record.set_mapq(a_mapq.try_into().unwrap());
-                        new_record.remove_aux(b"NM");
-                        new_record.remove_aux(b"AS");
-                        
-                        new_record.push_aux(b"NM", Aux::I32(a.alignment.as_ref().unwrap().nm));
-                        new_record.push_aux(b"AS", Aux::I32(new_score));
-                        
-                        new_record.remove_aux(b"tp");
-                        match a_idx {
-                            0 => {
-                                new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
-                            },
-                            _ => {
-                                new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
-                            }
-                        }
-                        writer.write(&new_record).unwrap();
-                        
                     }
-                } 
+                }
 
             }
         }
     }
 }
+
 
 
 

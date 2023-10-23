@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.6";
+const VERSION: &str = "0.0.7";
 
 pub fn cli() -> Command {
     Command::new("cphasing")

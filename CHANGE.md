@@ -1,3 +1,6 @@
+## [v0.0.7]
+## Enhancement
+- `aligner`, use command to execute minimap2
 
 ## [v0.0.6]
 ## New features

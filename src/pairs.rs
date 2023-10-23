@@ -60,7 +60,7 @@ impl PairHeader {
     }
 
     pub fn from_chromsizes(&mut self, chromsizes: Vec<ChromSizeRecord>) {
-        let PAIR_HEADER: Vec<String> = vec!["readID".to_string(), 
+        let pair_header: Vec<String> = vec!["readID".to_string(), 
                                     "chrom1".to_string(), 
                                     "pos1".to_string(), 
                                     "chrom2".to_string(), 
@@ -69,7 +69,7 @@ impl PairHeader {
                                     "strand2".to_string()
                                     ];
         self.chromsizes = chromsizes;
-        self.header = PAIR_HEADER;
+        self.header = pair_header;
     }
 
     pub fn to_string(&self) -> String {

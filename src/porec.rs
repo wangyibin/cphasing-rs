@@ -221,7 +221,7 @@ impl PoreCTable {
 
         let mut old_read_idx: u64 = 0; 
         let mut flag: bool = false; 
-        let mut readID: u64 = 0;
+        let mut read_id: u64 = 0;
         
         for (i, line) in rdr.deserialize().enumerate() {
             let record: PoreCRecord = match line {
@@ -237,8 +237,8 @@ impl PoreCTable {
                 concatemer_summary.count(&concatemer);
 
                 for pair in concatemer.decompose() {
-                    wtr.serialize(PairRecord::from_pore_c_pair(pair, readID));
-                    readID += 1;
+                    wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id));
+                    read_id += 1;
                 }
                 concatemer.clear();
             }
@@ -251,8 +251,8 @@ impl PoreCTable {
         // process last concatemer
         concatemer.sort();
         for pair in concatemer.decompose() {
-            wtr.serialize(PairRecord::from_pore_c_pair(pair, readID));
-            readID += 1;
+            wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id));
+            read_id += 1;
         }
 
         log::info!("Successful output pairs `{}`", output);
