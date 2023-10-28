@@ -13,6 +13,7 @@ pub mod paf2;
 pub mod pairs;
 pub mod porec;
 pub mod prune;
+pub mod simulation;
 pub mod sketch;
 
 #[cfg(test)]

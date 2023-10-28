@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.7";
+const VERSION: &str = "0.0.8";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -23,6 +23,29 @@ pub fn cli() -> Command {
                         .short('q')
                         .value_parser(value_parser!(u8))
                         .default_value("10"))
+                .arg(
+                    Arg::new("MIN_PROB")
+                        .long("min-prob")
+                        .short('p')
+                        .value_parser(value_parser!(f32))
+                        .default_value("0.75"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        ).subcommand(
+            Command::new("simulater")
+                .about("simulate short from long read")
+                .arg(arg!(<BAM> "raw bam with MM/ML tags"))
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("40"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -135,7 +158,7 @@ pub fn cli() -> Command {
                         .long("min-prob")
                         .short('p')
                         .value_parser(value_parser!(f32))
-                        .default_value("0.5"))
+                        .default_value("0.75"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -153,17 +176,16 @@ pub fn cli() -> Command {
                         .long("min-score")
                         .short('s')
                         .value_parser(value_parser!(u32))
-                        .default_value("1"))
+                        .default_value("3"))
                 .arg(
                     Arg::new("MIN_FRAC")
                         .long("min-frac")
                         .short('f')
                         .value_parser(value_parser!(f32))
-                        .default_value("0.5"))
+                        .default_value("0.75"))
                 .arg(
                     Arg::new("BED_FORMAT")
                         .long("bed-fmt")
-                        .short('f')
                         .default_value("bedMethy")
                 )
                 .arg(

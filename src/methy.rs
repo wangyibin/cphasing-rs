@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use crate::aligner::mod_seq_complement;
 use crate::bed::{ 
     BedCpG,
     BedCpGRecord,
@@ -38,48 +39,74 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
 
     for r in bam.records() {
         let record = r.unwrap();
+        if record.is_unmapped() {
+            continue;
+        }
+        if record.is_secondary() {
+            continue;
+        }
         let read_id = record.qname();
         let sequence = record.seq();
         let mut new_sequence: Vec<u8> = sequence.as_bytes();
+        if record.is_reverse() {
+            // new_sequence.reverse();
+            for i in 0..new_sequence.len() {
+                new_sequence[i] = match new_sequence[i] {
+                    b'A' => b'T',
+                    b'T' => b'A',
+                    b'G' => b'C',
+                    b'C' => b'G',
+                    _ => new_sequence[i],
+                };
+            }
+        }
         
         let mut new_quality: Vec<u8> = record.qual().to_vec();
 
-        let mut remove_g_idx: Vec<usize> = Vec::new();
+        // let mut remove_g_idx: Vec<usize> = Vec::new();
 
         if let Ok(mods) = record.basemods_iter() {
             
             for (idx, res) in mods.enumerate() {
                 if let Ok( (position, m) ) = res {
-                    let position2 = if m.strand == 0 {
-                        position + 1
-                    } else {
-                        position - 1
-                    };
+                    // let position2 = if m.strand == 0 {
+                    //     position + 1
+                    // } else {
+                    //     position - 1
+                    // };
 
-                    if position2 >= new_sequence.len() as i32 {
-                        continue;
-                    }
+                    // if position2 >= new_sequence.len() as i32 {
+                    //     continue;
+                    // }
 
                     let qual = qual_to_prob(m.qual as f32);
                     if qual < min_prob {
                         continue;
                     }
                     
+                    new_sequence[position as usize] = m.modified_base as u8;
                     
-                    if new_sequence[position2 as usize] == b'G' 
-                        || new_sequence[position2 as usize] == b'g' {
-                        new_sequence[position as usize] = m.modified_base as u8;
-                        // remove_g_idx.push(position2 as usize);
-                    }
+                   
+                   
+                    // if new_sequence[position2 as usize] == b'G' 
+                    //     || new_sequence[position2 as usize] == b'g' {
+                    //     new_sequence[position as usize] = m.modified_base as u8;
+                    //     // remove_g_idx.push(position2 as usize);
+                    // }
                 }
                 
             }
 
-            remove_g_idx.sort();
-            for idx in remove_g_idx.iter().rev() {
-                new_sequence.remove(*idx);
-                new_quality.remove(*idx);
+            if record.is_reverse() {
+                new_sequence.reverse();
+                new_quality.reverse();
             }
+
+            // remove_g_idx.sort();
+            // for idx in remove_g_idx.iter().rev() {
+            //     new_sequence.remove(*idx);
+            //     new_quality.remove(*idx);
+            // }
             new_quality.iter_mut().for_each(|x| *x += 33);
             write!(wtr, "@{}\n{}\n+\n{}\n", String::from_utf8(read_id.to_vec()).unwrap(),
                     String::from_utf8(new_sequence).unwrap(), 
@@ -109,7 +136,7 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
         writer.write_index(&index)?;
     }
     let mut reader = fasta::indexed_reader::Builder::default().build_from_path(fasta_path).unwrap();
-    let mut wtr = common_writer(output);
+    let wtr = common_writer(output);
     let mut writer = fasta::Writer::new(wtr);
     let mut hash = HashMap::<String, Vec<ModRecord>>::new();
     let bed_iter = if bedcpg == "bedMethyl" {
@@ -141,10 +168,10 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
         let mut seq = record.sequence().as_ref().to_vec();
         let mut new_seq: Vec<&u8> = Vec::new();
         let mut replace_m_idx: HashSet<usize> = HashSet::new();
-        let mut remove_g_idx: HashSet<usize> = HashSet::new();
+        // let mut remove_g_idx: HashSet<usize> = HashSet::new();
         for r in ranges {
             replace_m_idx.insert(r.start);
-            remove_g_idx.insert(r.end);
+            // remove_g_idx.insert(r.end);
    
         }
         log::info!("Processing {}", chrom);
@@ -158,7 +185,7 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
             }
         }
 
-        seq.retain(|&c| c != b'\0');
+        // seq.retain(|&c| c != b'\0');
         
 
         let definition = fasta::record::Definition::new(record.name().to_string(), None);

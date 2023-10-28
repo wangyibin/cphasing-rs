@@ -83,7 +83,7 @@ fn calculate_alignment_score_from_cigar_string_view(cigar: CigarStringView) -> a
     Ok(score)
 }
 
-fn mod_seq_complement(seq: &mut Vec<u8>) {
+pub fn mod_seq_complement(seq: &mut Vec<u8>) {
     let mut flag = false;
     for i in 0..seq.len() {
         seq[i] = match seq[i] {
@@ -221,7 +221,7 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn()
-                        .expect("failed to execute child");
+                        .unwrap();
     {
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
         stdin.write_all(ref_seqs.as_bytes()).expect("Failed to write to stdin");
@@ -230,13 +230,13 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
     let output = child.wait_with_output().expect("Failed to read stdout");
     let output = String::from_utf8_lossy(&output.stdout).to_string();
    
-    let mut lines = output.lines();
+    let lines = output.lines();
     
     for line in lines {
         if line.starts_with("@") {
             continue;
         }
-        let mut record = Record::from_sam(&header_view, &line.as_bytes()).unwrap();
+        let record = Record::from_sam(&header_view, &line.as_bytes()).unwrap();
         if record.is_unmapped() {
             continue;
         }
@@ -248,14 +248,17 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
 }
 
 fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>, 
-    bam_header: &HeaderView, min_quality: u8, writer: &mut Writer) {
+    bam_header: &HeaderView, min_quality: u8, min_prob: f32,
+    writer: &mut Writer) {
        
     if !au.is_empty() {
         let read_id = au.read_id();
+        
         'outer: for (p, s) in au.Primary.iter().zip(au.Secondary.iter()) {
             let mut read_idx = 0;
             let seq_len = p.seq_len() as u64;
-    
+            
+
             if p.mapq() >= min_quality || s.len() == 0 {
                 writer.write(&p).unwrap();
                 if s.len() > 0 {
@@ -275,6 +278,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         if p_parser.is_reverse {
                             let mut seq = seq.as_bytes().to_vec();
                             mod_seq_complement(&mut seq);
+                            
                             targets.push(SeqRecord {
                                 // name: p_parser.target.clone(),
                                 name: read_idx.to_string(),
@@ -296,7 +300,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                 read_idx += 1;
                 
                 let mut seq = p.seq().as_bytes().clone();
-                let mut query_seq = &mut seq[p_parser.query_start as usize..p_parser.query_end as usize];
+                let query_seq = &mut seq[p_parser.query_start as usize..p_parser.query_end as usize];
                
                 if p_parser.is_reverse {
                     // query_seq.reverse();
@@ -322,7 +326,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                             }
 
                             let qual = qual_to_prob(m.qual as f32);
-                            if qual >= 0.75 {
+                            if qual >= min_prob {
                                 mod_flag = true;
                                 let new_position = position - p_parser.query_start as i32;
                                 mod_seq[new_position as usize] = m.modified_base as u8;
@@ -383,7 +387,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                     }
                 
   
-                let (mut align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
+                let (align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
 
                 let align_result_len = align_results.len();
                 if align_result_len > 0 {
@@ -391,6 +395,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                     for (a_idx, a) in align_results.iter().enumerate() {
                         let a_parser = RecordParser::parse(&a, &new_header_view, seq_len);
 
+                     
                         let mut new_record = if a_parser.target == "0" {
                             Record::from(p.clone())
                             
@@ -399,11 +404,38 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         };
 
 
-                        match a_idx {
-                            0 => {
+                        match !a.is_secondary() {
+                            true => {
                                 new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
+                                if new_record.is_reverse() {
+                                    if new_record.is_supplementary() {
+                                        new_record.set_flags(0x910);
+                                    } else {
+                                        new_record.set_flags(0x10);
+                                    }
+                                } else {
+                                    if new_record.is_supplementary() {
+                                        new_record.set_flags(0x900);
+                                    } else {
+                                        new_record.set_flags(0x0);
+                                    }
+                                }
                             },
-                            _ => {
+                            false => {
+                                if new_record.is_reverse() {
+                                    if new_record.is_supplementary() {
+                                        new_record.set_flags(0x910);
+                                    } else {
+                                        new_record.set_flags(0x110);
+                                    }
+                                } else {
+                                    if new_record.is_supplementary() {
+                                        new_record.set_flags(0x1000);
+                                    } else {
+                                        new_record.set_flags(0x100);
+                                    }
+                                    
+                                }
                                 new_record.set(p.qname(), None, &[], &[]);
                             }
                         }
@@ -435,8 +467,8 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         new_record.remove_aux(b"NM");
                         new_record.remove_aux(b"AS");
                         new_record.remove_aux(b"tp");
-                        new_record.push_aux(b"NM", Aux::U32(new_nm));
-                        new_record.push_aux(b"AS", Aux::U32(new_score));
+                        new_record.push_aux(b"NM", Aux::U32(new_nm)).unwrap();
+                        new_record.push_aux(b"AS", Aux::U32(new_score)).unwrap();
                         match a_idx {
                             0 => {
                                 new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
@@ -571,7 +603,7 @@ pub struct RecordParser {
 }
 
 impl RecordParser {
-    fn parse(r: &Record, h: &HeaderView, seq_len: u64) -> RecordParser {
+    pub fn parse(r: &Record, h: &HeaderView, seq_len: u64) -> RecordParser {
         let cigar = r.cigar();
         let target = str::from_utf8(
                 h.tid2name(r.tid() as u32)).unwrap();
@@ -642,7 +674,7 @@ pub fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
 }
 
 pub fn read_bam(input_bam: &String, seqs: &HashMap<String, String>, min_quality: u8,
-                output: &String) {
+                min_prob: f32, output: &String) {
     let mut bam = Reader::from_path(input_bam).unwrap();
     let mut total_reads: u64 = 0;
     let mut total_alignments: u64 = 0;
@@ -671,7 +703,8 @@ pub fn read_bam(input_bam: &String, seqs: &HashMap<String, String>, min_quality:
         if old_read_id != read_id {
             if old_read_id != "" {
                 let au = parse_read_unit(&read_unit);
-                do_some(&au, seqs, &bam_header, min_quality, &mut writer);
+                do_some(&au, seqs, &bam_header, min_quality, 
+                        min_prob, &mut writer);
                 
             }
 

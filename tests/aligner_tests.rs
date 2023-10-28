@@ -17,8 +17,9 @@ mod tests {
         let fa = Fastx::new(&fasta);
         let seqs = fa.get_chrom_seqs().unwrap();
         let min_quality: u8 = 10;
+        let min_prob: f32 = 0.75;
         let output = String::from("test/test.10000.align.sort.realign.bam");
-        read_bam(&input_bam, &seqs, min_quality, &output);
+        read_bam(&input_bam, &seqs, min_quality, min_prob, &output);
     }
 
     // #[test]

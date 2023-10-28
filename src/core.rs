@@ -3,6 +3,14 @@ use bio::io::fastq;
 use flate2::read;
 use gzp::deflate::Gzip;
 use gzp::{ZBuilder, Compression};
+use rust_htslib::bam::{
+    self, 
+    record::Aux, record::Cigar, 
+    record::CigarStringView,
+    Header, HeaderView,
+    Read, Reader, Record,
+    Writer, 
+};
 use std::io::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -10,7 +18,9 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::error::Error;
+use std::result::Result;
 use std::path::{Path, PathBuf};
+use std::process::{Command, exit};
 use serde::{ Deserialize, Serialize };
 
 
@@ -186,3 +196,24 @@ pub fn common_writer(file: &str) -> Box<dyn Write> {
     }
 
 }
+
+pub fn which(program: &str) -> Option<PathBuf> {
+    let paths = std::env::var("PATH").unwrap();
+    for path in paths.split(":") {
+        let path = Path::new(path).join(program);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+pub fn check_program(program: &str) {
+    if which(program).is_none() {
+        eprintln!("Error: {} is not installed", program);
+        exit(1);
+    }
+}
+
+
+

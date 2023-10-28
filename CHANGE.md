@@ -1,3 +1,9 @@
+## [v0.0.8]
+## Enhancement
+- `simulation`, simulation data from long read
+## Bug fixed
+- `modbam2fq`, fixed the bug of read orientation
+
 ## [v0.0.7]
 ## Enhancement
 - `aligner`, use command to execute minimap2

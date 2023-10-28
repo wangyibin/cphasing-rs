@@ -1,5 +1,7 @@
 use cphasing::cli::cli;
-use cphasing::core::{ BaseTable, common_writer, ContigPair };
+use cphasing::core::{ 
+    BaseTable, common_writer, ContigPair,
+    check_program};
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::Fastx;
 use cphasing::methy::{ modbam2fastq, modify_fasta };
@@ -10,6 +12,7 @@ use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
 use cphasing::prune::PruneTable;
+use cphasing::simulation::simulation_from_split_read;
 use std::collections::HashSet;
 use std::io::Write; 
 use chrono::Local;
@@ -36,11 +39,20 @@ fn main() {
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let min_prob = sub_matches.get_one::<f32>("MIN_PROB").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            check_program("minimap2");
 
             let fa = Fastx::new(&fasta);
             let seqs = fa.get_chrom_seqs().unwrap();
-            read_bam(&input_bam, &seqs, *min_quality, &output);
+            read_bam(&input_bam, &seqs, *min_quality, *min_prob, &output);
+        }
+        Some(("simulater", sub_matches)) => {
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            simulation_from_split_read(&input_bam, &output, *min_quality);
         }
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
@@ -77,7 +89,7 @@ fn main() {
             
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_mnd(&output);
+            pairs.to_mnd(&output).unwrap();
         }
    
         Some(("chromsizes", sub_matches)) => {
@@ -103,7 +115,7 @@ fn main() {
             let prunetable = PruneTable::new(&prune);
             let contigs:HashSet<ContigPair> = prunetable.contig_pairs().unwrap().into_iter().collect();
 
-            pairs.remove_by_contig_pairs(contigs, &output);
+            pairs.remove_by_contig_pairs(contigs, &output).unwrap();
 
         }
 
