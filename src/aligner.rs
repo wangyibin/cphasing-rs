@@ -3,10 +3,12 @@ use anyhow::Result as anyResult;
 use minimap2::*;
 use rust_htslib::bam::{ 
     self,
-    record::Aux, record::CigarStringView, record::Cigar,
+    record::Aux, record::CigarStringView, 
+    record::Cigar, record::CigarString,
     Read, Reader, Record, HeaderView, 
     Header, header::HeaderRecord,
     Writer};
+use rayon::prelude::*;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::io::{Cursor, Read as StdRead, Write, Seek};
@@ -278,7 +280,6 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         if p_parser.is_reverse {
                             let mut seq = seq.as_bytes().to_vec();
                             mod_seq_complement(&mut seq);
-                            
                             targets.push(SeqRecord {
                                 // name: p_parser.target.clone(),
                                 name: read_idx.to_string(),
@@ -330,7 +331,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                                 mod_flag = true;
                                 let new_position = position - p_parser.query_start as i32;
                                 mod_seq[new_position as usize] = m.modified_base as u8;
-                            }
+                            } 
                         }
                     }
                     if !mod_flag {
@@ -342,6 +343,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         }
                         continue 'outer;
                     }
+                    mod_flag = false;
 
                 } else {
                     writer.write(&p).unwrap();
@@ -354,6 +356,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                 }
     
                 if p.is_reverse() {
+                   
                     mod_seq.reverse();
                 }
                 for (ss_idx, ss) in s.iter().enumerate() {
@@ -366,6 +369,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                             if ss_parser.is_reverse {
                                 let mut seq = seq.as_bytes().to_vec();
                                 mod_seq_complement(&mut seq); // complementary
+                                
                                 targets.push(SeqRecord {
                                     // name: ss_parser.target.clone(),
                                     name: read_idx.to_string(),
@@ -386,7 +390,6 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         read_idx += 1;
                     }
                 
-  
                 let (align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
 
                 let align_result_len = align_results.len();
@@ -402,11 +405,18 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         } else {
                             Record::from(s[a_parser.target.parse::<usize>().unwrap() - 1 as usize].clone())
                         };
+                        
+                        if a_idx == 0 {
+                            new_record.push_aux(b"RA", Aux::String(&"y"));
+                        }
+                        // add RA tag, RA:Z:
+                        
 
-
+                        let cigar_string = new_record.cigar().take();
+                        let cigar_string: Option<&CigarString> = Some(&cigar_string);
                         match !a.is_secondary() {
                             true => {
-                                new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
+                                new_record.set(p.qname(), cigar_string, &p.seq().as_bytes(), p.qual());
                                 if new_record.is_reverse() {
                                     if new_record.is_supplementary() {
                                         new_record.set_flags(0x910);
@@ -436,7 +446,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                                     }
                                     
                                 }
-                                new_record.set(p.qname(), None, &[], &[]);
+                                new_record.set(p.qname(), cigar_string, &[], &[]);
                             }
                         }
 
@@ -477,6 +487,8 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                                 new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
                             }
                         }
+
+                        
                     
 
 
@@ -587,8 +599,6 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
         }
     }
 }
-
-
 
 
 #[derive(Debug)]

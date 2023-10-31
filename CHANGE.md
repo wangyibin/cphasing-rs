@@ -1,3 +1,7 @@
+## [v0.0.9]
+## Bug fixed
+- `aligner`, fixed bug of the orientation of mod reads
+
 ## [v0.0.8]
 ## Enhancement
 - `simulation`, simulation data from long read

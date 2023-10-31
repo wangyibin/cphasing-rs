@@ -81,7 +81,7 @@ fn main() {
 
             let prt = PoreCTable::new(&table);
 
-            prt.to_pairs(&chromsizes, &output);
+            prt.to_pairs(&chromsizes, &output).unwrap();
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

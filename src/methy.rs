@@ -39,9 +39,6 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
 
     for r in bam.records() {
         let record = r.unwrap();
-        if record.is_unmapped() {
-            continue;
-        }
         if record.is_secondary() {
             continue;
         }
@@ -107,6 +104,7 @@ pub fn modbam2fastq(input_bam: &String, min_prob: f32,
             //     new_sequence.remove(*idx);
             //     new_quality.remove(*idx);
             // }
+            // println!("{}", String::from_utf8(new_sequence.clone()).unwrap());
             new_quality.iter_mut().for_each(|x| *x += 33);
             write!(wtr, "@{}\n{}\n+\n{}\n", String::from_utf8(read_id.to_vec()).unwrap(),
                     String::from_utf8(new_sequence).unwrap(), 

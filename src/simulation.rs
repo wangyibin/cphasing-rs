@@ -314,7 +314,7 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             
             writer.write(&new_record).unwrap();
             mm_init = mm_boundary;
-            println!("{}", new_qname.iter().map(|x| *x as char).collect::<String>());
+            // println!("{}", new_qname.iter().map(|x| *x as char).collect::<String>());
             // println!("{}", String::from_utf8(new_seq.to_vec()).unwrap());
             let mut mod_pos = Vec::new();
             if let Ok(mods) = new_record.basemods_iter() {
