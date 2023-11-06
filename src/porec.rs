@@ -148,7 +148,7 @@ impl ConcatemerSummary {
 
         let result: String = self.to_string();
 
-        wtr.write_all(result.as_bytes());
+        wtr.write_all(result.as_bytes()).unwrap();
         log::info!("Successful output summary of concatemer `{}`", output);
     }
     // pub fn collapse(&self) -> HashMap<&str, u64> {
@@ -209,7 +209,7 @@ impl PoreCTable {
 
 
         let mut writer = common_writer(output);
-        writer.write_all(ph.to_string().as_bytes());
+        writer.write_all(ph.to_string().as_bytes()).unwrap();
 
         let mut wtr = csv::WriterBuilder::new()
                             .has_headers(false)

@@ -1,5 +1,6 @@
 #![allow(unused_variables, unused_imports)]
 pub mod aligner;
+pub mod bam;
 pub mod bed;
 pub mod cli;
 pub mod cutsite;

@@ -310,7 +310,7 @@ impl PAFTable {
 
         for pcr in concatemer.records.iter() {
             if pcr.filter_reason == "pass" {
-                wtr.serialize(&pcr);
+                wtr.serialize(&pcr).unwrap();
             }
         }
         match concatemer.info() {

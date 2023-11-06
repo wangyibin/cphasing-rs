@@ -119,7 +119,7 @@ impl ReadSummary {
 
         let result: String = self.to_string();
 
-        wtr.write_all(result.as_bytes());
+        wtr.write_all(result.as_bytes()).unwrap();
 
         log::info!("Successful output summary of read mapping `{}`", output);
 

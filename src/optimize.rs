@@ -80,7 +80,7 @@ impl ContigUnit {
         }; 
         
         let mut matrix: Array2<f64> = Array2::from_shape_vec((2, 2), v).unwrap();
-        let mut score: Array2<f64> = 
+        let score: Array2<f64> = 
             Array2::from_shape_vec((2, 2), 
                                     self.scores.get(&contig.contig)
                                                     .unwrap_or(&vec![0.0, 0.0, 0.0, 0.0])

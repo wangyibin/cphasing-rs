@@ -145,7 +145,7 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
     log::info!("Loading bed file");
     for record in bed_iter {
         if !hash.contains_key(&record.chrom) {
-            let mut ranges = Vec::<ModRecord>::new();
+            let ranges = Vec::<ModRecord>::new();
 
             hash.insert(record.chrom.clone(), ranges);
         } 

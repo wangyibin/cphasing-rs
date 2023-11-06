@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.9";
+const VERSION: &str = "0.0.10";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -37,22 +37,75 @@ pub fn cli() -> Command {
                         .default_value("-"))
                 .arg_required_else_help(true),
         ).subcommand(
-            Command::new("simulater")
-                .about("simulate short from long read")
-                .arg(arg!(<BAM> "raw bam with MM/ML tags"))
+            Command::new("splitbam")
+                .about("split bam by record number")
+                .arg(arg!(<BAM> "align bam from `dorado`"))
                 .arg(
-                    Arg::new("MIN_QUALITY")
-                        .long("min-quality")
-                        .short('q')
-                        .value_parser(value_parser!(u8))
-                        .default_value("40"))
+                    Arg::new("RECORD_NUM")
+                        .long("record-num")
+                        .short('n')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("output.split"))
                 .arg_required_else_help(true),
+        ).subcommand(
+            Command::new("splitfastq")
+                .about("split fastq by record number")
+                .arg(arg!(<FASTQ> "fastq"))
+                .arg(
+                    Arg::new("RECORD_NUM")
+                        .long("record-num")
+                        .short('n')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("output.split"))
+                .arg_required_else_help(true),
+        ).subcommand(
+            Command::new("simulator")
+                .about("simulating test data")
+                .arg_required_else_help(true)
+                .allow_external_subcommands(true)
+                .subcommand(
+                    Command::new("split-ont")
+                        .about("simulate short from long read")
+                        .arg(arg!(<BAM> "raw bam with MM/ML tags"))
+                        .arg(
+                            Arg::new("MIN_QUALITY")
+                                .long("min-quality")
+                                .short('q')
+                                .value_parser(value_parser!(u8))
+                                .default_value("40"))
+                        .arg(
+                            Arg::new("OUTPUT")
+                                .long("output")
+                                .short('o')
+                                .value_parser(value_parser!(String))
+                                .default_value("-"))
+                        .arg_required_else_help(true),
+                ).subcommand(
+                    Command::new("porec")
+                        .about("simulate pore-c reads")
+                        .arg(arg!(<FASTA> "fasta"))
+                        .arg(arg!(<VCF> "vcf"))
+                        .arg(arg!(<BED> "bed"))
+                        .arg(
+                            Arg::new("OUTPUT")
+                                .long("output")
+                                .short('o')
+                                .value_parser(value_parser!(String))
+                                .default_value("-"))
+                        .arg_required_else_help(true),
+                )
         ).subcommand(
             Command::new("cutsite")
                 .about("cut restriction site on pore-c reads")

@@ -1,4 +1,5 @@
 use anyhow::Result as AnyResult;
+use bio::io::fastq::{Reader, Record, Writer};
 use std::collections::HashMap;
 use std::error::Error;
 use std::borrow::Cow;
@@ -75,4 +76,31 @@ impl Fastx {
     }
 }
 
+// split fastq into several files by record number
+pub fn split_fastq(input_fastq: &String, output_prefix: &String, 
+             record_num: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let buf = common_reader(input_fastq);
+    let mut fastq = Reader::new(buf);
+    let mut i = 0;
+    let mut j = 0;
+    log::info!("write {} records to {}", &record_num, format!("{}_{}.fastq.gz", output_prefix, j));
+    let writer = common_writer(&format!("{}_{}.fastq.gz", output_prefix, j));
+    let mut wtr = Writer::new(writer);
+    for r in fastq.records() {
+        let record = r?;
+        wtr.write_record(&record)?;
+        i += 1;
+        if i == record_num {
+            j += 1;
+            let writer = common_writer(&format!("{}_{}.fastq.gz", output_prefix, j));
+            wtr = Writer::new(writer);
+            log::info!("write {} records to {}", i, format!("{}_{}.fastq.gz", output_prefix, j));
+            i = 0;
+        }
+    }
+
+
+    
+    Ok(())
+}
 

@@ -1,18 +1,20 @@
+use cphasing::aligner::read_bam;
+use cphasing::bam::split_bam;
 use cphasing::cli::cli;
 use cphasing::core::{ 
     BaseTable, common_writer, ContigPair,
     check_program};
 use cphasing::cutsite::cut_site;
-use cphasing::fastx::Fastx;
+use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
-use cphasing::aligner::read_bam;
 use cphasing::optimize::ContigScoreTable;
 use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
 use cphasing::prune::PruneTable;
-use cphasing::simulation::simulation_from_split_read;
+use cphasing::simulation::{ 
+        simulation_from_split_read, simulate_porec };
 use std::collections::HashSet;
 use std::io::Write; 
 use chrono::Local;
@@ -48,11 +50,41 @@ fn main() {
             let seqs = fa.get_chrom_seqs().unwrap();
             read_bam(&input_bam, &seqs, *min_quality, *min_prob, &output);
         }
-        Some(("simulater", sub_matches)) => {
+        Some(("splitbam", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
-            simulation_from_split_read(&input_bam, &output, *min_quality);
+            let output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let record_num = sub_matches.get_one::<usize>("RECORD_NUM").expect("error");
+
+            split_bam(&input_bam, &output_prefix, *record_num).unwrap();
+        }
+        Some(("splitfastq", sub_matches)) => {
+            let input_fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
+            let output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let record_num = sub_matches.get_one::<usize>("RECORD_NUM").expect("error");
+
+            split_fastq(&input_fastq, &output_prefix, *record_num).unwrap();
+        }
+        Some(("simulator", sub_matches)) => {
+            match sub_matches.subcommand() {
+                Some(("split-ont", sub_sub_matches)) => {
+                    let input_bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+                    let min_quality = sub_sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+                    simulation_from_split_read(&input_bam, &output, *min_quality);
+                }
+                Some(("porec", sub_sub_matches)) => {
+                    let fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
+                    let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
+                    let bed = sub_sub_matches.get_one::<String>("BED").expect("required");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+                    simulate_porec(&fasta, &vcf, &bed, &output);
+                }
+                _ => {
+                    eprintln!("No such subcommand.");
+                }
+            }
+            
         }
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");

@@ -15,7 +15,6 @@ use std::io::{Cursor, Read as StdRead, Write, Seek};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::str;
-use std::mem;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{ Duration, Instant };
@@ -179,12 +178,18 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
                                 ) -> anyResult<(Vec::<Record>, HeaderView)> {
     let mut align_results = Vec::new();
     let start_time = Instant::now();
+    // let read_id_tmp = read_id.clone();
+    // let mod_seq = Arc::new(mod_seq.to_vec());
+    // let handle = thread::spawn(move || {
+    //     let mut temp_file = NamedTempFile::new().unwrap();
+    //     temp_file.write_all(format!(">{}\n", read_id_tmp).as_bytes()).unwrap();
+    //     temp_file.write_all(&mod_seq).unwrap();
+    //     temp_file
+    // });
     let mut temp_file = NamedTempFile::new().unwrap();
     temp_file.write_all(format!(">{}\n", read_id).as_bytes()).unwrap();
     temp_file.write_all(mod_seq).unwrap();
-    let end_time = Instant::now();
-    let cpu_time = end_time - start_time;
-    // println!("CPU time: {:.10}s", cpu_time.as_secs_f64());
+   
     // temp_file.seek(std::io::SeekFrom::Start(0)).unwrap();
     // let mut contents = String::new();
     // temp_file.read_to_string(&mut contents)?;
@@ -212,6 +217,8 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
         format!(">{}\n{}\n", x.name, String::from_utf8(x.seq.to_vec()).unwrap())
     }).collect::<Vec<String>>().join("");
 
+    // let temp_file = handle.join().unwrap();
+
     let mut child = Command::new("minimap2")
                         .arg("-x")
                         .arg("map-ont")
@@ -232,6 +239,9 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
     let output = child.wait_with_output().expect("Failed to read stdout");
     let output = String::from_utf8_lossy(&output.stdout).to_string();
    
+    let end_time = Instant::now();
+    let cpu_time = end_time - start_time;
+    // println!("CPU time: {:.10}s", cpu_time.as_secs_f64());
     let lines = output.lines();
     
     for line in lines {

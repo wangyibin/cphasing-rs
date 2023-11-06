@@ -12,4 +12,10 @@ mod tests {
         let seqs = fa.get_chrom_seqs().unwrap();
         println!("{:?}", seqs);
     }
+
+    #[test]
+    fn test_split_fastq() {
+        let fastq = String::from("test/test.fq");
+        split_fastq(&fastq, &String::from("test/out.split"), 1).unwrap();
+    }
 }

@@ -1,3 +1,7 @@
+## [v0.0.10]
+## Enancement
+- `simulator`, add porec simulator which modified reads by vcf
+
 ## [v0.0.9]
 ## Bug fixed
 - `aligner`, fixed bug of the orientation of mod reads

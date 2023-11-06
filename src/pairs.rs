@@ -283,6 +283,11 @@ impl Pairs {
         
         Ok(())
     }
+
+    pub fn to_bam(&self, output: &String) {
+        
+        let mut wtr = bam::Writer::from_path(output, &bam::Header::new()).unwrap();
+    }
 }
 
 

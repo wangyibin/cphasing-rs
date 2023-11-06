@@ -1,4 +1,7 @@
 use anyhow::Result as anyResult;
+use noodles::{core::Region,
+              core::Position,
+              vcf};
 use rust_htslib::bam::{
     self, 
     record::Aux, record::AuxArray, 
@@ -13,6 +16,9 @@ use rand::{ Rng, SeedableRng };
 use rand::rngs::StdRng;
 
 use std::path::Path;
+
+use crate::core::{ BaseTable, common_writer };
+use crate::fastx::Fastx;
 
 
 #[derive(Debug)]
@@ -214,7 +220,7 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
         mm_list.remove(0);
         let mm_list = mm_list.iter().map(|x| x.parse::<u32>().unwrap()).collect::<Vec<u32>>();
         // println!("{:?} {}", mm_list, mm_list.len());
-        let mut ml_list = match record.aux(b"ML").unwrap() {
+        let ml_list = match record.aux(b"ML").unwrap() {
             Aux::ArrayU8(v) => {
                 v.iter().map(|x| x as u16).collect::<Vec<_>>()
             },
@@ -223,8 +229,6 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
 
         let mut mm_boundary: usize = 0;
         let mut mm_init: usize = 0;
-        let mut prev_c_count = 0;
-        let mut prev_mm_cum = 0;
         let mut least_c_counts = 0;
 
         'inner1: for (i, (a, b)) in pos_list_1.iter().zip(pos_list_2.iter()).enumerate() {
@@ -244,12 +248,12 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             new_record.set_flags(0x4);
             new_record.set_mapq(0);
             new_record.set_tid(-1);
-            new_record.remove_aux(b"MD");
-            new_record.remove_aux(b"AS");
-            new_record.remove_aux(b"NM");
-            new_record.remove_aux(b"XA");
-            new_record.remove_aux(b"SA");
-            new_record.remove_aux(b"tp");
+            new_record.remove_aux(b"MD").unwrap();
+            new_record.remove_aux(b"AS").unwrap();
+            new_record.remove_aux(b"NM").unwrap();
+            new_record.remove_aux(b"XA").unwrap();
+            new_record.remove_aux(b"SA").unwrap();
+            new_record.remove_aux(b"tp").unwrap();
 
             let mut new_mm_list = Vec::new();
             let mut new_ml_list: Vec<u8> = Vec::new();
@@ -280,18 +284,8 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             
             if new_mm_list.len() != 0 {
 
-                // least_c_counts = prev_c_count as u32 - prev_mm_cum as u32;
-                
-                // let new_value = new_mm_list[0] - least_c_counts;
-                // println!("{} {}", new_value, least_c_counts);
-                // std::mem::replace(&mut new_mm_list[0], &new_value);
-
-                // prev_mm_cum = mm_cum;
-                // prev_c_count = c_counts;
-                
-
-                new_record.remove_aux(b"MM");
-                new_record.remove_aux(b"ML");
+                new_record.remove_aux(b"MM").unwrap();
+                new_record.remove_aux(b"ML").unwrap();
                 // println!("{:?} {} {}", new_mm_list, new_mm_list.iter().sum::<u32>() + new_mm_list.len() as u32, new_mm_list.len());
                 // push MM tag
                 let mut mm_str = String::new();
@@ -305,11 +299,11 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
                 
                 }
                 mm_str.push(';');
-                new_record.push_aux(b"MM", Aux::String(&mm_str));
+                new_record.push_aux(b"MM", Aux::String(&mm_str)).unwrap();
 
                 // push ML tag 
                 let ml_aux_array: AuxArray<u8> = AuxArray::from(&new_ml_list);
-                new_record.push_aux(b"ML", Aux::ArrayU8(ml_aux_array));
+                new_record.push_aux(b"ML", Aux::ArrayU8(ml_aux_array)).unwrap();
             }
             
             writer.write(&new_record).unwrap();
@@ -328,12 +322,127 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             };
         }
 
-       
-        
-
         old_read_id = qname_raw;
     }
 
 }
 
 
+// simulation pore-c reads through consensus sequence from a vcf file 
+// input: vcf file, output: fasta file
+pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &String) {
+    let fa = Fastx::new(fasta);
+    let vcf_prefix = vcf.split(".").collect::<Vec<&str>>()[0];
+    let seqs = fa.get_chrom_seqs().unwrap();
+    let mut writer = common_writer(&output);
+    let mut bed_reader = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(false)
+        .from_path(bed).unwrap();
+
+    let mut prev_read_idx = String::new();
+    let mut read = Vec::new();
+    'outer: for record in bed_reader.records() {
+        let record = record.unwrap();
+        let chrom = record.get(0).unwrap();
+        let start = record.get(1).unwrap().parse::<usize>().unwrap();
+        let end = record.get(2).unwrap().parse::<usize>().unwrap();
+        let seq = seqs.get(chrom).unwrap().get(start..end).unwrap();
+        let read_idx = record.get(3).unwrap();
+        let region = format!("{}:{}-{}", chrom, start + 1, end);
+        let region = region.parse().unwrap();
+        let mut vcf_reader = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
+        let vcf_header = vcf_reader.read_header().unwrap();
+        
+        let mut vcf_records = vcf_reader.query(&vcf_header, &region).unwrap();
+        let mut seq = seq.chars();
+        let seq_vec = seq.collect::<Vec<char>>();
+
+        let mut pos_vec = Vec::new();
+        let mut ref_vec = Vec::new();
+        let mut alt_vec = Vec::new();
+        'inner: for result in vcf_records {
+            let r = result.unwrap();
+            let ref_len = r.reference_bases().len();
+            let alt_len = r.alternate_bases().len();
+            let ref_seq = r.reference_bases().to_vec();
+            let alt_seq = r.alternate_bases().to_string().chars().collect::<Vec<char>>();
+            let pos = usize::from(r.position()) as i64 - start as i64 - 1;
+            if pos < 0 {
+                continue 'inner;
+            }
+            pos_vec.push(pos);
+            ref_vec.push(ref_len);
+            alt_vec.push(alt_seq);
+     
+        }
+
+        if pos_vec.len() == 0 {
+            read.push(seq_vec.iter().collect::<String>());
+        } else {
+            let mut new_seq_vec = Vec::new();
+            let mut flag = 0;
+            'inner: for (i, c) in seq_vec.iter().enumerate() {
+                while flag != 0 {
+                    flag -= 1;
+                    continue 'inner;
+                }
+                if pos_vec.contains(&(i as i64)) {
+                    let idx = pos_vec.iter().position(|&x| x == i as i64).unwrap();
+                    let ref_len = ref_vec[idx];
+                    let alt_len = alt_vec[idx].len();
+                    if ref_len == 1 {
+                        if alt_len == 1 {
+                            new_seq_vec.push(alt_vec[idx][0]);
+
+                        } else if alt_len > 1 {
+                            for s in alt_vec[idx].iter() {
+                                new_seq_vec.push(*s);
+                            }
+                        } else {
+                            continue 'inner;
+                        }
+                    } else if ref_len > 1 {
+                        if alt_len == 1 {
+                            new_seq_vec.push(alt_vec[idx][0]);
+
+                        } else if alt_len > 1 {
+                            for s in alt_vec[idx].iter() {
+                                new_seq_vec.push(*s);
+                            }
+                        } else {
+                            continue 'inner;
+                        }
+                        flag = ref_len - 1
+                    } else {
+                        if alt_len == 1 {
+                            new_seq_vec.push(alt_vec[idx][0]);
+
+                        } else if alt_len > 1 {
+                            for s in alt_vec[idx].iter() {
+                                new_seq_vec.push(*s);
+                            }
+                        } else {
+                            continue 'inner;
+                        }
+                    }
+                } else {
+                    new_seq_vec.push(*c);
+                }
+            }
+            let new_seq = new_seq_vec.iter().collect::<String>();
+            read.push(new_seq);
+        }
+        if prev_read_idx != read_idx.to_string() && prev_read_idx != "" {
+            writer.write_all(format!(">{}_{}\n{}\n", prev_read_idx, vcf_prefix, read.join("")).as_bytes()).unwrap();
+           
+            read.clear();
+        }
+     
+
+        prev_read_idx = read_idx.to_string();
+
+    }
+
+
+}
