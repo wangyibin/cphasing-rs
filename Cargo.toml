@@ -1,6 +1,6 @@
 [package]
 name = "cphasing"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 
 [[bin]]
@@ -29,6 +29,8 @@ noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
 nthash = { version = "0.5.1" }
 env_logger = { version = "0.10.0" }
 itertools = { version = "0.10.5"}
+ordered-float = { version = "4.0", default-features = false }
+pathfinding = { version = "4.3.2" }
 rand = { version = "0.8.5"}
 rayon = { version = "1.8.0" }
 regex = { version = "1.9" }

@@ -164,7 +164,6 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
         let region = chrom.parse().unwrap();
         let record = reader.query(&region).unwrap();
         let mut seq = record.sequence().as_ref().to_vec();
-        let mut new_seq: Vec<&u8> = Vec::new();
         let mut replace_m_idx: HashSet<usize> = HashSet::new();
         // let mut remove_g_idx: HashSet<usize> = HashSet::new();
         for r in ranges {

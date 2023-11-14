@@ -119,12 +119,23 @@ pub struct ContigPair {
 
 impl ContigPair {
     pub fn new(contig1: String, contig2: String) -> ContigPair {
+
         ContigPair { Contig1: contig1, Contig2: contig2 }
     }
 
     pub fn from_vec(vec: Vec<&String>) -> ContigPair {
         ContigPair { Contig1: (*vec[0].clone()).to_string(), 
                     Contig2: (*vec[1].clone()).to_string()}
+    }
+
+    pub fn swap(&mut self) {
+        std::mem::swap(&mut self.Contig1, &mut self.Contig2);
+    }
+
+    pub fn order(&mut self) {
+        if self.Contig1 > self.Contig2 {
+            self.swap();
+        }
     }
 
 }

@@ -1,19 +1,22 @@
 #![allow(unused_variables, unused_imports)]
 pub mod aligner;
+pub mod alleles;
 pub mod bam;
 pub mod bed;
 pub mod cli;
-pub mod cutsite;
 pub mod core;
+pub mod count_re;
+pub mod cutsite;
 pub mod fastx;
+pub mod kprune;
 pub mod methy;
 pub mod mnd;
 pub mod optimize;
 pub mod paf;
 pub mod paf2;
 pub mod pairs;
+pub mod pixels;
 pub mod porec;
-pub mod prune;
 pub mod simulation;
 pub mod sketch;
 

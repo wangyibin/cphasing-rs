@@ -417,7 +417,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         };
                         
                         if a_idx == 0 {
-                            new_record.push_aux(b"RA", Aux::String(&"y"));
+                            new_record.push_aux(b"RA", Aux::String(&"y")).unwrap();
                         }
                         // add RA tag, RA:Z:
                         
@@ -484,17 +484,17 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         };
                         
                         new_record.set_mapq(a.mapq().try_into().unwrap());
-                        new_record.remove_aux(b"NM");
-                        new_record.remove_aux(b"AS");
-                        new_record.remove_aux(b"tp");
+                        new_record.remove_aux(b"NM").unwrap();
+                        new_record.remove_aux(b"AS").unwrap();
+                        new_record.remove_aux(b"tp").unwrap();
                         new_record.push_aux(b"NM", Aux::U32(new_nm)).unwrap();
                         new_record.push_aux(b"AS", Aux::U32(new_score)).unwrap();
                         match a_idx {
                             0 => {
-                                new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
+                                new_record.push_aux(b"tp", Aux::Char(b"P"[0])).unwrap();
                             },
                             _ => {
-                                new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
+                                new_record.push_aux(b"tp", Aux::Char(b"S"[0])).unwrap();
                             }
                         }
 

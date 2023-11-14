@@ -1,3 +1,7 @@
+## [v0.0.11]
+- `pairs2bam`, convert 4DN pairs to a pseudo bam 
+- `kprune`,  a function to identify the allelic and cross-allelic contig pairs
+
 ## [v0.0.10]
 ## Enancement
 - `simulator`, add porec simulator which modified reads by vcf

@@ -354,8 +354,8 @@ pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &Strin
         let mut vcf_reader = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
         let vcf_header = vcf_reader.read_header().unwrap();
         
-        let mut vcf_records = vcf_reader.query(&vcf_header, &region).unwrap();
-        let mut seq = seq.chars();
+        let vcf_records = vcf_reader.query(&vcf_header, &region).unwrap();
+        let seq = seq.chars();
         let seq_vec = seq.collect::<Vec<char>>();
 
         let mut pos_vec = Vec::new();

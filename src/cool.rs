@@ -1,10 +1,3 @@
-// parse the open2c / cooler file format
-// the cool is a hdf5 file
-// the cool file is a matrix of contact frequency
-// the cool file is a sparse matrix
-// the cool file is a symmetric matrix
-// the cool file is a upper triangular matrix
-
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;

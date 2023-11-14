@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.10";
+const VERSION: &str = "0.0.11";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -37,6 +37,15 @@ pub fn cli() -> Command {
                         .default_value("-"))
                 .arg_required_else_help(true),
         ).subcommand(
+            Command::new("kprune")
+                .about("Identify the allelic and cross-allelic contig pairs")
+                .arg(arg!(<ALLELETABLE> "allele table"))
+                .arg(arg!(<PIXELS> "pixels"))
+                .arg(arg!(<COUNT_RE> "count re"))
+                .arg(arg!(<PRUNETABLE> "prune table"))
+
+        )
+        .subcommand(
             Command::new("splitbam")
                 .about("split bam by record number")
                 .arg(arg!(<BAM> "align bam from `dorado`"))
@@ -167,8 +176,54 @@ pub fn cli() -> Command {
                         .default_value("-"))
         )
         .subcommand(
+            Command::new("paf2pairs")
+                .about("convert paf to pairs")
+                .arg(arg!(<PAF> "paf"))
+                .arg(arg!(<CHROMSIZES> "chromsizes"))
+                .arg(
+                    Arg::new("MIN_MAPQ")
+                        .long("min-mapq")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(
+                    Arg::new("MIN_IDENTITY")
+                        .long("min-identity")
+                        .short('p')
+                        .value_parser(value_parser!(f32))
+                        .default_value("0.75"))
+                .arg(
+                    Arg::new("MIN_LENGTH")
+                        .long("min-length")
+                        .short('l')
+                        .value_parser(value_parser!(u32))
+                        .default_value("30"))
+                .arg(
+                    Arg::new("MAX_ORDER")
+                        .long("max-order")
+                        .short('m')
+                        .value_parser(value_parser!(u32))
+                        .default_value("50"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+        .subcommand(
             Command::new("pairs2mnd")
                 .about("convert pairs to mnd file")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        ).subcommand(
+            Command::new("pairs2bam")
+                .about("convert pairs to pseudo bam file")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
                     Arg::new("OUTPUT")
@@ -250,7 +305,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("optimize")
-            .about("optimize contigs")
+            .about("optimize contigs (developing)")
             .arg(arg!(<SCORE> "score"))
             .arg(
                 Arg::new("OUTPUT")

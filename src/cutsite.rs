@@ -31,7 +31,7 @@ pub fn cut_site(fastq: String, pattern: &[u8], output: String) -> Result<()>{
         occ.append(&mut len_vec);
 
         if occ.len() <= 1 {
-            writer.write(record.id(), record.desc(), record.seq(), record.qual());
+            writer.write(record.id(), record.desc(), record.seq(), record.qual()).unwrap();
         } else {
             let mut start_pos = 0;
             let end_pos = seq_length;
@@ -47,7 +47,7 @@ pub fn cut_site(fastq: String, pattern: &[u8], output: String) -> Result<()>{
                 let cut_seq = &seq_str[start_pos..end_pos];
                 let cut_qual = &qual[start_pos..end_pos];
                 let new_name = record.id().to_owned() + "/" + &i.to_string();
-                writer.write(&new_name, None, cut_seq.as_bytes(), cut_qual);
+                writer.write(&new_name, None, cut_seq.as_bytes(), cut_qual).unwrap();
 
                 start_pos += cut_seq.len();
             }

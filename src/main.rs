@@ -12,11 +12,12 @@ use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
 use cphasing::porec::PoreCTable;
-use cphasing::prune::PruneTable;
+use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec };
 use std::collections::HashSet;
 use std::io::Write; 
+use std::path::Path;
 use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
@@ -49,6 +50,17 @@ fn main() {
             let fa = Fastx::new(&fasta);
             let seqs = fa.get_chrom_seqs().unwrap();
             read_bam(&input_bam, &seqs, *min_quality, *min_prob, &output);
+        }
+        Some(("kprune", sub_matches)) => {
+            let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
+            let pixeltable = sub_matches.get_one::<String>("PIXELS").expect("required");
+            let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
+            let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+
+            let mut kpruner = KPruner::new(&alleletable, &pixeltable, &count_re, &prunetable);
+            kpruner.prune();
+            kpruner.prunetable.write(&prunetable);
+
         }
         Some(("splitbam", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
@@ -115,6 +127,25 @@ fn main() {
 
             prt.to_pairs(&chromsizes, &output).unwrap();
         }
+        Some(("paf2pairs", sub_matches)) => {
+            let paf = sub_matches.get_one::<String>("PAF").expect("required");
+            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
+            let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let pt = PAFTable::new(&paf);
+            
+            let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
+            let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
+            let table_output = format!("{}.porec.gz", prefix);
+            pt.paf2table(&table_output, min_quality, min_identity, min_length, max_order);
+            let prt = PoreCTable::new(&table_output);
+            prt.to_pairs(&chromsizes, &output).unwrap();
+
+        }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -122,6 +153,15 @@ fn main() {
             let mut pairs = Pairs::new(&pairs);
 
             pairs.to_mnd(&output).unwrap();
+        }
+        
+        Some(("pairs2bam", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let mut pairs = Pairs::new(&pairs);
+
+            pairs.to_bam(&output);
         }
    
         Some(("chromsizes", sub_matches)) => {
