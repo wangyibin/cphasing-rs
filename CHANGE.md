@@ -1,3 +1,6 @@
+## [v0.0.12]
+- `kprune`, introduce parallel 
+
 ## [v0.0.11]
 - `pairs2bam`, convert 4DN pairs to a pseudo bam 
 - `kprune`,  a function to identify the allelic and cross-allelic contig pairs

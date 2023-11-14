@@ -7,6 +7,7 @@ use std::path::Path;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
+use rayon::{ ThreadPoolBuilder, ThreadPool };
 use pathfinding::prelude::{kuhn_munkres, Matrix, Weights};
 
 use crate::alleles::AlleleTable;
@@ -146,45 +147,77 @@ impl KPruner {
     }
 
     pub fn cross_allelic(&mut self) -> Vec<ContigPair> {
-        let mut cross_allelic: Vec<ContigPair> = Vec::new();
+        
         let allelic_contigs = self.alleletable.get_allelic_contigs();
-        for contig_pair in &self.contig_pairs {
+        let cross_allelic: Vec<&ContigPair> =  self.contig_pairs
+                                                    .par_iter()
+                                                    .filter_map(|contig_pair| {
             let alleles1 = allelic_contigs.get(&contig_pair.Contig1).unwrap();
             let alleles2 = allelic_contigs.get(&contig_pair.Contig2).unwrap();
-            
-
             let mut group1 = std::iter::once(&contig_pair.Contig1).chain(alleles1.iter()).collect::<Vec<&String>>();
             let mut group2 = std::iter::once(&contig_pair.Contig2).chain(alleles2.iter()).collect::<Vec<&String>>();
-
             if group1.len() > group2.len() {
                 std::mem::swap(&mut group1, &mut group2);
             }
-            
-
             let mut matrix = Matrix::new(group1.len(), group2.len(), OrderedFloat(0.0));
-            for (i, ctg1) in group1.iter().enumerate() {
-                for (j, ctg2) in group2.iter().enumerate() {
-                    let mut tmp_contig_pair = ContigPair::new(ctg1.to_string(), ctg2.to_string());
-                    tmp_contig_pair.order();
-                    let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
-
-                    matrix[(i, j)] = OrderedFloat(*score);
-                }
-            }
-
+            matrix.par_iter_mut().enumerate().for_each(|(index, element) | {
+                let i = index / group2.len();
+                let j = index % group2.len();
+                let mut tmp_contig_pair = ContigPair::new(group1[i].to_string(), group2[j].to_string());
+                tmp_contig_pair.order();
+                let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
+                *element = OrderedFloat(*score);
+            });
+            
             let assignments =  maximum_bipartite_matching(matrix);
             if assignments[0] != 0 {
-                cross_allelic.push(contig_pair.clone());
+                Some(contig_pair)
+            } else {
+                None
             }
+            }).collect();
+
+        // for contig_pair in &self.contig_pairs {
+        //     let alleles1 = allelic_contigs.get(&contig_pair.Contig1).unwrap();
+        //     let alleles2 = allelic_contigs.get(&contig_pair.Contig2).unwrap();
             
-        }
+
+        //     let mut group1 = std::iter::once(&contig_pair.Contig1).chain(alleles1.iter()).collect::<Vec<&String>>();
+        //     let mut group2 = std::iter::once(&contig_pair.Contig2).chain(alleles2.iter()).collect::<Vec<&String>>();
+
+        //     if group1.len() > group2.len() {
+        //         std::mem::swap(&mut group1, &mut group2);
+        //     }
+            
+
+        //     let mut matrix = Matrix::new(group1.len(), group2.len(), OrderedFloat(0.0));
+        //     for (i, ctg1) in group1.iter().enumerate() {
+        //         for (j, ctg2) in group2.iter().enumerate() {
+        //             let mut tmp_contig_pair = ContigPair::new(ctg1.to_string(), ctg2.to_string());
+        //             tmp_contig_pair.order();
+        //             let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
+
+        //             matrix[(i, j)] = OrderedFloat(*score);
+        //         }
+        //     }
+
+        //     let assignments =  maximum_bipartite_matching(matrix);
+        //     if assignments[0] != 0 {
+        //         cross_allelic.push(contig_pair.clone());
+        //     }
+            
+        // }
         log::info!("Cross allelic contig pairs: {}", cross_allelic.len());
-        cross_allelic 
+        let cross_allelic = cross_allelic.into_iter().cloned().collect::<Vec<ContigPair>>();
+
+        cross_allelic
     }
 
     pub fn prune(&mut self) {
+       
         let allelic = self.allelic();
-        let mut cross_allelic = self.cross_allelic();
+        let cross_allelic = self.cross_allelic();
+
 
         for contig_pair in allelic.iter() {
             let prune_record = PruneRecord {
@@ -199,7 +232,7 @@ impl KPruner {
             self.prunetable.records.push(prune_record);
         }
 
-        for contig_pair in cross_allelic.iter() {
+        for contig_pair in cross_allelic.into_iter() {
             let prune_record = PruneRecord {
                 contig1: contig_pair.Contig1.clone(),
                 contig2: contig_pair.Contig2.clone(),

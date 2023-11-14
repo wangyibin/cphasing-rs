@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.11";
+const VERSION: &str = "0.0.12";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -43,7 +43,12 @@ pub fn cli() -> Command {
                 .arg(arg!(<PIXELS> "pixels"))
                 .arg(arg!(<COUNT_RE> "count re"))
                 .arg(arg!(<PRUNETABLE> "prune table"))
-
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("4"))
         )
         .subcommand(
             Command::new("splitbam")

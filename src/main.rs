@@ -52,10 +52,20 @@ fn main() {
             read_bam(&input_bam, &seqs, *min_quality, *min_prob, &output);
         }
         Some(("kprune", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
+            use rayon::prelude::*;
+
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let pixeltable = sub_matches.get_one::<String>("PIXELS").expect("required");
             let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
 
             let mut kpruner = KPruner::new(&alleletable, &pixeltable, &count_re, &prunetable);
             kpruner.prune();

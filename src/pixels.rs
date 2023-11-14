@@ -5,6 +5,8 @@ use std::error::Error;
 use std::path::Path;
 use std::io::{ Read, Write };
 use serde::{ Serialize, Deserialize };
+use rayon::prelude::*;
+
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair };
 
@@ -84,23 +86,38 @@ impl Pixels {
     }
 
     pub fn to_data(&self, re_count: HashMap<String, u32>, symmetric: bool) -> HashMap<ContigPair, f64> {
-        let mut data: HashMap<ContigPair, f64> = HashMap::new();
-        for record in &self.records {
-            let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-            if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
-                data.insert(contig_pair, record.count as f64);
+        // let mut data: HashMap<ContigPair, f64> = HashMap::new();
+        // for record in &self.records {
+        //     let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+        //     if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
+        //         data.insert(contig_pair, record.count as f64);
 
-            } else {
-                let re_count1 = re_count.get(&record.chrom1).unwrap();
-                let re_count2 = re_count.get(&record.chrom2).unwrap();
-                let re_count = (*re_count1 + *re_count2) as f64;
-                let count = record.count as f64;
-                let ratio = count / re_count;
-                data.insert(contig_pair, ratio);
-            }
+        //     } else {
+        //         let re_count1 = re_count.get(&record.chrom1).unwrap();
+        //         let re_count2 = re_count.get(&record.chrom2).unwrap();
+        //         let re_count = (*re_count1 + *re_count2) as f64;
+        //         let count = record.count as f64;
+        //         let ratio = count / re_count;
+        //         data.insert(contig_pair, ratio);
+        //     }
             
-        }
+        // }
+        
+        let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
+            ).map(|record| {
+                let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+                if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
+                    (contig_pair, record.count as f64)
 
+                } else {
+                    let re_count1 = re_count.get(&record.chrom1).unwrap();
+                    let re_count2 = re_count.get(&record.chrom2).unwrap();
+                    let re_count = (*re_count1 + *re_count2) as f64;
+                    let count = record.count as f64;
+                    let ratio = count / re_count;
+                    (contig_pair, ratio)
+                }
+            }).collect();
         data 
     }
 }
