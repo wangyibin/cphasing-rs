@@ -4,6 +4,7 @@ use cphasing::cli::cli;
 use cphasing::core::{ 
     BaseTable, common_writer, ContigPair,
     check_program};
+use cphasing::count_re::CountRE;
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
@@ -108,6 +109,18 @@ fn main() {
             }
             
         }
+        Some(("count_re", sub_matches)) => {
+            let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let motif = sub_matches.get_one::<String>("MOTIF").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut count_re = CountRE::new(&output);
+            let fasta = Fastx::new(&input_fasta);
+            let contigsizes = fasta.get_chrom_size().unwrap();
+            let counts = fasta.count_re(&motif).unwrap();
+            count_re.from_hashmap(counts, contigsizes);
+            count_re.write(&output);
+        }
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
@@ -155,6 +168,25 @@ fn main() {
             let prt = PoreCTable::new(&table_output);
             prt.to_pairs(&chromsizes, &output).unwrap();
 
+        }
+        Some(("pairs2contacts", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let max_contacts = sub_matches.get_one::<u32>("MAX_CONTACTS").expect("error");
+            let mut pairs = Pairs::new(&pairs);
+
+            let contacts = pairs.to_contacts(*max_contacts).unwrap();
+            contacts.write(&output);
+            log::info!("Contacts written to {}", output);
+            
+        }
+        Some(("pairs2clm", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let max_contacts = sub_matches.get_one::<u32>("MAX_CONTACTS").expect("error");
+            let mut pairs = Pairs::new(&pairs);
+
+            pairs.to_clm(*max_contacts, &output);
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

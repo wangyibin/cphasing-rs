@@ -1,7 +1,14 @@
+## [v0.0.13]
+## New features
+- `pairs2clm`, convert pairs to clm file
+- `count_re`, count the restrict enzyme site counts in genome
+
 ## [v0.0.12]
+## Enhancement
 - `kprune`, introduce parallel 
 
 ## [v0.0.11]
+## New features
 - `pairs2bam`, convert 4DN pairs to a pseudo bam 
 - `kprune`,  a function to identify the allelic and cross-allelic contig pairs
 

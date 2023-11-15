@@ -12,40 +12,38 @@ use crate::core::{ BaseTable, ContigPair };
 
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PixelRecord {
+pub struct ContactRecord {
     pub chrom1: String,
-    pub start1: u32,
-    pub end1: u32,
     pub chrom2: String,
-    pub start2: u32,
-    pub end2: u32,
     pub count: u32,
 }
 
-impl PixelRecord {
+impl ContactRecord {
     pub fn new() -> Self {
         Self {
             chrom1: String::new(),
-            start1: 0,
-            end1: 0,
             chrom2: String::new(),
-            start2: 0,
-            end2: 0,
             count: 0,
         }
     }
 
+    pub fn is_some(&self) -> bool {
+        match self.count {
+            0 => false,
+            _ => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Pixels {
+pub struct Contacts {
     pub file: String,
-    pub records: Vec<PixelRecord>,
+    pub records: Vec<ContactRecord>,
 }
 
-impl BaseTable for Pixels {
-    fn new(name: &String) -> Pixels {
-        Pixels {
+impl BaseTable for Contacts {
+    fn new(name: &String) -> Contacts {
+        Contacts {
             file: name.clone(),
             records: Vec::new(),
         }
@@ -67,7 +65,7 @@ impl BaseTable for Pixels {
 }
 
 
-impl Pixels {
+impl Contacts {
     pub fn parse(&mut self) {
 
        let input = common_reader(&self.file);
@@ -77,31 +75,15 @@ impl Pixels {
                 .has_headers(false)
                 .from_reader(input);
     
-          let mut records: Vec<PixelRecord> = Vec::new();
+          let mut records: Vec<ContactRecord> = Vec::new();
           for result in rdr.deserialize() {
-                let record: PixelRecord = result.unwrap();
+                let record: ContactRecord = result.unwrap();
                 self.records.push(record);
           }
        
     }
 
     pub fn to_data(&self, re_count: HashMap<String, u32>, symmetric: bool) -> HashMap<ContigPair, f64> {
-        // let mut data: HashMap<ContigPair, f64> = HashMap::new();
-        // for record in &self.records {
-        //     let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-        //     if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
-        //         data.insert(contig_pair, record.count as f64);
-
-        //     } else {
-        //         let re_count1 = re_count.get(&record.chrom1).unwrap();
-        //         let re_count2 = re_count.get(&record.chrom2).unwrap();
-        //         let re_count = (*re_count1 + *re_count2) as f64;
-        //         let count = record.count as f64;
-        //         let ratio = count / re_count;
-        //         data.insert(contig_pair, ratio);
-        //     }
-            
-        // }
         
         let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
             ).map(|record| {
@@ -119,5 +101,13 @@ impl Pixels {
                 }
             }).collect();
         data 
+    }
+
+
+    pub fn write(&self, output: &String) {
+        let mut wtr = common_writer(output);
+        for record in &self.records {
+            wtr.write_all(format!("{}\t{}\t{}\n", record.chrom1, record.chrom2, record.count).as_bytes()).unwrap();
+        }
     }
 }

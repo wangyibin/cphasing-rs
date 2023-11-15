@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{arg, Arg, Command, Subcommand, value_parser};
 
-const VERSION: &str = "0.0.12";
+const VERSION: &str = "0.0.13";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -121,6 +121,24 @@ pub fn cli() -> Command {
                         .arg_required_else_help(true),
                 )
         ).subcommand(
+            Command::new("count_re")
+                .about("count restriction enzyme sites, only support single enzyme")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(
+                    Arg::new("MOTIF")
+                        .long("motif")
+                        .short('m')
+                        .value_parser(value_parser!(String))
+                        .default_value("GATC"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("cutsite")
                 .about("cut restriction site on pore-c reads")
                 .arg(arg!(<FASTQ> "pore-c reads"))
@@ -211,6 +229,36 @@ pub fn cli() -> Command {
                         .default_value("50"))
                 .arg(
                     Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+        .subcommand(
+            Command::new("pairs2contacts")
+                .about("calculate the contacts between contigs")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(Arg::new("MAX_CONTACTS")
+                        .long("max-contacts")
+                        .short('c')
+                        .value_parser(value_parser!(u32))
+                        .default_value("3"))
+                .arg(Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+        )
+        .subcommand(
+            Command::new("pairs2clm")
+                .about("convert pairs to clm file, which is used for `allhic optimize`")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(Arg::new("MAX_CONTACTS")
+                        .long("max-contacts")
+                        .short('c')
+                        .value_parser(value_parser!(u32))
+                        .default_value("3"))
+                .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))

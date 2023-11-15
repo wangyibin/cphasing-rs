@@ -13,7 +13,7 @@ use pathfinding::prelude::{kuhn_munkres, Matrix, Weights};
 use crate::alleles::AlleleTable;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair };
-use crate::pixels::Pixels;
+use crate::contacts::Contacts;
 use crate::count_re::CountRE;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -111,13 +111,13 @@ pub struct KPruner {
 }
 
 impl KPruner {
-    pub fn new(alleletable: &String, pixels: &String, count_re: &String, prunetable: &String) -> KPruner {
+    pub fn new(alleletable: &String, contacts: &String, count_re: &String, prunetable: &String) -> KPruner {
         
         let mut count_re = CountRE::new(count_re);
         count_re.parse();
-        let mut pixels = Pixels::new(pixels);
-        pixels.parse();
-        let contact_data = pixels.to_data(count_re.to_data(), true);
+        let mut contacts = Contacts::new(contacts);
+        contacts.parse();
+        let contact_data = contacts.to_data(count_re.to_data(), true);
         let mut contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
 
         let mut alleletable = AlleleTable::new(alleletable);
@@ -177,36 +177,7 @@ impl KPruner {
             }
             }).collect();
 
-        // for contig_pair in &self.contig_pairs {
-        //     let alleles1 = allelic_contigs.get(&contig_pair.Contig1).unwrap();
-        //     let alleles2 = allelic_contigs.get(&contig_pair.Contig2).unwrap();
-            
 
-        //     let mut group1 = std::iter::once(&contig_pair.Contig1).chain(alleles1.iter()).collect::<Vec<&String>>();
-        //     let mut group2 = std::iter::once(&contig_pair.Contig2).chain(alleles2.iter()).collect::<Vec<&String>>();
-
-        //     if group1.len() > group2.len() {
-        //         std::mem::swap(&mut group1, &mut group2);
-        //     }
-            
-
-        //     let mut matrix = Matrix::new(group1.len(), group2.len(), OrderedFloat(0.0));
-        //     for (i, ctg1) in group1.iter().enumerate() {
-        //         for (j, ctg2) in group2.iter().enumerate() {
-        //             let mut tmp_contig_pair = ContigPair::new(ctg1.to_string(), ctg2.to_string());
-        //             tmp_contig_pair.order();
-        //             let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
-
-        //             matrix[(i, j)] = OrderedFloat(*score);
-        //         }
-        //     }
-
-        //     let assignments =  maximum_bipartite_matching(matrix);
-        //     if assignments[0] != 0 {
-        //         cross_allelic.push(contig_pair.clone());
-        //     }
-            
-        // }
         log::info!("Cross allelic contig pairs: {}", cross_allelic.len());
         let cross_allelic = cross_allelic.into_iter().cloned().collect::<Vec<ContigPair>>();
 
@@ -250,7 +221,6 @@ impl KPruner {
 
 // kuhn munkres algorithm
 pub fn maximum_bipartite_matching(matrix: Matrix<OrderedFloat<f64>>) -> Vec<usize>  {
-
     let (cash_flow, assignments) = kuhn_munkres(&matrix);
 
     assignments

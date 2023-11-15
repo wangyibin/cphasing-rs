@@ -8,8 +8,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pixels() {
-        let file = String::from("test/test.pixels");
+    fn test_contacts() {
+        let file = String::from("test/test.contacts");
         let mut pt = Pixels::new(&file);
         let mut cr = CountRE::new(&String::from("test/test_counts_GATC.txt"));
         // cr.parse();

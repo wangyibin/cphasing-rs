@@ -74,6 +74,25 @@ impl Fastx {
     
         Ok(chrom_seqs)
     }
+
+    pub fn count_re(&self, motif: &String) -> AnyResult<HashMap<String, u64>> {
+        log::info!("Counting motif `{}` in `{}`", motif, self.file);
+        let reader = common_reader(&self.file);
+        let reader = FastxReader::new(reader);
+        let mut chrom_count: HashMap<String, u64> = HashMap::new();
+
+        read_process_fastx_records(reader, 4, 2,
+            |record, count| { // runs in worker
+                *count = record.seq().windows(motif.len()).filter(|&x| x == motif.as_bytes()).count();
+                                
+            },
+            |record, count| { // runs in main thread
+                chrom_count.insert(record.id().unwrap().to_owned(), *count as u64); 
+                None::<()>
+            }).unwrap();
+    
+        Ok(chrom_count)
+    }
 }
 
 // split fastq into several files by record number

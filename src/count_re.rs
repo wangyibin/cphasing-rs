@@ -57,6 +57,19 @@ impl CountRE {
 
     }
 
+    pub fn from_hashmap(&mut self, counts: HashMap<String, u64>, 
+                        chromsizes: HashMap<String, u64>) {
+        for (contig, count) in counts {
+            let length = chromsizes.get(&contig).unwrap().clone();
+            let record = CountReRecord {
+                Contig: contig,
+                RECounts: count as u32,
+                Length: length as u32,
+            };
+            self.records.push(record);
+        }
+    } 
+
     pub fn to_data(&self) -> HashMap<String, u32> {
         let mut data: HashMap<String, u32> = HashMap::new();
         for record in &self.records {
@@ -66,4 +79,18 @@ impl CountRE {
         data
     }
 
+    pub fn write(&self, output: &String) {
+        let mut writer = common_writer(output);
+        writer.write_all(b"#Contig\tRECounts\tLength\n").unwrap();
+        let mut wtr = csv::WriterBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_writer(writer);
+        
+        
+        for record in &self.records {
+            wtr.serialize(record).unwrap();
+        }
+        log::info!("Successful written count RE file to `{}`", output);
+    }
 }

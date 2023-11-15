@@ -7,16 +7,18 @@ use rust_htslib::bam::{
     Header, header::HeaderRecord,
     Writer};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{ HashMap, HashSet };
 use std::error::Error;
 use std::path::Path;
+use std::sync::{ Arc, Mutex };
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
-
+use rayon::prelude::*;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ChromSizeRecord, ContigPair};
 use crate::mnd::MndRecord;
 use crate::porec::PoreCRecord;
+use crate::contacts::{ Contacts, ContactRecord };
 
 
 
@@ -362,7 +364,197 @@ impl Pairs {
             }
             log::info!("Successful output bam file `{}`", output);
 
-    }     
+    }  
+
+    pub fn to_contacts(&mut self, max_contacts: u32) -> anyResult<Contacts> {
+        let parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
+        
+        let mut contact_hash: HashMap<ContigPair,u32>  = HashMap::new();
+        for result in rdr.deserialize() {
+            let record: PairRecord = result?;
+            let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+            cp.order();
+            if !contact_hash.contains_key(&cp) {
+                contact_hash.insert(cp, 1);
+            } else {
+                let count = contact_hash.get(&cp).unwrap() + 1;
+                contact_hash.insert(cp, count);
+            }
+            
+        }
+        
+        
+        // let contact_hash: Arc<Mutex<HashMap<ContigPair, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // rdr.deserialize::<PairRecord>()
+        //     .par_bridge()
+        //     .try_for_each(|result: Result<PairRecord, csv::Error>| -> Result<(), csv::Error> {
+        //         let record = result?;
+        //         let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+        //         cp.order();
+
+        //         let mut hash = contact_hash.lock().unwrap();
+        //         if let Some(count) = hash.get_mut(&cp) {
+        //             *count += 1;
+        //         } else {
+        //             hash.insert(cp, 1);
+        //         }
+
+        //         Ok(())
+        // })?;
+        
+        let mut contact_records: Vec<ContactRecord> = contact_hash.par_iter(
+            ).map(|(cp, count)| {
+                if count >= &max_contacts{
+                    let record = ContactRecord {
+                        chrom1: cp.Contig1.to_owned(),
+                        chrom2: cp.Contig2.to_owned(),
+                        count: *count,
+                    };
+                    record
+                } else {
+                    let record = ContactRecord {
+                        chrom1: "".to_string(),
+                        chrom2: "".to_string(),
+                        count: 0,
+                    };
+                    record
+                }
+                
+            }).collect();
+        
+        contact_records.retain(|x| x.is_some());
+        
+        // let contact_records: Vec<ContactRecord> = contact_hash
+        //     .lock()
+        //     .unwrap()
+        //     .iter()
+        //     .map(|(cp, count)| {
+        //         ContactRecord {
+        //             chrom1: cp.Contig1.to_owned(),
+        //             chrom2: cp.Contig2.to_owned(),
+        //             count: *count,
+        //         }
+        //     })
+        //     .collect();
+        contacts.records = contact_records;
+        Ok(contacts)
+
+    }   
+
+    pub fn to_clm(&mut self, max_contacts: u32, output: &String) {
+        let parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let pair_header = self.header.clone();
+        let chromsizes: Vec<ChromSizeRecord> = pair_header.chromsizes.clone();
+
+        let mut wtr = common_writer(output);
+
+        let mut data: HashMap<ContigPair, Vec<Vec<u64>>> = HashMap::new();
+        for result in rdr.deserialize() {
+            let record: PairRecord = result.unwrap();
+            let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+            contig_pair.order();
+            if let Some(vec) = data.get_mut(&contig_pair) {
+                if record.chrom1 > record.chrom2 {
+                    vec.push(vec![record.pos2, record.pos1]);
+                } else {
+                    vec.push(vec![record.pos1, record.pos2]);
+                }
+            } else {
+                let mut vec = Vec::new();
+                if record.chrom1 > record.chrom2 {
+                    vec.push(vec![record.pos2, record.pos1]);
+                } else {
+                    vec.push(vec![record.pos1, record.pos2]);
+                }
+                data.insert(contig_pair, vec);
+            }
+        }
+
+        let result = data.par_iter(
+            ).filter_map(
+                |(cp, vec)| {
+                    if vec.len() >= max_contacts as usize {
+                        Some((cp, vec))
+                    } else {
+                        None
+                    }
+                }
+            ).map(|(cp, vec)|{
+                
+                let length1 = chromsizes.iter().find(|&x| x.chrom == cp.Contig1).unwrap().size;
+                let length2 = chromsizes.iter().find(|&x| x.chrom == cp.Contig2).unwrap().size;
+                
+                // ctg1+ ctg2+
+                let res1 = vec.par_iter(
+                    ).map(|x| {
+                        let pos1 = x[0];
+                        let pos2 = x[1];
+                        let res1 = length1 - pos1 + pos2;
+                        res1
+                    }).collect::<Vec<_>>();
+                
+                // ctg1+ ctg2-
+                let res2 = vec.par_iter(
+                ).map(|x| {
+                    let pos1 = x[0];
+                    let pos2 = x[1];
+                    let res2 = length1 - pos1 + length2 - pos2;
+                    res2
+                }).collect::<Vec<_>>();
+
+                // ctg1- ctg2+
+                let res3 = vec.par_iter(
+                ).map(|x| {
+                    let pos1 = x[0];
+                    let pos2 = x[1];
+                    let res3 = pos1 + pos2;
+                    res3
+                }).collect::<Vec<_>>();
+                
+                // ctg1- ctg2-
+                let res4 = vec.par_iter(
+                ).map(|x| {
+                    let pos1 = x[0];
+                    let pos2 = x[1];
+                    let res4 = pos1 + length2 - pos2;
+                    res4
+                }).collect::<Vec<_>>();
+
+                (cp, vec![res1, res2, res3, res4])
+                
+            }).collect::<HashMap<_, Vec<Vec<u64>>>>();
+
+        
+        for (cp, res) in result {
+            for (i, res1) in res.into_iter().enumerate() {
+                let count = res1.len();
+                let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                let contig_pairs = match i {
+                    0 => format!("{}+ {}+", cp.Contig1, cp.Contig2),
+                    1 => format!("{}+ {}-", cp.Contig1, cp.Contig2),
+                    2 => format!("{}- {}+", cp.Contig1, cp.Contig2),
+                    3 => format!("{}- {}-", cp.Contig1, cp.Contig2),
+                    _ => panic!("Error: Invalid index"),
+                };
+                let line = format!("{}\t{}\t{}\n", contig_pairs, count, res1);
+                wtr.write_all(line.as_bytes()).unwrap();
+            }
+        }
+        
+        log::info!("Successful output clm file `{}`", output);
+    }
 }
 
 
