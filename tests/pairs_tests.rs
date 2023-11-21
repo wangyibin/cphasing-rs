@@ -24,7 +24,7 @@ mod tests {
     #[test]
     fn test_pairs_to_clm() {
         let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        let clm = pairs.to_clm(&String::from("test/test.clm"));
+        let clm = pairs.to_clm(3, &String::from("test/test.clm"), );
     }
 
 }

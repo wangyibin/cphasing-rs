@@ -1,4 +1,6 @@
+#[warn(unused_assignments)]
 use anyhow::Result as anyResult;
+use no_panic::no_panic;
 use ordered_float::OrderedFloat;
 use std::borrow::Cow;
 use std::collections::{ HashMap, HashSet };
@@ -87,7 +89,7 @@ impl PruneTable {
     }
 
     pub fn write(&self, output: &String) {
-        let mut writer = common_writer(output);
+        let writer = common_writer(output);
         let mut wtr = csv::WriterBuilder::new()
             .delimiter(b'\t')
             .has_headers(false)
@@ -96,7 +98,7 @@ impl PruneTable {
         for record in &self.records {
             wtr.serialize(record).expect("Could not write record")
         } 
-        log::info!("Allelic and cross-allelic information written to {}", output);
+        log::info!("Allelic and cross-allelic information written to `{}`", output);
     }
 
 }
@@ -117,10 +119,10 @@ impl KPruner {
         count_re.parse();
         let mut contacts = Contacts::new(contacts);
         contacts.parse();
-        let contact_data = contacts.to_data(count_re.to_data(), true);
-        let mut contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
+        let contact_data = contacts.to_data(count_re.to_data(), count_re.to_lengths());
+        let contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
 
-        let mut alleletable = AlleleTable::new(alleletable);
+        let alleletable = AlleleTable::new(alleletable);
     
         KPruner {
             alleletable: alleletable,
@@ -146,14 +148,20 @@ impl KPruner {
 
     }
 
-    pub fn cross_allelic(&mut self) -> Vec<ContigPair> {
+    pub fn cross_allelic(&mut self, method: &str) -> Vec<ContigPair> {
         
-        let allelic_contigs = self.alleletable.get_allelic_contigs();
+        let allelic_contigs = self.alleletable.get_allelic_contigs(method);
+        // filter contig pairs that not in allelic_contigs
+        self.contig_pairs.retain(|x| allelic_contigs.contains_key(&x.Contig1) && allelic_contigs.contains_key(&x.Contig2));
+      
         let cross_allelic: Vec<&ContigPair> =  self.contig_pairs
                                                     .par_iter()
                                                     .filter_map(|contig_pair| {
-            let alleles1 = allelic_contigs.get(&contig_pair.Contig1).unwrap();
-            let alleles2 = allelic_contigs.get(&contig_pair.Contig2).unwrap();
+                            
+            let alleles1 = allelic_contigs.get(&contig_pair.Contig1)?;
+            let alleles2 = allelic_contigs.get(&contig_pair.Contig2)?;
+                                     
+
             let mut group1 = std::iter::once(&contig_pair.Contig1).chain(alleles1.iter()).collect::<Vec<&String>>();
             let mut group2 = std::iter::once(&contig_pair.Contig2).chain(alleles2.iter()).collect::<Vec<&String>>();
             if group1.len() > group2.len() {
@@ -166,15 +174,46 @@ impl KPruner {
                 let mut tmp_contig_pair = ContigPair::new(group1[i].to_string(), group2[j].to_string());
                 tmp_contig_pair.order();
                 let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
+                 
                 *element = OrderedFloat(*score);
             });
             
-            let assignments =  maximum_bipartite_matching(matrix);
+            // if matrix.values().all(|x| x.0 == 0.0) {
+            //     println!("Matrix is all zero");
+            // }  
+
+            // if &contig_pair.Contig1 == &"5G.ctg44".to_string() && &contig_pair.Contig2 == &"5H.ctg72".to_string() {
+            //     println!("{:?}", &contig_pair);
+            //     dbg!("Same contig: {:?}", &matrix);
+
+            // }
+            
+            
+            // match matrix[(0, 0)] == OrderedFloat(0.0) {
+            //     true => {
+            //         Some(contig_pair)
+            //     },
+            //     false => {
+            //         let assignments = maximum_bipartite_matching(matrix);
+            //         if assignments[0] != 0 {
+            //             Some(contig_pair)
+            //         } else {
+            //             None
+            //         }
+            //     }
+            // }
+
+            let assignments = maximum_bipartite_matching(matrix);
+            // if &contig_pair.Contig1 == &"5G.ctg44".to_string() && &contig_pair.Contig2 == &"5H.ctg72".to_string() {
+            //     dbg!(&assignments);
+
+            // }     
             if assignments[0] != 0 {
                 Some(contig_pair)
             } else {
                 None
             }
+
             }).collect();
 
 
@@ -184,20 +223,22 @@ impl KPruner {
         cross_allelic
     }
 
-    pub fn prune(&mut self) {
-       
+    pub fn prune(&mut self, method: &str) {
+        log::info!("Using {} method to prune", method);
         let allelic = self.allelic();
-        let cross_allelic = self.cross_allelic();
+        let cross_allelic = self.cross_allelic(method);
 
+        let allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
 
         for contig_pair in allelic.iter() {
+            let record = allelic_record_hashmap.get(contig_pair).unwrap();
             let prune_record = PruneRecord {
                 contig1: contig_pair.Contig1.clone(),
                 contig2: contig_pair.Contig2.clone(),
                 mz1: 0,
                 mz2: 0,
-                mz_shared: 0,
-                similarity: 0.0,
+                mz_shared: record.mz_unique,
+                similarity: record.similarity,
                 allele_type: 0,
             };
             self.prunetable.records.push(prune_record);
@@ -221,6 +262,7 @@ impl KPruner {
 
 // kuhn munkres algorithm
 pub fn maximum_bipartite_matching(matrix: Matrix<OrderedFloat<f64>>) -> Vec<usize>  {
+
     let (cash_flow, assignments) = kuhn_munkres(&matrix);
 
     assignments

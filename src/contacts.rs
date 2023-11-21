@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
-use std::io::{ Read, Write };
+use std::io::{ Read, Write, BufReader, BufRead, BufWriter };
 use serde::{ Serialize, Deserialize };
 use rayon::prelude::*;
 
@@ -75,7 +75,6 @@ impl Contacts {
                 .has_headers(false)
                 .from_reader(input);
     
-          let mut records: Vec<ContactRecord> = Vec::new();
           for result in rdr.deserialize() {
                 let record: ContactRecord = result.unwrap();
                 self.records.push(record);
@@ -83,24 +82,83 @@ impl Contacts {
        
     }
 
-    pub fn to_data(&self, re_count: HashMap<String, u32>, symmetric: bool) -> HashMap<ContigPair, f64> {
-        
+    pub fn from_clm(clm: &String) -> Self {
+        let buffered = common_reader(clm);
+        let reader = BufReader::new(buffered);
+        let mut records: Vec<ContactRecord> = Vec::new();
+        for (i, record) in reader.lines().enumerate() {
+            if i % 4 != 0 {
+                continue
+            }
+            let record = record.unwrap();
+            let record: Vec<&str> = record.split("\t").collect();
+            let contig_pair = record[0].to_string();
+            let count = record[1].parse::<u32>().unwrap();
+            let mut contact_record = ContactRecord::new();
+            contact_record.chrom1 = contig_pair.split(" ").nth(0).unwrap().to_string();
+            contact_record.chrom1.pop();
+            contact_record.chrom2 = contig_pair.split(" ").nth(1).unwrap().to_string();
+            contact_record.chrom2.pop();
+            contact_record.count = count;
+
+            records.push(contact_record);
+        }
+
+        let mut contacts = Contacts {
+            file: clm.clone(),
+            records: records,
+        };
+        contacts.file = contacts.prefix() + ".contacts";
+        contacts
+    }
+
+    pub fn to_data(&self, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+        // let total_re_count = re_count.values().sum::<u32>();
+        // let total_length = lengths.values().sum::<u32>();
+        // let re_density = total_re_count as f64 / total_length as f64;
+        let longest_re = re_count.values().max().unwrap();
+        let longest_re_square = (longest_re * longest_re) as f64;
+
         let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
             ).map(|record| {
-                let mut contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+                let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
                 if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
                     (contig_pair, record.count as f64)
 
                 } else {
-                    let re_count1 = re_count.get(&record.chrom1).unwrap();
-                    let re_count2 = re_count.get(&record.chrom2).unwrap();
-                    let re_count = (*re_count1 + *re_count2) as f64;
+                    let contig1_length = lengths.get(&record.chrom1).unwrap();
+                    let contig2_length = lengths.get(&record.chrom2).unwrap();
+                    let re_count1 = re_count.get(&record.chrom1).unwrap_or(&0);
+                    let re_count2 = re_count.get(&record.chrom2).unwrap_or(&0);
+
+                    // let r1 = *re_count1 as f64 / ((*contig1_length as f64) * re_density);
+                    // let r2 = *re_count2 as f64 / ((*contig2_length as f64) * re_density);
                     let count = record.count as f64;
-                    let ratio = count / re_count;
+                    // let ratio = count * 10000 / ((*contig1_length as f64 / 10000.0) * (*contig2_length as f64 / 10000.0));
+                    // best in 20231118
+                    let ratio = match re_count1 * re_count2 {
+                        0 => 0.0,
+                        // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
+                        _ =>  count / (re_count1 * re_count2) as f64,
+                    };
+
                     (contig_pair, ratio)
                 }
             }).collect();
-        data 
+        
+        // min-max normalization
+        // let max = data.values().max_by(|x, y| x.partial_cmp(y).unwrap()).unwrap();
+        // let min = data.values().min_by(|x, y| x.partial_cmp(y).unwrap()).unwrap();
+        // let range = max - min;
+        
+        // let new_data: HashMap<ContigPair, f64> = data.par_iter().map(|(contig_pair, value)| {
+        //     let new_value = (*value - min) / range;
+        //     (contig_pair.clone(), new_value)
+        // }).collect();
+
+        // new_data  
+
+        data
     }
 
 

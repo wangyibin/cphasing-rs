@@ -25,6 +25,7 @@ gzp = { version = "*" }
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
 ndarray = { version = "0.15.6" }
+no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
 nthash = { version = "0.5.1" }
 env_logger = { version = "0.10.0" }

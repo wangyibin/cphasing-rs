@@ -141,6 +141,7 @@ impl ContigPair {
 
 }
 
+
 // {parse_input, parse_output, common_reader, common_writer} learn from https://github.com/mrvollger/rustybam/blob/main/src/myio.rs
 pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 'static>> {
     let fp: Box<dyn BufRead + Send + 'static> = match path {

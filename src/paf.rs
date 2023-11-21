@@ -1,4 +1,4 @@
-#![allow(unused_variables, unused_imports)]
+#[warn(unused_assignments)]
 use anyhow::Result as anyResult;
 use std::any::type_name;
 use std::borrow::Cow;
@@ -99,7 +99,7 @@ impl ReadSummary {
 
         let result: String = self.to_string();
 
-        wtr.write_all(result.as_bytes());
+        wtr.write_all(result.as_bytes()).unwrap();
 
         log::info!("Successful output summary of read mapping `{}`", output);
 
@@ -273,7 +273,7 @@ impl PAFTable {
 
                 for pcr in concatemer.records.iter() {
                     if pcr.filter_reason == "pass" {
-                        wtr.serialize(&pcr);
+                        wtr.serialize(&pcr).unwrap();
                     }
                 }
                 
@@ -288,7 +288,7 @@ impl PAFTable {
                 
             }
             let length: u32 = record.query_end - record.query_start;
-            let identity = record.match_n as f32/ record.alignment_length as f32;
+            let identity = record.match_n as f32 / record.alignment_length as f32;
             
             if (&record.mapq < min_quality) || (&length < min_length) || (&identity < min_identity) {
                 filter_reason = "low_mq";
@@ -307,7 +307,6 @@ impl PAFTable {
         if concatemer.is_singleton() {
             concatemer.parse_singleton();
         }
-
         for pcr in concatemer.records.iter() {
             if pcr.filter_reason == "pass" {
                 wtr.serialize(&pcr).unwrap();
@@ -320,8 +319,8 @@ impl PAFTable {
             "complex" => read_complex_count += 1,
             _ => todo!(),
         }
-
         read_mapping_count = read_idx + 1;
+
 
         let mut summary: ReadSummary = ReadSummary::new();
         summary.pass = read_pass_count;

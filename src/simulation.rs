@@ -231,7 +231,7 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
         let mut mm_init: usize = 0;
         let mut least_c_counts = 0;
 
-        'inner1: for (i, (a, b)) in pos_list_1.iter().zip(pos_list_2.iter()).enumerate() {
+        for (i, (a, b)) in pos_list_1.iter().zip(pos_list_2.iter()).enumerate() {
 
             let mut new_record = Record::from(record.clone());
             let mut new_qname = qname.clone();

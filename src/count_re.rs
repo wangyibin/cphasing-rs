@@ -79,6 +79,15 @@ impl CountRE {
         data
     }
 
+    pub fn to_lengths(&self) -> HashMap<String, u32> {
+        let mut data: HashMap<String, u32> = HashMap::new();
+        for record in &self.records {
+            data.insert(record.Contig.clone(), record.Length);
+        } 
+
+        data
+    }
+
     pub fn write(&self, output: &String) {
         let mut writer = common_writer(output);
         writer.write_all(b"#Contig\tRECounts\tLength\n").unwrap();

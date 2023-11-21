@@ -96,7 +96,21 @@ impl AlleleTable {
         contig_pairs
     }
 
-    pub fn get_allelic_contigs(&self) -> HashMap<String, Vec<String>> {
+    pub fn get_allelic_record_by_contig_pairs(&self) -> HashMap<ContigPair, AlleleRecord> {
+        let mut data: HashMap<ContigPair, AlleleRecord> = HashMap::new();
+        let records = self.allele_records().unwrap();
+        for record in records {
+            let contig1 = record.contig1.clone();
+            let contig2 = record.contig2.clone();
+            let mut contig_pair = ContigPair::new(contig1, contig2);
+            contig_pair.order();
+            data.insert(contig_pair, record);
+        }
+
+        data
+    }
+
+    pub fn get_allelic_contigs(&self, method: &str) -> HashMap<String, Vec<String>> {
         let mut data: HashMap<String, Vec<String>> = HashMap::new();
         let records = self.allele_records().unwrap();
         for record in records {
@@ -104,19 +118,25 @@ impl AlleleTable {
             let contig2 = record.contig2;
             if !data.contains_key(&contig1) {
                 data.insert(contig1.clone(), Vec::new());
+                data.get_mut(&contig1).unwrap().push(contig2.clone());
+            } else {
+                if method == "fast" {
+                    if data.contains_key(&contig1) {
+                        continue;
+                    }
+                }
+                data.get_mut(&contig1).unwrap().push(contig2.clone());
             }
-            if !data.contains_key(&contig2) {
-                data.insert(contig2.clone(), Vec::new());
-            }
-            data.get_mut(&contig1).unwrap().push(contig2.clone());
-            data.get_mut(&contig2).unwrap().push(contig1.clone());
+     
+            
+            
         }
 
         data
     }
 
     pub fn write(&self, records: &Vec<AlleleRecord>) -> anyResult<()> {
-        let mut writer = common_writer(&self.file);
+        let writer = common_writer(&self.file);
         let mut wtr = csv::WriterBuilder::new()
                             .delimiter(b'\t')
                             .from_writer(writer);

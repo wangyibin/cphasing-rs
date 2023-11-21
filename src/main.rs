@@ -5,6 +5,7 @@ use cphasing::core::{
     BaseTable, common_writer, ContigPair,
     check_program};
 use cphasing::count_re::CountRE;
+use cphasing::contacts::Contacts;
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
@@ -16,9 +17,8 @@ use cphasing::porec::PoreCTable;
 use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec };
-use std::collections::HashSet;
+use std::collections::{ HashMap, HashSet };
 use std::io::Write; 
-use std::path::Path;
 use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
@@ -54,12 +54,12 @@ fn main() {
         }
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
-            use rayon::prelude::*;
 
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
-            let pixeltable = sub_matches.get_one::<String>("PIXELS").expect("required");
+            let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
             ThreadPoolBuilder::new()
@@ -67,9 +67,9 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-
-            let mut kpruner = KPruner::new(&alleletable, &pixeltable, &count_re, &prunetable);
-            kpruner.prune();
+            assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
+            let mut kpruner = KPruner::new(&alleletable, &contacts, &count_re, &prunetable);
+            kpruner.prune(&method.as_str());
             kpruner.prunetable.write(&prunetable);
 
         }
@@ -112,12 +112,22 @@ fn main() {
         Some(("count_re", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let motif = sub_matches.get_one::<String>("MOTIF").expect("error");
+            let min_re = sub_matches.get_one::<u64>("MIN_RE").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-
+            
             let mut count_re = CountRE::new(&output);
             let fasta = Fastx::new(&input_fasta);
             let contigsizes = fasta.get_chrom_size().unwrap();
             let counts = fasta.count_re(&motif).unwrap();
+
+            // counts + 1 
+            let counts: HashMap<String, u64> = counts.into_iter()
+                                                    .map(|(k, v)| (k, v + 1))
+                                                    .collect();
+            // filter counts which are less than min re
+            let counts: HashMap<String, u64> = counts.into_iter()
+                                                    .filter(|(_, v)| *v >= *min_re)
+                                                    .collect();
             count_re.from_hashmap(counts, contigsizes);
             count_re.write(&output);
         }
@@ -125,7 +135,7 @@ fn main() {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
 
-            cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string());
+            cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
         }
         Some(("paf2table", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
@@ -138,7 +148,7 @@ fn main() {
 
             let pt = PAFTable::new(&paf);
 
-            pt.paf2table(output, min_quality, min_identity, min_length, max_order);
+            pt.paf2table(output, min_quality, min_identity, min_length, max_order).unwrap();
 
         }
         Some(("porec2pairs", sub_matches)) => {
@@ -164,7 +174,7 @@ fn main() {
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
-            pt.paf2table(&table_output, min_quality, min_identity, min_length, max_order);
+            pt.paf2table(&table_output, min_quality, min_identity, min_length, max_order).unwrap();
             let prt = PoreCTable::new(&table_output);
             prt.to_pairs(&chromsizes, &output).unwrap();
 
@@ -172,10 +182,10 @@ fn main() {
         Some(("pairs2contacts", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            let max_contacts = sub_matches.get_one::<u32>("MAX_CONTACTS").expect("error");
+            let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
-            let contacts = pairs.to_contacts(*max_contacts).unwrap();
+            let contacts = pairs.to_contacts(*min_contacts).unwrap();
             contacts.write(&output);
             log::info!("Contacts written to {}", output);
             
@@ -183,10 +193,12 @@ fn main() {
         Some(("pairs2clm", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            let max_contacts = sub_matches.get_one::<u32>("MAX_CONTACTS").expect("error");
+            let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_clm(*max_contacts, &output);
+            pairs.to_clm(*min_contacts, &output);
+            let contacts = Contacts::from_clm(&output);
+            contacts.write(&contacts.file);
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

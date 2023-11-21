@@ -1,3 +1,4 @@
+#[warn(unused_assignments)]
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
 use minimap2::*;

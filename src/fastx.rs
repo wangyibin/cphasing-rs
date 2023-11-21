@@ -99,7 +99,7 @@ impl Fastx {
 pub fn split_fastq(input_fastq: &String, output_prefix: &String, 
              record_num: usize) -> Result<(), Box<dyn std::error::Error>> {
     let buf = common_reader(input_fastq);
-    let mut fastq = Reader::new(buf);
+    let fastq = Reader::new(buf);
     let mut i = 0;
     let mut j = 0;
     log::info!("write {} records to {}", &record_num, format!("{}_{}.fastq.gz", output_prefix, j));

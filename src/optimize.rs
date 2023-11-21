@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use lazy_static::lazy_static;
 use ndarray::array;
 use ndarray::prelude::*;
@@ -287,7 +288,7 @@ impl ContigOrder {
 
         let contigs = self.contigs();
     
-        wtr.write_all(contigs.join("\n").as_bytes());
+        wtr.write_all(contigs.join("\n").as_bytes()).unwrap();
 
         log::info!("Successful output optimize result in `{}`", output);
 

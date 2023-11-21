@@ -237,7 +237,7 @@ impl PoreCTable {
                 concatemer_summary.count(&concatemer);
 
                 for pair in concatemer.decompose() {
-                    wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id));
+                    wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
                     read_id += 1;
                 }
                 concatemer.clear();
@@ -251,7 +251,7 @@ impl PoreCTable {
         // process last concatemer
         concatemer.sort();
         for pair in concatemer.decompose() {
-            wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id));
+            wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
             read_id += 1;
         }
 
