@@ -116,35 +116,80 @@ impl Contacts {
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
-        let longest_re = re_count.values().max().unwrap();
-        let longest_re_square = (longest_re * longest_re) as f64;
+        // let longest_re = re_count.values().max().unwrap();
+        // let longest_re_square = (longest_re * longest_re) as f64;
 
         let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
             ).map(|record| {
                 let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-                if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
-                    (contig_pair, record.count as f64)
+                let count = record.count as f64;
 
-                } else {
-                    let contig1_length = lengths.get(&record.chrom1).unwrap();
-                    let contig2_length = lengths.get(&record.chrom2).unwrap();
-                    let re_count1 = re_count.get(&record.chrom1).unwrap_or(&0);
-                    let re_count2 = re_count.get(&record.chrom2).unwrap_or(&0);
-
-                    // let r1 = *re_count1 as f64 / ((*contig1_length as f64) * re_density);
-                    // let r2 = *re_count2 as f64 / ((*contig2_length as f64) * re_density);
-                    let count = record.count as f64;
-                    // let ratio = count * 10000 / ((*contig1_length as f64 / 10000.0) * (*contig2_length as f64 / 10000.0));
-                    // best in 20231118
-                    let ratio = match re_count1 * re_count2 {
-                        0 => 0.0,
-                        // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
-                        _ =>  count / (re_count1 * re_count2) as f64,
-                    };
-
-                    (contig_pair, ratio)
-                }
+                (contig_pair, count)
             }).collect();
+        
+        
+        // get contig1 == contig2 data
+        let cis_data = data.par_iter().filter(|(contig_pair, _)| {
+            contig_pair.Contig1 == contig_pair.Contig2
+        }).map(|(contig_pair, count)| {
+            (contig_pair.Contig1.clone(), *count)
+        }).collect::<HashMap<String, f64>>();
+
+        data.par_iter_mut().for_each(|(contig_pair, count)| {
+            if !re_count.contains_key(&contig_pair.Contig1) || !re_count.contains_key(&contig_pair.Contig2) {
+                return
+            } else {
+                // let contig1_length = lengths.get(&contig_pair.Contig1).unwrap();
+                // let contig2_length = lengths.get(&contig_pair.Contig2).unwrap();
+                // let re_count1 = re_count.get(&contig_pair.Contig1).unwrap_or(&0);
+                // let re_count2 = re_count.get(&contig_pair.Contig2).unwrap_or(&0);
+               
+                let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
+          
+                // let ratio = match re_count1 * re_count2 {
+                //     0 => 0.0,
+                //     // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
+                //     _ =>  *count / (re_count1 * re_count2) as f64,
+                // };
+
+                let ratio = match count1 * count2 {
+                    0.0 => 0.0,
+                    _ => *count / (count1.sqrt() * count2.sqrt()),
+                };
+                // println!("{} {} {} {}", count, ratio,count1, count2);
+                *count = ratio;
+
+            }
+        });
+
+        // let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
+        //     ).map(|record| {
+               
+        //         let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+        //         if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
+        //             (contig_pair, record.count as f64)
+
+        //         } else {
+        //             let contig1_length = lengths.get(&record.chrom1).unwrap();
+        //             let contig2_length = lengths.get(&record.chrom2).unwrap();
+        //             let re_count1 = re_count.get(&record.chrom1).unwrap_or(&0);
+        //             let re_count2 = re_count.get(&record.chrom2).unwrap_or(&0);
+
+        //             // let r1 = *re_count1 as f64 / ((*contig1_length as f64) * re_density);
+        //             // let r2 = *re_count2 as f64 / ((*contig2_length as f64) * re_density);
+        //             let count = record.count as f64;
+        //             // let ratio = count * 10000 / ((*contig1_length as f64 / 10000.0) * (*contig2_length as f64 / 10000.0));
+        //             // best in 20231118
+        //             let ratio = match re_count1 * re_count2 {
+        //                 0 => 0.0,
+        //                 // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
+        //                 _ =>  count / (re_count1 * re_count2) as f64,
+        //             };
+
+        //             (contig_pair, ratio)
+        //         }
+        //     }).collect();
         
         // min-max normalization
         // let max = data.values().max_by(|x, y| x.partial_cmp(y).unwrap()).unwrap();

@@ -1,3 +1,8 @@
+## [v0.0.14]
+## Enhancement
+- `contacts`, advance normalization method
+- `kprune`, remove self contig pairs
+
 ## [v0.0.13]
 ## New features
 - `pairs2clm`, convert pairs to clm file

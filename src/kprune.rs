@@ -153,11 +153,13 @@ impl KPruner {
         let allelic_contigs = self.alleletable.get_allelic_contigs(method);
         // filter contig pairs that not in allelic_contigs
         self.contig_pairs.retain(|x| allelic_contigs.contains_key(&x.Contig1) && allelic_contigs.contains_key(&x.Contig2));
-      
+        // filter contig pairs that contig1 == contig2 
+        self.contig_pairs.retain(|x| x.Contig1 != x.Contig2);
+        
         let cross_allelic: Vec<&ContigPair> =  self.contig_pairs
                                                     .par_iter()
                                                     .filter_map(|contig_pair| {
-                            
+
             let alleles1 = allelic_contigs.get(&contig_pair.Contig1)?;
             let alleles2 = allelic_contigs.get(&contig_pair.Contig2)?;
                                      
