@@ -1,10 +1,14 @@
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+use rust_lapper::{Interval, Lapper};
 
 use crate::methy::ModRecord;
+
+type Iv_u8 = Interval<usize, u8>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed3Record {
@@ -32,7 +36,31 @@ impl Bed3 {
         }
     }
     
+    pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
+        let mut hcr: HashMap<String, Vec<Iv_u8>> = HashMap::new();
+        for i in self {
+            if hcr.contains_key(&i.chrom) {
+                hcr.get_mut(&i.chrom).unwrap().push(Iv_u8 {
+                    start: i.start,
+                    stop: i.end,
+                    val: 0,
+                });
+            } else {
+                hcr.insert(i.chrom, vec![Iv_u8 {
+                    start: i.start,
+                    stop: i.end,
+                    val: 0,
+                }]);
+            }
+        }
+        let mut hcr_lapper: HashMap<String, Lapper<usize, u8>> = HashMap::new();
+        for (k, v) in hcr.iter() {
+            hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+        }
+        hcr_lapper
+    }
 }
+
 
 impl Iterator for Bed3 {
     type Item = Bed3Record;

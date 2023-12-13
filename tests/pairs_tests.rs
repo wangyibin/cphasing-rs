@@ -21,10 +21,17 @@ mod tests {
     //     contacts.write(&String::from("test/test.pairs2contacts.contacts"));
     // }
 
+    // #[test]
+    // fn test_pairs_to_clm() {
+    //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
+    //     let clm = pairs.to_clm(3, &String::from("test/test.clm"), );
+    // }
+    
     #[test]
-    fn test_pairs_to_clm() {
+    fn test_intersect() {
         let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        let clm = pairs.to_clm(3, &String::from("test/test.clm"), );
+        let hcr_bed = String::from("test/test.hcr.bed");
+        pairs.intersect(&hcr_bed, &String::from("test/test.hcr.pairs"));
     }
 
 }

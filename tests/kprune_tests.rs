@@ -24,8 +24,9 @@ mod tests {
         let pixels = String::from("test/test.contacts");
         let count_re = String::from("test/test_counts_GATC.txt");
         let prunetable = String::from("test/prune.contig.table");
+        let method: &str = "greedy";
         let mut kpruner = KPruner::new(&alleletable, &pixels, &count_re, &prunetable);
-        kpruner.prune();
+        kpruner.prune(method);
         kpruner.prunetable.write(&String::from("test/prune.contig.table"));
     }
 }

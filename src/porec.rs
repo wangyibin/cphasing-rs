@@ -1,4 +1,5 @@
 use anyhow::Result as anyResult;
+
 use itertools::{Itertools, Combinations};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -7,7 +8,9 @@ use std::error::Error;
 use std::path::Path;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
+use rust_lapper::{Interval, Lapper};
 
+use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ChromSize, ChromSizeRecord };
 use crate::pairs::{ PairRecord, PairHeader };
@@ -52,7 +55,7 @@ impl PoreCRecord {
 
     pub fn to_string(&self) -> String {
         format!(
-            "Read index: {}\nQuery length: {}\nQuery start: {}\nQuery end: {}\nQuery strand: {}\nTarget: {}\nTarget start: {}\nTarget end: {}\nMapping quality: {}\nIdentity: {}\nFilter reason: {}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.read_idx,
             self.query_length,
             self.query_start,
@@ -66,6 +69,7 @@ impl PoreCRecord {
             self.filter_reason,
         )
     }
+
 }
 
 impl PartialOrd for PoreCRecord {
@@ -260,4 +264,74 @@ impl PoreCTable {
         concatemer_summary.save(&format!("{}.concatemer.summary", self.prefix()));
         Ok(())
     }
+
+    pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
+        type Iv_u8 = Interval<usize, u8>;
+        let bed = Bed3::new(hcr_bed);
+        let interval_hash = bed.to_interval_hash();
+        let mut wtr = common_writer(output);
+
+        for (i, line) in self.parse().unwrap().deserialize().enumerate() {
+            let record: PoreCRecord = match line {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Could not parse line {}", i + 1);
+                    continue
+                },
+            };
+
+            let is_in_regions: bool = if let Some(interval) = interval_hash.get(&record.target) {
+                let iv = interval.count(record.target_start as usize, record.target_end as usize);
+                if iv > 0 {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if invert {
+                if !is_in_regions {
+                    wtr.write_all(record.to_string().as_bytes()).unwrap();
+                    wtr.write_all(b"\n").unwrap();
+                }
+            } else {
+                if is_in_regions {
+                    wtr.write_all(record.to_string().as_bytes()).unwrap();
+                    wtr.write_all(b"\n").unwrap();
+                }
+            }
+        }
+        log::info!("Successful output intersection porec table into `{}`", output);
+    }
 }
+
+pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
+    let mut wtr = common_writer(output);
+
+    let mut idx = 0;
+    'outer: for file in input {
+        let mut rdr = PoreCTable::new(file).parse().unwrap();
+        let mut max_idx: u64 = 0;
+        'inner: for (i, line) in rdr.deserialize().enumerate() {
+            let mut record: PoreCRecord = match line {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Could not parse line {}", i + 1);
+                    continue 'inner;
+                },
+            };
+            if record.read_idx > max_idx {
+                max_idx = record.read_idx.clone();
+            }
+            record.read_idx += idx ;
+            
+            wtr.write_all(record.to_string().as_bytes()).unwrap();
+            wtr.write_all(b"\n").unwrap();
+        }
+        idx += max_idx;
+    }
+    log::info!("Successful output merge porec tables into `{}`", output);
+}
+

@@ -17,6 +17,7 @@ pub mod paf;
 pub mod paf2;
 pub mod pairs;
 pub mod porec;
+pub mod realign;
 pub mod simulation;
 pub mod sketch;
 
@@ -195,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_prunetable() {
-        use crate::prune::PruneTable;
+        use crate::kprune::PruneTable;
         let pt = PruneTable::new(&String::from("test/prune.contig.table"));
 
         println!("{:?}", pt.contig_pairs());
@@ -206,7 +207,7 @@ mod tests {
     fn test_remove_by_contig_pairs() {
         use std::collections::HashSet;
         use crate::core::ContigPair;
-        use crate::prune::PruneTable;
+        use crate::kprune::PruneTable;
         
         let pt = PruneTable::new(&String::from("test/prune.contig.table"));
         let pairs = String::from("test/test.pairs");

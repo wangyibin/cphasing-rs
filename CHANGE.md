@@ -1,3 +1,7 @@
+## [v0.0.15]
+## New features
+- `realign`, first method of realign
+
 ## [v0.0.14]
 ## Enhancement
 - `contacts`, advance normalization method

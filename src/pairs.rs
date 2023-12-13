@@ -1,4 +1,5 @@
 use anyhow::Result as anyResult;
+use log::LevelFilter;
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -14,6 +15,9 @@ use std::sync::{ Arc, Mutex };
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
+use rust_lapper::{Interval, Lapper};
+
+use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ChromSizeRecord, ContigPair};
 use crate::mnd::MndRecord;
@@ -37,17 +41,21 @@ impl PairHeader {
     }
 
     pub fn from_pairs(&mut self, name: &String) {
+        log::set_max_level(LevelFilter::Off);
         let reader = common_reader(name);
+        log::set_max_level(LevelFilter::Info);
         for line in reader.lines() {
             if let Ok(line) = line {
                 if line.starts_with("#") {
                     if &line[0..10] == "#chromsize" {
+                        
                         let s: String = line.replace("#chromsize: ", "");
                         let s: Vec<&str> = s.split(" ").collect();
                         
                         let size: u64 = s[1].clone().parse::<u64>().unwrap();
                         let chrom: String = s[0].to_string();
                         let c: ChromSizeRecord = ChromSizeRecord { chrom: chrom, size: size };
+
                         self.chromsizes.push(c);
 
                     } else if &line[0..8] == "#columns" {
@@ -81,6 +89,8 @@ impl PairHeader {
         self.header = pair_header;
     }
 
+    
+
     pub fn to_string(&self) -> String {
         let mut result = String::new();
         
@@ -91,6 +101,7 @@ impl PairHeader {
             result.push_str(&format!("#chromsize: {} {}\n", 
                                 chromsize.chrom, chromsize.size));
         }
+
         result.push_str(&format!("#columns: {}\n", &self.header.join(" ")));
 
         result
@@ -126,6 +137,26 @@ impl PairRecord {
             strand2: pair2.query_strand,
         }
     }
+
+    // pub fn is_in_regions(&self, interval_hash: &HashMap<String, Lapper<usize, u8>>) -> bool {
+    //     let chrom1 = &self.chrom1;
+    //     let chrom2 = &self.chrom2;
+    //     let pos1 = self.pos1 as usize;
+    //     let pos2 = self.pos2 as usize;
+
+    //     let mut is_in_regions = false;
+    //     if let Some(interval1) = interval_hash.get(&chrom1) {
+    //         if let Some(interval2) = interval_hash.get(&chrom2) {
+    //             let iv1 = interval1.count(pos1, pos1+1);
+    //             let iv2 = interval2.count(pos2, pos2+1);
+
+    //             if iv1 > 0 && iv2 > 0 {
+    //                 is_in_regions = true;
+    //             }
+    //         }
+    //     }
+    //     is_in_regions
+    // }
 
 }
 
@@ -378,15 +409,31 @@ impl Pairs {
         let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
         
         let mut contact_hash: HashMap<ContigPair,u32>  = HashMap::new();
-        for result in rdr.deserialize() {
-            let record: PairRecord = result?;
-            let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-            cp.order();
-            if !contact_hash.contains_key(&cp) {
-                contact_hash.insert(cp, 1);
-            } else {
-                let count = contact_hash.get(&cp).unwrap() + 1;
-                contact_hash.insert(cp, count);
+        for (idx, record) in rdr.records().enumerate() {
+            match record {
+                Ok(record) => {
+                   let record =  PairRecord {
+                        readID: idx as u64,
+                        chrom1: record[1].to_string(),
+                        pos1: record[2].parse::<u64>().unwrap(),
+                        chrom2: record[3].to_string(),
+                        pos2: record[4].parse::<u64>().unwrap(),
+                        strand1: record[5].parse::<char>().unwrap(),
+                        strand2: record[6].parse::<char>().unwrap(),
+                    };
+                    let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+                    cp.order();
+                    if !contact_hash.contains_key(&cp) {
+                        contact_hash.insert(cp, 1);
+                    } else {
+                        let count = contact_hash.get(&cp).unwrap() + 1;
+                        contact_hash.insert(cp, count);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                    continue
+                }
             }
             
         }
@@ -466,26 +513,44 @@ impl Pairs {
             .collect();
 
         let mut data: HashMap<ContigPair, Vec<Vec<u64>>> = HashMap::new();
-        for result in rdr.deserialize() {
-            let record: PairRecord = result.unwrap();
-            let contig1 = record.chrom1;
-            let contig2 = record.chrom2;
-            let mut pos1 = record.pos1;
-            let mut pos2 = record.pos2;
-            if contig1 > contig2 {
-                std::mem::swap(&mut pos1, &mut pos2);
-            }
-            let mut contig_pair = ContigPair::new(contig1, contig2);
-            contig_pair.order();
+        for (idx, record) in rdr.records().enumerate() {
+            match record {
+                Ok(record) => {
+                   let record =  PairRecord {
+                        readID: idx as u64,
+                        chrom1: record[1].to_string(),
+                        pos1: record[2].parse::<u64>().unwrap(),
+                        chrom2: record[3].to_string(),
+                        pos2: record[4].parse::<u64>().unwrap(),
+                        strand1: record[5].parse::<char>().unwrap(),
+                        strand2: record[6].parse::<char>().unwrap(),
+                    };
+
+                
+                    let contig1 = record.chrom1;
+                    let contig2 = record.chrom2;
+                    let mut pos1 = record.pos1;
+                    let mut pos2 = record.pos2;
+                    if contig1 > contig2 {
+                        std::mem::swap(&mut pos1, &mut pos2);
+                    }
+                    let mut contig_pair = ContigPair::new(contig1, contig2);
+                    contig_pair.order();
             // let vec = data.entry(contig_pair).or_insert(Vec::new());
             // vec.push(vec![pos1, pos2]);
-            if let Some(vec) = data.get_mut(&contig_pair) {
-                vec.push(vec![pos1, pos2]);
-            } else {
-                let mut vec = Vec::new();
-                vec.push(vec![pos1, pos2]);
-                
-                data.insert(contig_pair, vec);
+                    if let Some(vec) = data.get_mut(&contig_pair) {
+                        vec.push(vec![pos1, pos2]);
+                    } else {
+                        let mut vec = Vec::new();
+                        vec.push(vec![pos1, pos2]);
+                        
+                        data.insert(contig_pair, vec);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                    continue
+                }
             }
         }
 
@@ -584,6 +649,63 @@ impl Pairs {
     }
         log::info!("Successful output clm file `{}`", output);
     }
-}
 
+    pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
+        type Iv_u8 = Interval<usize, u8>;
+        let bed = Bed3::new(hcr_bed);
+        let interval_hash = bed.to_interval_hash();
+        let mut wtr = common_writer(output);
+        self.header = PairHeader::new();
+        self.header.from_pairs(&self.file);
+        wtr.write_all(self.header.to_string().as_bytes()).unwrap();
+        
+
+        for (idx, record) in self.parse().unwrap().records().enumerate() {
+            let record = record.unwrap();
+            let chrom1 = record[1].to_string();
+            let pos1 = record[2].parse::<usize>().unwrap();
+            let chrom2 = record[3].to_string();
+            let pos2 = record[4].parse::<usize>().unwrap();
+            let strand1 = record[5].parse::<char>().unwrap();
+            let strand2 = record[6].parse::<char>().unwrap();
+
+            let is_in_regions = if let Some(interval1) = interval_hash.get(&chrom1) {
+                if let Some(interval2) = interval_hash.get(&chrom2) {
+                    let iv1 = interval1.count(pos1, pos1+1);
+                    let iv2 = interval2.count(pos2, pos2+1);
+
+                    if iv1 > 0 && iv2 > 0 {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if invert {
+                match is_in_regions {
+                    true => continue,
+                    false => {
+                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", idx, chrom1, pos1, chrom2, pos2, strand1, strand2).as_bytes()).unwrap();
+                    }
+                }
+            } else {
+
+                match is_in_regions {
+                    true => {
+                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", idx, chrom1, pos1, chrom2, pos2, strand1, strand2).as_bytes()).unwrap();
+                    },
+                    false => continue
+                }
+            }
+
+        }
+
+        log::info!("Successful output new pairs file into `{}`", output);
+    }
+}
 

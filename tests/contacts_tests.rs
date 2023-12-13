@@ -15,7 +15,7 @@ mod tests {
         // cr.parse();
         pt.parse();
         println!("{}", pt.file_name());
-        pt.to_data(cr.to_data());
+        pt.to_data();
     }
 
     // #[test]

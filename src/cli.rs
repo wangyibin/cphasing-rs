@@ -1,9 +1,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{arg, Arg, Command, Subcommand, value_parser};
+use clap::{arg, Arg, ArgAction, Command, 
+            Subcommand, value_parser};
 
-const VERSION: &str = "0.0.14";
+const VERSION: &str = "0.0.15";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -34,14 +35,42 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
                 .arg_required_else_help(true),
         ).subcommand(
+            Command::new("realign")
+                .about("rescue secondary alignment by high-quality alignments")
+                .arg(arg!(<BAM> "align bam with secondary"))
+                .arg(
+                    Arg::new("MIN_MAPQ")
+                        .long("min-mapq")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(
+                    Arg::new("FORMAT")
+                        .long("format")
+                        .short('f')
+                        .value_parser(value_parser!(String))
+                        .default_value("paf")
+                        .help("input format")
+                        )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+
+        )
+        .subcommand(
             Command::new("kprune")
                 .about("Identify the allelic and cross-allelic contig pairs")
                 .arg(arg!(<ALLELETABLE> "allele table"))
                 .arg(arg!(<CONTACTS> "contacts"))
-                .arg(arg!(<COUNT_RE> "count re"))
                 .arg(arg!(<PRUNETABLE> "prune table"))
                 .arg(
                     Arg::new("METHOD")
@@ -56,6 +85,7 @@ pub fn cli() -> Command {
                         .short('t')
                         .value_parser(value_parser!(usize))
                         .default_value("4"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("splitbam")
@@ -111,7 +141,8 @@ pub fn cli() -> Command {
                                 .long("output")
                                 .short('o')
                                 .value_parser(value_parser!(String))
-                                .default_value("-"))
+                                .default_value("-")
+                        .help("output file, default is stdout"))
                         .arg_required_else_help(true),
                 ).subcommand(
                     Command::new("porec")
@@ -124,7 +155,8 @@ pub fn cli() -> Command {
                                 .long("output")
                                 .short('o')
                                 .value_parser(value_parser!(String))
-                                .default_value("-"))
+                                .default_value("-")
+                        .help("output file, default is stdout"))
                         .arg_required_else_help(true),
                 )
         ).subcommand(
@@ -149,7 +181,8 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -172,7 +205,8 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
                 .arg(
                     Arg::new("MIN_MAPQ")
                         .long("min-mapq")
@@ -210,7 +244,51 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porec-merge")
+                .about("Merge multiple pore-c table file into single file")
+                .arg(
+                    Arg::new("TABLES")
+                        .action(ArgAction::Set)
+                        .num_args(0..)
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout")
+                )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porec-intersect")
+                .about("According a bed file to intersection a pore-c table.")
+                .arg(arg!(<TABLE> "pore-c table"))
+                .arg(arg!(<BED> "3-columns bed file"))
+                .arg(
+                    Arg::new("INVERT")
+                        .long("invert")
+                        .short('v')
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("invert the selection")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout")
+                    
+                )
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("paf2pairs")
@@ -246,7 +324,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("pairs2contacts")
@@ -261,7 +341,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("pairs2clm")
@@ -272,11 +354,19 @@ pub fn cli() -> Command {
                         .short('c')
                         .value_parser(value_parser!(u32))
                         .default_value("5"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("4"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("pairs2mnd")
@@ -287,7 +377,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         ).subcommand(
             Command::new("pairs2bam")
                 .about("convert pairs to pseudo bam file")
@@ -297,7 +389,33 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs-intersect")
+                .about("According a bed file to intersection a pairs file.")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(arg!(<BED> "3-columns bed file"))
+                .arg(
+                    Arg::new("INVERT")
+                        .long("invert")
+                        .short('v')
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("invert the selection")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout")
+                    
+                )
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("chromsizes")
@@ -308,7 +426,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
 
         )
         .subcommand(
@@ -321,7 +441,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
                 
         )
         .subcommand(
@@ -339,7 +461,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("modfa")
@@ -368,7 +492,9 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-"))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("optimize")
@@ -379,7 +505,9 @@ pub fn cli() -> Command {
                     .long("output")
                     .short('o')
                     .value_parser(value_parser!(String))
-                    .default_value("-"))
+                    .default_value("-")
+                        .help("output file, default is stdout"))
+            .arg_required_else_help(true),
       )
         
 }

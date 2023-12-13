@@ -98,7 +98,7 @@ impl PruneTable {
         for record in &self.records {
             wtr.serialize(record).expect("Could not write record")
         } 
-        log::info!("Allelic and cross-allelic information written to `{}`", output);
+        log::info!("Allelic and cross-allelic information written into `{}`", output);
     }
 
 }
@@ -113,13 +113,13 @@ pub struct KPruner {
 }
 
 impl KPruner {
-    pub fn new(alleletable: &String, contacts: &String, count_re: &String, prunetable: &String) -> KPruner {
+    pub fn new(alleletable: &String, contacts: &String, prunetable: &String) -> KPruner {
         
-        let mut count_re = CountRE::new(count_re);
-        count_re.parse();
+        // let mut count_re = CountRE::new(count_re);
+        // count_re.parse();
         let mut contacts = Contacts::new(contacts);
         contacts.parse();
-        let contact_data = contacts.to_data(count_re.to_data(), count_re.to_lengths());
+        let contact_data = contacts.to_data();
         let contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
 
         let alleletable = AlleleTable::new(alleletable);

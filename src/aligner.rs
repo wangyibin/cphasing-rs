@@ -668,7 +668,7 @@ pub fn sub_seq(seqs: &HashMap<String, String>,
 }
 
 
-pub fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
+fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
     let mut idx: u64 = 0;
     let mut au = AlignmentUnit::new();
     for r in &read_unit.data {

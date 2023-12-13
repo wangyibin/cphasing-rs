@@ -13,7 +13,8 @@ use cphasing::optimize::ContigScoreTable;
 use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::Pairs;
-use cphasing::porec::PoreCTable;
+use cphasing::porec::{
+        PoreCTable, merge_porec_tables };
 use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec };
@@ -52,12 +53,34 @@ fn main() {
             let seqs = fa.get_chrom_seqs().unwrap();
             read_bam(&input_bam, &seqs, *min_quality, *min_prob, &output);
         }
+        Some(("realign", sub_matches)) => {
+            use cphasing::realign::read_bam;
+            use cphasing::realign::read_paf;
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let import_format = sub_matches.get_one::<String>("FORMAT").expect("error");
+            let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            check_program("minimap2");
+            match import_format.as_str() {
+                "bam" => {
+                    read_bam(&input_bam, *min_mapq, &output);
+                }
+                "paf" => {
+                    read_paf(&input_bam, *min_mapq, &output);
+                }
+                _ => {
+                    eprintln!("No such format.");
+                }
+            }
+
+        }
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
 
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
-            let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
+            // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
@@ -68,7 +91,7 @@ fn main() {
                 .unwrap();
 
             assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
-            let mut kpruner = KPruner::new(&alleletable, &contacts, &count_re, &prunetable);
+            let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable);
             kpruner.prune(&method.as_str());
             kpruner.prunetable.write(&prunetable);
 
@@ -160,6 +183,23 @@ fn main() {
 
             prt.to_pairs(&chromsizes, &output).unwrap();
         }
+        Some(("porec-merge", sub_matches)) => {
+            let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            merge_porec_tables(tables, output)
+        }
+        Some(("porec-intersect", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let bed = sub_matches.get_one::<String>("BED").expect("required");
+            let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let mut prt = PoreCTable::new(&table);
+            if *invert {
+                log::info!("Invert the table.");
+            }
+            prt.intersect(&bed, *invert, &output);
+        }
         Some(("paf2pairs", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
@@ -191,10 +231,17 @@ fn main() {
             
         }
         Some(("pairs2clm", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
 
             pairs.to_clm(*min_contacts, &output);
             let contacts = Contacts::from_clm(&output);
@@ -217,7 +264,21 @@ fn main() {
 
             pairs.to_bam(&output);
         }
-   
+        
+        Some(("pairs-intersect", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let bed = sub_matches.get_one::<String>("BED").expect("required");
+            let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut pairs = Pairs::new(&pairs);
+
+            if *invert {
+                log::info!("Invert the table.");
+            }
+            pairs.intersect(&bed, *invert, &output);
+        }
+
         Some(("chromsizes", sub_matches)) => {
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
