@@ -172,7 +172,7 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
             read::GzDecoder::new(fp),
         ))
     } else {
-       
+
         parse_input(Some(file_path)).expect("No such of file")
     }
 }

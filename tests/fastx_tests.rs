@@ -19,12 +19,22 @@ mod tests {
     //     split_fastq(&fastq, &String::from("test/out.split"), 1).unwrap();
     // }
 
-    #[test]
-    fn test_count_re() {
+    // #[test]
+    // fn test_count_re() {
+    //     let fasta = String::from("test/test.fa");
+    //     let fa = Fastx::new(&fasta);
+    //     let motif = String::from("GATC");
+    //     let counts = fa.count_re(&motif).unwrap();
+    //     println!("{:?}", counts);
+    // }
+
+    #[test] 
+    fn test_digest() {
         let fasta = String::from("test/test.fa");
         let fa = Fastx::new(&fasta);
         let motif = String::from("GATC");
-        let counts = fa.count_re(&motif).unwrap();
-        println!("{:?}", counts);
+        let pos = fa.digest(&motif, 50).unwrap();
+        println!("{:?}", pos);
+        
     }
 }

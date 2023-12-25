@@ -9,8 +9,9 @@ use std::path::Path;
 use std::error::Error;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
+use rust_lapper::{Interval, Lapper};
 
-
+use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 use crate::porec::PoreCRecord;
@@ -168,6 +169,26 @@ impl Concatemer {
         }
     }
 
+    pub fn filter_digest(&mut self, interval_hash: &HashMap<String, Lapper<usize, u8>> ) {
+        for (i, record) in self.records.iter_mut().enumerate() {
+            let is_in_regions: bool =  record.is_in_regions(interval_hash);
+            if is_in_regions {
+                if record.filter_reason == "pass" {
+                    record.filter_reason = String::from("pass");
+                    self.filter_reasons[i] = String::from("pass");
+                } else {
+                    record.filter_reason = String::from("low_mq");
+                    self.filter_reasons[i] = String::from("low_mq");
+                }
+              
+            } else {
+                if record.filter_reason == "pass" {
+                    record.filter_reason = String::from("low_mq");
+                    self.filter_reasons[i] = String::from("low_mq");
+                }
+            }
+        }
+    }
 
 
     pub fn stat(&self) -> HashMap<String, u32> {
@@ -228,23 +249,37 @@ impl PAFTable {
         Ok(rdr)
     }
 
-    pub fn paf2table(&self, output: &String, min_quality: &u8, 
+    pub fn paf2table(&self, bed: &String,
+                     output: &String, min_quality: &u8, 
                      min_identity: &f32,  min_length: &u32,
                      max_order: &u32,
                     ) -> Result<(), Box<dyn Error>> {
         
-        let parse_result = self.parse();
 
+        type Iv_u8 = Interval<usize, u8>;
+        
+        let is_filter_digest = if bed != "" { true } else { false };
+       
+        let bed = if is_filter_digest {
+            Bed3::new(bed)
+        } else {
+            Bed3::new(&String::from(".tmp.bed"))
+        };
+        
+        let interval_hash = bed.to_interval_hash();
+
+        let parse_result = self.parse();
+        
         let mut rdr = match parse_result {
             Ok(v) => v,
             Err(error) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
         };
         
-        let output = common_writer(output);
+        let writer = common_writer(output);
         let mut wtr = csv::WriterBuilder::new()
                             .has_headers(false)
                             .delimiter(b'\t')
-                            .from_writer(output);
+                            .from_writer(writer);
         
         let mut read_idx: u64 = 0;
         
@@ -258,11 +293,22 @@ impl PAFTable {
         let mut read_low_mq_count: u64 = 0;
         let mut read_complex_count: u64 = 0;
 
-        for line in rdr.deserialize() {
-            let record: PAFLine = line?;
+        for (line_num, line) in rdr.deserialize().enumerate() {
+            // parse error to continue
+            let record: PAFLine = match line {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Error: Could not parse input file: {:?} at line {}", self.file_name(), line_num);
+                    continue;
+                },
+            };
             if record.query != old_query && old_query != String::from("") {
                 read_idx += 1;  
-            
+                
+                if is_filter_digest {
+                    concatemer.filter_digest(&interval_hash);
+                }
+
                 if concatemer.is_singleton() {
                     concatemer.parse_singleton();
                 }
@@ -331,7 +377,7 @@ impl PAFTable {
 
         summary.save(&format!("{}.read.summary", self.prefix()));
 
-        log::info!("Done.");
+        log::info!("Successful output Pore-C table `{}`", output);
         Ok(())
     }
 }

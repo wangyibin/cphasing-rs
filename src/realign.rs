@@ -215,10 +215,16 @@ impl PAFAlignmentUnit {
         // count map quality >= 1 {"target1": 2, "target2": 1}
         
         let mut high_mapq: HashMap<String, u32> = HashMap::new();
+        let mut high_high_mapq: HashMap<String, u32> = HashMap::new();
         for r in &self.Primary {
             let target = r.target.clone();
             if r.mapq >= mapq {
-                let count = high_mapq.entry(target).or_insert(0);
+                let count = high_mapq.entry(target.clone()).or_insert(0);
+                *count += 1;
+            }
+
+            if r.mapq > 1 {
+                let count = high_high_mapq.entry(target).or_insert(0);
                 *count += 1;
             }
         }
@@ -228,7 +234,71 @@ impl PAFAlignmentUnit {
             return;
         }
 
-      
+        {
+        'outer: for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
+            if p.mapq > 1 {
+                continue;
+            }
+
+            let mut res: HashSet<String> = HashSet::new();
+            let mut res_record_idx: HashMap<String, usize> = HashMap::new();
+            let target = p.target.clone();
+    
+            if high_high_mapq.contains_key(&target) {
+                res_record_idx.insert(target.clone(), 0);
+                res.insert(target);
+            }
+
+            for (j, r) in s.iter().enumerate() {
+                let target = r.target.clone();
+                if high_high_mapq.contains_key(&target) {
+                    res_record_idx.insert(target.clone(), j+1);
+                    res.insert(target);
+                }
+            }
+
+            let mut max_target = String::new();
+            if res.len() == 0 {
+                continue;
+            } else if res.len() == 1 {
+                let target = res.iter().next().unwrap();
+                max_target = target.clone();
+            } else {
+                // max in res 
+                let mut max = 0;
+                for target in res {
+                    let count = high_mapq.get(&target).unwrap();
+                    if *count > max {
+                        max = *count;
+                        max_target = target;
+                    }
+                }
+        
+            }
+
+            let record_idx = res_record_idx.get(&max_target).unwrap();
+
+            high_mapq.entry(max_target).and_modify(|x| *x += 1);
+            if record_idx == &0 {
+                p.mapq = 1;
+            } else {
+                let mut new_record = PAFLine::from(&s[*record_idx - 1]);
+                // println!("{:?}", p);
+                // println!("{:?}", new_record);
+                new_record.mapq = 1;
+                new_record.tags = new_record.tags.iter().map(|x| {
+                    if x.starts_with("tp:A:") {
+                        "tp:A:P".to_string()
+                    } else {
+                        x.to_string()
+                    }
+                }).collect();
+                *p = new_record;
+            
+            }
+        }
+
+        
         'outer: for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
             if p.mapq >= mapq {
                 continue;
@@ -267,31 +337,27 @@ impl PAFAlignmentUnit {
                         max_target = target;
                     }
                 }
-        
             }
-        
-        let record_idx = res_record_idx.get(&max_target).unwrap();
-
-        if record_idx == &0 {
-            p.mapq = 1;
             
-        } else {
-            let mut new_record = PAFLine::from(&s[*record_idx - 1]);
-            // println!("{:?}", p);
-            // println!("{:?}", new_record);
-            new_record.mapq = 1;
-            new_record.tags = new_record.tags.iter().map(|x| {
-                if x.starts_with("tp:A:") {
-                    "tp:A:P".to_string()
-                } else {
-                    x.to_string()
-                }
-            }).collect();
-            *p = new_record;
-        
-        }
+            let record_idx = res_record_idx.get(&max_target).unwrap();
+            if record_idx == &0 {
+                p.mapq = 1;
+            } else {
+                let mut new_record = PAFLine::from(&s[*record_idx - 1]);
+                new_record.mapq = 1;
+                new_record.tags = new_record.tags.iter().map(|x| {
+                    if x.starts_with("tp:A:") {
+                        "tp:A:P".to_string()
+                    } else {
+                        x.to_string()
+                    }
+                }).collect();
+                *p = new_record;
+            }
+
     }
-}
+    }
+    }
 
 }
 
@@ -442,10 +508,16 @@ impl AlignmentUnit {
     fn rescue(&mut self, mapq: u8) {
         
         let mut high_mapq: HashMap<u64, u32> = HashMap::new();
+        let mut high_high_mapq: HashMap<u64, u32> = HashMap::new();
         for r in &self.Primary {
             let target: u64 = r.tid().try_into().unwrap();
             if r.mapq() >= mapq {
                 let count = high_mapq.entry(target).or_insert(0);
+                *count += 1;
+            } 
+
+            if r.mapq() > 1 {
+                let count = high_high_mapq.entry(target).or_insert(0);
                 *count += 1;
             }
         }

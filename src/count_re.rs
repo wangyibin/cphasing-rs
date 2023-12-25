@@ -1,4 +1,5 @@
 use anyhow::Result as AnyResult;
+use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
@@ -57,7 +58,7 @@ impl CountRE {
 
     }
 
-    pub fn from_hashmap(&mut self, counts: HashMap<String, u64>, 
+    pub fn from_hashmap(&mut self, counts: IndexMap<String, u64>, 
                         chromsizes: HashMap<String, u64>) {
         for (contig, count) in counts {
             let length = chromsizes.get(&contig).unwrap().clone();

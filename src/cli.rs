@@ -41,7 +41,7 @@ pub fn cli() -> Command {
         ).subcommand(
             Command::new("realign")
                 .about("rescue secondary alignment by high-quality alignments")
-                .arg(arg!(<BAM> "align bam with secondary"))
+                .arg(arg!(<PAF> "paf from minimap2 with secondary"))
                 .arg(
                     Arg::new("MIN_MAPQ")
                         .long("min-mapq")
@@ -78,6 +78,22 @@ pub fn cli() -> Command {
                         .short('m')
                         .value_parser(value_parser!(String))
                         .default_value("greedy")
+                        )
+                .arg(
+                    Arg::new("FIRST_CLUSTER")
+                        .long("first-cluster")
+                        .short('f')
+                        .help("first cluster from hyperpartition")
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
+                        )
+                .arg(
+                    Arg::new("WHITELIST")
+                        .long("whitelist")
+                        .short('w')
+                        .help("whitelist file, only keep the contigs in whitelist")
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
                         )
                 .arg(
                     Arg::new("THREADS")
@@ -160,15 +176,42 @@ pub fn cli() -> Command {
                         .arg_required_else_help(true),
                 )
         ).subcommand(
+            Command::new("digest")
+                .about("digest genome by restriction enzyme, output restriction sites")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(
+                    Arg::new("PATTERN")
+                        .long("pattern")
+                        .short('p')
+                        .value_parser(value_parser!(String))
+                        .default_value("GATC")
+                        .help("restriction enzyme pattern, multiple pattern use comma to seperate"))
+                .arg(
+                        Arg::new("SLOPE")
+                            .long("slope")
+                            .short('s')
+                            .value_parser(value_parser!(i64))
+                            .default_value("30"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("count_re")
                 .about("count restriction enzyme sites, only support single enzyme")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
-                    Arg::new("MOTIF")
-                        .long("motif")
-                        .short('m')
+                    Arg::new("PATTERN")
+                        .long("pattern")
+                        .short('p')
                         .value_parser(value_parser!(String))
-                        .default_value("GATC"))
+                        .default_value("AAGCTT")
+                        .help("restriction enzyme pattern, multiple pattern use comma to seperate"))
                 .arg(
                     Arg::new("MIN_RE")
                         .long("min-re")
@@ -197,9 +240,16 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("paf2table")
+            Command::new("paf2porec")
                 .about("convert paf to pore-c table")
+                .alias("paf2table")
                 .arg(arg!(<PAF> "paf"))
+                .arg(
+                    Arg::new("BED")
+                        .long("bed")
+                        .short('b')
+                        .value_parser(value_parser!(String))
+                        .default_value(""))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -246,6 +296,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-")
                         .help("output file, default is stdout"))
+                .arg(
+                    Arg::new("MIN_MAPQ")
+                        .long("min-mapq")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -296,6 +352,12 @@ pub fn cli() -> Command {
                 .arg(arg!(<PAF> "paf"))
                 .arg(arg!(<CHROMSIZES> "chromsizes"))
                 .arg(
+                    Arg::new("BED")
+                        .long("bed")
+                        .short('b')
+                        .value_parser(value_parser!(String))
+                        .default_value(""))
+                .arg(
                     Arg::new("MIN_MAPQ")
                         .long("min-mapq")
                         .short('q')
@@ -330,13 +392,14 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2contacts")
+                .alias("pairs2contact")
                 .about("calculate the contacts between contigs")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(Arg::new("MIN_CONTACTS")
                         .long("min-contacts")
                         .short('c')
                         .value_parser(value_parser!(u32))
-                        .default_value("5"))
+                        .default_value("1"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -353,7 +416,7 @@ pub fn cli() -> Command {
                         .long("min-contacts")
                         .short('c')
                         .value_parser(value_parser!(u32))
-                        .default_value("5"))
+                        .default_value("1"))
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")

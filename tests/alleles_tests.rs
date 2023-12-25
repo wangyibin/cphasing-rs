@@ -14,8 +14,11 @@ mod tests {
     #[test]
     fn test_allele_table() {
         let file = "test//ploidy-2.3.n500k.allele.table";
-        let allele_table = AlleleTable::new(&file.to_string());
+        let mut allele_table = AlleleTable::new(&file.to_string());
         let allele_records = allele_table.allele_records().unwrap();
-        println!("{:?}", allele_records);
+        println!("{:?}", allele_table.header.to_unique_minimizer_density());
+        // println!("{:?}", allele_records);
     }
+
+    
 }

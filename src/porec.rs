@@ -70,6 +70,22 @@ impl PoreCRecord {
         )
     }
 
+    pub fn is_in_regions(&self, interval_hash: &HashMap<String, Lapper<usize, u8>>) -> bool {
+        let is_in_regions: bool = if let Some(interval) = interval_hash.get(&self.target) {
+            let iv_start = interval.count((self.target_start - 1) as usize, self.target_start as usize);
+            let iv_end = interval.count((self.target_end - 1) as usize, self.target_end as usize);
+            if iv_start > 0 && iv_end > 0 {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        is_in_regions
+    }
+
+
 }
 
 impl PartialOrd for PoreCRecord {
@@ -198,7 +214,7 @@ impl PoreCTable {
         Ok(rdr)
     }
 
-    pub fn to_pairs(&self, chromsizes: &String, output: &String) -> Result<(), Box<dyn Error>> {
+    pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8) -> Result<(), Box<dyn Error>> {
         let parse_result = self.parse();
         let mut rdr = match parse_result {
             Ok(v) => v,
@@ -248,6 +264,9 @@ impl PoreCTable {
             }
             flag = true;
             old_read_idx = record.read_idx;
+            if record.mapq < min_quality {
+                continue
+            }
             concatemer.push(record);
            
         }

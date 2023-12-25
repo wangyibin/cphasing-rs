@@ -7,6 +7,7 @@ use std::io::{ Read, Write, BufReader, BufRead, BufWriter };
 use serde::{ Serialize, Deserialize };
 use rayon::prelude::*;
 
+use crate::alleles::{ AlleleTable, AlleleHeader };
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair };
 
@@ -112,7 +113,7 @@ impl Contacts {
         contacts
     }
 
-    pub fn to_data(&self) -> HashMap<ContigPair, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+    pub fn to_data(&self, unique_min: &HashMap<String, f64>) -> HashMap<ContigPair, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
@@ -135,32 +136,49 @@ impl Contacts {
             (contig_pair.Contig1.clone(), *count)
         }).collect::<HashMap<String, f64>>();
 
+
         data.par_iter_mut().for_each(|(contig_pair, count)| {
-            // if !re_count.contains_key(&contig_pair.Contig1) || !re_count.contains_key(&contig_pair.Contig2) {
-            //     return
-            // } else {
-                // let contig1_length = lengths.get(&contig_pair.Contig1).unwrap();
-                // let contig2_length = lengths.get(&contig_pair.Contig2).unwrap();
-                // let re_count1 = re_count.get(&contig_pair.Contig1).unwrap_or(&0);
-                // let re_count2 = re_count.get(&contig_pair.Contig2).unwrap_or(&0);
-               
-            let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
-            let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
+            let mut ratio = 0.0;
+            if contig_pair.Contig1 == contig_pair.Contig2 {
+                ratio = *count as f64; 
+            } else {
+                let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
+                let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                let m2 = unique_min.get(&contig_pair.Contig2).unwrap_or(&0.0);
         
-            // let ratio = match re_count1 * re_count2 {
-            //     0 => 0.0,
-            //     // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
-            //     _ =>  *count / (re_count1 * re_count2) as f64,
-            // };
+                let m1_log = -(m1 + 1.0).log2();
+                let m2_log = -(m2 + 1.0).log2();
+                // if m1_log == 0.0 || m2_log == 0.0{
+                //     println!("{} {}: {} {} | {}: {} {}", count, contig_pair.Contig1, 
+                //                 m1_log, count1, contig_pair.Contig2, m2_log, count2);
+                // }
+                ratio = match count1 * count2 {
+                    0.0 => 0.0,
+                    // _ => *count / ((count1) * (count2)).sqrt(),
+                
+                    //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
+                    _ => match m1_log * m2_log {
+                        0.0 => *count / ((count1 * count2).sqrt()),
+                        _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
 
-            let ratio = match count1 * count2 {
-                0.0 => 0.0,
-                _ => *count / (count1.sqrt() * count2.sqrt()),
-            };
-            // println!("{} {} {} {}", count, ratio,count1, count2);
+                    }
+                
+                };
+            }
+            
+
+            // replace NaN with 0.0
+            if ratio.is_nan() {
+                ratio = 0.0;
+            }
+
+            if ratio < 0.0 {
+                ratio = 0.0;
+            }
+           
             *count = ratio;
-
-            // }
+        
         });
 
         // let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
@@ -202,8 +220,8 @@ impl Contacts {
         // }).collect();
 
         // new_data  
+        data 
 
-        data
     }
 
 

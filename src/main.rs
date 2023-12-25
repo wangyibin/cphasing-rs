@@ -1,8 +1,10 @@
+use indexmap::IndexMap;
 use cphasing::aligner::read_bam;
 use cphasing::bam::split_bam;
 use cphasing::cli::cli;
 use cphasing::core::{ 
-    BaseTable, common_writer, ContigPair,
+    BaseTable,  common_reader, 
+    common_writer, ContigPair,
     check_program};
 use cphasing::count_re::CountRE;
 use cphasing::contacts::Contacts;
@@ -56,7 +58,7 @@ fn main() {
         Some(("realign", sub_matches)) => {
             use cphasing::realign::read_bam;
             use cphasing::realign::read_paf;
-            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let input = sub_matches.get_one::<String>("PAF").expect("required");
             let import_format = sub_matches.get_one::<String>("FORMAT").expect("error");
             let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -64,10 +66,10 @@ fn main() {
             check_program("minimap2");
             match import_format.as_str() {
                 "bam" => {
-                    read_bam(&input_bam, *min_mapq, &output);
+                    read_bam(&input, *min_mapq, &output);
                 }
                 "paf" => {
-                    read_paf(&input_bam, *min_mapq, &output);
+                    read_paf(&input, *min_mapq, &output);
                 }
                 _ => {
                     eprintln!("No such format.");
@@ -77,23 +79,96 @@ fn main() {
         }
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
-
+            use std::io::BufReader;
+            use std::io::BufRead;
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
+            let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
+            let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
+           
+
+            assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
+           
+            let writer = common_writer(&prunetable);
+            let mut wtr = csv::WriterBuilder::new()
+                .delimiter(b'\t')
+                .has_headers(false)
+                .from_writer(writer);
 
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
                 .unwrap();
 
-            assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
-            let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable);
-            kpruner.prune(&method.as_str());
-            kpruner.prunetable.write(&prunetable);
+            let mut whitehash: HashSet<String> = HashSet::new();
+
+            if whitelist != "none" {
+                let reader = common_reader(&whitelist);
+                let reader = BufReader::new(reader);
+                for line in reader.lines() {
+                    let line = line.unwrap();
+                    whitehash.insert(line);
+                }
+            }
+
+            let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
+            if first_cluster != "none" {
+                let reader = common_reader(&first_cluster);
+                let reader = BufReader::new(reader);
+                for line in reader.lines() {
+                    let line = line.unwrap();
+                    // split tab
+                    let mut line = line.split("\t");
+                    let group = line.next().unwrap().to_string();
+                    let count = line.next().unwrap().to_string();
+                    // split next with space
+                    let contigs: Vec<_> = line.next().unwrap().split(" ").collect();
+                   
+                    let contigs: HashSet<String> = contigs.into_iter().map(|x| x.to_string()).collect();
+                    if whitehash.len() > 0 {
+                        let contigs: HashSet<String> = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
+                    }
+                    first_cluster_hashmap.insert(group, contigs);
+                }
+            }
+
+            if first_cluster != "none" {
+            
+                log::set_max_level(log::LevelFilter::Off);
+                let mut kpruners: HashMap<String, KPruner> = first_cluster_hashmap
+                            .keys().map(|x| (x.to_string(), KPruner::new(&alleletable, &contacts, &prunetable))).collect();
+                
+                for (k, v) in first_cluster_hashmap {
+                    log::info!("Pruning cluster `{}`", k);
+                    let kpruner = kpruners.get_mut(&k).unwrap();
+                    let _whitehash: HashSet<String> = v.into_iter().collect();
+                    
+                    kpruner.prune(&method.as_str(), &_whitehash);
+                }
+                log::set_max_level(log::LevelFilter::Info);
+                // write kpruners prunetable into a file
+                let mut allelic_counts: u32 = 0;
+                let mut cross_allelic_counts: u32 = 0;
+                for (k, v) in kpruners {
+                    allelic_counts += v.allelic_counts;
+                    cross_allelic_counts += v.cross_allelic_counts;
+                    v.prunetable.write(&mut wtr);
+                }
+                log::info!("Allelic counts: {}", allelic_counts);
+                log::info!("Cross-allelic counts: {}", cross_allelic_counts);
+                
+            } else {
+                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable);
+                kpruner.prune(&method.as_str(), &whitehash);
+                kpruner.prunetable.write(&mut wtr);
+            }
+            
+            log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
 
         }
         Some(("splitbam", sub_matches)) => {
@@ -132,23 +207,45 @@ fn main() {
             }
             
         }
+
+        Some(("digest", sub_matches)) => {
+            let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
+            let slope = sub_matches.get_one::<i64>("SLOPE").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let fasta = Fastx::new(&input_fasta);
+            let positions = fasta.digest(&pattern, *slope).unwrap();
+            let mut writer = common_writer(&output);
+            for (k, v) in positions {
+                for pos in v {
+                    let pos_start = pos[0];
+                    let pos_end = pos[1];
+                    writer.write(format!("{}\t{}\t{}\n", k, pos_start, pos_end).as_bytes()).unwrap();
+                }
+                
+            }
+
+            log::info!("Digest results written to `{}`", output);
+        }
+
         Some(("count_re", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
-            let motif = sub_matches.get_one::<String>("MOTIF").expect("error");
+            let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
             let min_re = sub_matches.get_one::<u64>("MIN_RE").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             let mut count_re = CountRE::new(&output);
             let fasta = Fastx::new(&input_fasta);
             let contigsizes = fasta.get_chrom_size().unwrap();
-            let counts = fasta.count_re(&motif).unwrap();
+            let counts = fasta.count_re(&pattern).unwrap();
 
             // counts + 1 
-            let counts: HashMap<String, u64> = counts.into_iter()
+            let counts: IndexMap<String, u64> = counts.into_iter()
                                                     .map(|(k, v)| (k, v + 1))
                                                     .collect();
             // filter counts which are less than min re
-            let counts: HashMap<String, u64> = counts.into_iter()
+            let counts: IndexMap<String, u64> = counts.into_iter()
                                                     .filter(|(_, v)| *v >= *min_re)
                                                     .collect();
             count_re.from_hashmap(counts, contigsizes);
@@ -162,6 +259,8 @@ fn main() {
         }
         Some(("paf2table", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
+            let empty_string = String::new();
+            let bed = sub_matches.get_one::<String>("BED").unwrap_or(&empty_string);
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
@@ -171,17 +270,17 @@ fn main() {
 
             let pt = PAFTable::new(&paf);
 
-            pt.paf2table(output, min_quality, min_identity, min_length, max_order).unwrap();
+            pt.paf2table(bed, output, min_quality, min_identity, min_length, max_order).unwrap();
 
         }
         Some(("porec2pairs", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-
+            let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let prt = PoreCTable::new(&table);
 
-            prt.to_pairs(&chromsizes, &output).unwrap();
+            prt.to_pairs(&chromsizes, &output, *min_quality).unwrap();
         }
         Some(("porec-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
@@ -203,6 +302,9 @@ fn main() {
         Some(("paf2pairs", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let empty_string = String::new();
+            let bed = sub_matches.get_one::<String>("BED").unwrap_or(&empty_string);
+           
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
@@ -214,9 +316,9 @@ fn main() {
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
-            pt.paf2table(&table_output, min_quality, min_identity, min_length, max_order).unwrap();
+            pt.paf2table(&bed, &table_output, min_quality, min_identity, min_length, max_order).unwrap();
             let prt = PoreCTable::new(&table_output);
-            prt.to_pairs(&chromsizes, &output).unwrap();
+            prt.to_pairs(&chromsizes, &output, *min_quality).unwrap();
 
         }
         Some(("pairs2contacts", sub_matches)) => {

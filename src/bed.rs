@@ -24,16 +24,28 @@ pub struct Bed3 {
 
 impl Bed3 {
     pub fn new(bed: &String) -> Self {
-        let file = File::open(bed).unwrap();
-        let reader = csv::ReaderBuilder::new()
-            .flexible(true)
-            .delimiter(b'\t')
-            .has_headers(false)
-            .from_reader(file.try_clone().unwrap());
-        Self {
-            file: file,
-            reader: reader,
+        if Path::new(bed).exists() {
+            let file = File::open(bed).unwrap();
+            let reader = csv::ReaderBuilder::new()
+                .flexible(true)
+                .delimiter(b'\t')
+                .has_headers(false)
+                .from_reader(file.try_clone().unwrap());
+            Self {
+                file: file,
+                reader: reader,
+            }
+        } else {
+            Self {
+                file: File::create(bed).unwrap(),
+                reader: csv::ReaderBuilder::new()
+                    .flexible(true)
+                    .delimiter(b'\t')
+                    .has_headers(false)
+                    .from_reader(File::create(bed).unwrap().try_clone().unwrap()),
+            }
         }
+        
     }
     
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
