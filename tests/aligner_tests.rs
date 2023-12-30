@@ -8,7 +8,17 @@ use std::time::Instant;
 #[cfg(test)]
 mod tests {
     use super::*;
- 
+    
+    // #[test]
+    // fn test_edit_distance() {
+    //     extern crate levenshtein;
+    //     use levenshtein::levenshtein;
+    //     let mut seq1 = "CGGCAmmAGGTTAAAATCTmAGTGCTGCAATAGGCGATTACAGTACAGCACCCAGCCTCCC";
+    //     let mut seq2 = "CGGCAmmAGGTTAAAATCTmAGTGCTGCAATAGGCAAGCTTTTTACAGCACCCAGCCTCCC";
+
+    //     let edit_distance = levenshtein(seq1, seq2);
+    //     println!("edit_distance: {}", edit_distance);
+    // }
 
     #[test]
     fn test_input_bam() {

@@ -285,7 +285,7 @@ impl PAFAlignmentUnit {
                 let mut new_record = PAFLine::from(&s[*record_idx - 1]);
                 // println!("{:?}", p);
                 // println!("{:?}", new_record);
-                new_record.mapq = 1;
+                new_record.mapq = 2;
                 new_record.tags = new_record.tags.iter().map(|x| {
                     if x.starts_with("tp:A:") {
                         "tp:A:P".to_string()

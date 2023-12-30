@@ -1,7 +1,7 @@
 #[warn(unused_assignments)]
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
-use minimap2::*;
+// use minimap2::*;
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -152,27 +152,27 @@ impl AlignmentUnit {
 }
 
 // align modified seq to modified reference by meth-minimap2 (rust)
-fn map_seq_to_seqs(mod_seq: &[u8], targets: Vec<Vec<u8>>) -> anyResult<Vec::<Mapping>> {
-    let mut align_results = Vec::new();
+// fn map_seq_to_seqs(mod_seq: &[u8], targets: Vec<Vec<u8>>) -> anyResult<Vec::<Mapping>> {
+//     let mut align_results = Vec::new();
 
-    for (target, ref_seq) in targets.iter().enumerate() {
-        // println!(">{}\n{}", target.to_string(), String::from_utf8(seq.to_vec()).unwrap());
-        let aligner = Aligner::builder()
-        .with_seq_and_id(&ref_seq, target.to_string().as_bytes())
-        .unwrap()
-        .with_cigar();
-        let res = aligner.map(&mod_seq, true, true, None, None);
+//     for (target, ref_seq) in targets.iter().enumerate() {
+//         // println!(">{}\n{}", target.to_string(), String::from_utf8(seq.to_vec()).unwrap());
+//         let aligner = Aligner::builder()
+//         .with_seq_and_id(&ref_seq, target.to_string().as_bytes())
+//         .unwrap()
+//         .with_cigar();
+//         let res = aligner.map(&mod_seq, true, true, None, None);
         
-        let res = &res.as_ref().unwrap();
-        if res.len() > 0 {
-            let best = &res[0];
-            align_results.push(best.clone());
-        }
+//         let res = &res.as_ref().unwrap();
+//         if res.len() > 0 {
+//             let best = &res[0];
+//             align_results.push(best.clone());
+//         }
 
-    }
+//     }
 
-    Ok(align_results)
-}
+//     Ok(align_results)
+// }
 
 // align modified seq to modified reference by meth-minimap2 (command)
 fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqRecord>, 
@@ -258,6 +258,54 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
 
     Ok((align_results, header_view))
                
+}
+
+fn map_seq_to_seqs_by_edit_distance(read_id: &String, 
+                mod_seq: &[u8], targets: Vec<SeqRecord>,
+
+            ) -> anyResult<Vec::<(usize, usize)>> {
+    extern crate levenshtein;
+    use levenshtein::levenshtein;
+    
+    let mut align_results: Vec::<(usize, usize)> = Vec::new();
+
+    // only retain the C and m in mod seq, and convert to str
+    let mut mod_seq = mod_seq.iter().filter(|x| {
+        match x {
+            b'C' | b'm' => true,
+            _ => false,
+        }
+    }).collect::<Vec<&u8>>();
+
+    // convert &u8 to u8 
+    let mut mod_seq = mod_seq.iter().map(|x| {
+        **x
+    }).collect::<Vec<u8>>();
+    let mod_seq = String::from_utf8(mod_seq.to_vec()).unwrap();
+
+    for i in 0..targets.len() {
+        let target = &targets[i];
+        // only retain the C and m in target seq
+        let mut target_seq = target.seq.iter().filter(|x| {
+            match x {
+                b'C' | b'm' => true,
+                _ => false,
+            }
+        }).collect::<Vec<&u8>>();
+        let mut target_seq = target_seq.iter().map(|x| {
+            **x
+        }).collect::<Vec<u8>>();
+        let target_seq = String::from_utf8(target_seq.to_vec()).unwrap();
+
+        let distance = levenshtein(&mod_seq, &target_seq);
+        align_results.push((i, distance));
+    }
+
+    // sort align_results by distance
+    align_results.sort_by(|a, b| a.1.cmp(&b.1));
+
+
+    Ok(align_results)
 }
 
 fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>, 
@@ -401,96 +449,67 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         read_idx += 1;
                     }
                 
-                let (align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
-
-                let align_result_len = align_results.len();
-                if align_result_len > 0 {
-
-                    for (a_idx, a) in align_results.iter().enumerate() {
-                        let a_parser = RecordParser::parse(&a, &new_header_view, seq_len);
-
-                     
-                        let mut new_record = if a_parser.target == "0" {
+                let align_results_edit =  map_seq_to_seqs_by_edit_distance(&read_id, &mod_seq, targets.clone()).unwrap();
+                let align_results_edit_len = align_results_edit.len();
+                if align_results_edit_len > 0 {
+                    if align_results_edit[0].1 == align_results_edit[1].1 {
+                        continue 'outer;
+                    }
+                    for (idx, a) in align_results_edit.iter().enumerate() {
+                        let a_idx = a.0;
+                      
+                        let mut new_record = if a_idx == 0 {
                             Record::from(p.clone())
                             
                         } else {
-                            Record::from(s[a_parser.target.parse::<usize>().unwrap() - 1 as usize].clone())
+                            Record::from(s[a_idx - 1 ].clone())
                         };
-                        
-                        if a_idx == 0 {
+
+                        if idx == 0 {
                             new_record.push_aux(b"RA", Aux::String(&"y")).unwrap();
-                        }
-                        // add RA tag, RA:Z:
-                        
+                            // set mapq to 2 
+                            new_record.set_mapq(2);
+                            if new_record.is_reverse() {
+                                if new_record.is_supplementary() {
+                                    new_record.set_flags(0x910);
+                                } else {
+                                    new_record.set_flags(0x10);
+                                }
+                            } else {
+                                if new_record.is_supplementary() {
+                                    new_record.set_flags(0x900);
+                                } else {
+                                    new_record.set_flags(0x0);
+                                }
+                            }
 
-                        let cigar_string = new_record.cigar().take();
-                        let cigar_string: Option<&CigarString> = Some(&cigar_string);
-                        match !a.is_secondary() {
-                            true => {
-                                new_record.set(p.qname(), cigar_string, &p.seq().as_bytes(), p.qual());
-                                if new_record.is_reverse() {
-                                    if new_record.is_supplementary() {
-                                        new_record.set_flags(0x910);
-                                    } else {
-                                        new_record.set_flags(0x10);
-                                    }
+
+                        } else {
+                            new_record.push_aux(b"RA", Aux::String(&"n")).unwrap();
+                            new_record.set_mapq(0);
+                            if new_record.is_reverse() {
+                                if new_record.is_supplementary() {
+                                    new_record.set_flags(0x910);
                                 } else {
-                                    if new_record.is_supplementary() {
-                                        new_record.set_flags(0x900);
-                                    } else {
-                                        new_record.set_flags(0x0);
-                                    }
+                                    new_record.set_flags(0x110);
                                 }
-                            },
-                            false => {
-                                if new_record.is_reverse() {
-                                    if new_record.is_supplementary() {
-                                        new_record.set_flags(0x910);
-                                    } else {
-                                        new_record.set_flags(0x110);
-                                    }
+                            } else {
+                                if new_record.is_supplementary() {
+                                    new_record.set_flags(0x1000);
                                 } else {
-                                    if new_record.is_supplementary() {
-                                        new_record.set_flags(0x1000);
-                                    } else {
-                                        new_record.set_flags(0x100);
-                                    }
-                                    
+                                    new_record.set_flags(0x100);
                                 }
-                                new_record.set(p.qname(), cigar_string, &[], &[]);
+                                
                             }
                         }
 
-                        let new_score: u32 = match a.aux(b"AS") {
-                            Ok(value) => {
-                                match value {
-                                    Aux::U8(v) => v.try_into().unwrap(),
-                                    Aux::U16(v) => v.try_into().unwrap(),
-                                    Aux::U32(v) => v.try_into().unwrap(),
-                                    _ => 0,
-                            }
-                        },
-                            Err(e) => calculate_alignment_score_from_cigar_string_view(a.cigar()).unwrap().try_into().unwrap_or(0),
-                        };
-                        let new_nm: u32 = match a.aux(b"NM") {
-                            Ok(value) => {
-                                match value {
-                                    Aux::U8(v) => v.try_into().unwrap(),
-                                    Aux::U16(v) => v.try_into().unwrap(),
-                                    Aux::U32(v) => v.try_into().unwrap(),
-                                    _ => 0,
-                                }
-                                },
-                                Err(e) => 0,
-                        };
-                        
-                        new_record.set_mapq(a.mapq().try_into().unwrap());
                         new_record.remove_aux(b"NM").unwrap();
                         new_record.remove_aux(b"AS").unwrap();
                         new_record.remove_aux(b"tp").unwrap();
-                        new_record.push_aux(b"NM", Aux::U32(new_nm)).unwrap();
-                        new_record.push_aux(b"AS", Aux::U32(new_score)).unwrap();
-                        match a_idx {
+                        new_record.push_aux(b"NM", Aux::U32(a.1.try_into().unwrap())).unwrap();
+                    
+                        
+                        match idx {
                             0 => {
                                 new_record.push_aux(b"tp", Aux::Char(b"P"[0])).unwrap();
                             },
@@ -498,105 +517,118 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                                 new_record.push_aux(b"tp", Aux::Char(b"S"[0])).unwrap();
                             }
                         }
-
                         
-                    
-
-
                         writer.write(&new_record).unwrap();
+                        
                     }
+
+
+                // let (align_results, new_header_view) = map_seq_to_seqs_by_command(&read_id, &mod_seq, targets).unwrap();
                 
-                    // align_results.sort_by(|a, b| a.alignment.as_ref().unwrap().nm.cmp(&b.alignment.as_ref().unwrap().nm));
-                    
-                    // let mut a_mapq = match align_result_len == 1 {
-                    //     true => align_results[0].mapq,
-                    //     false => match align_results[0].alignment.as_ref().unwrap().nm == align_results[1].alignment.as_ref().unwrap().nm {
-                    //         true => 0,
-                    //         false => align_results[0].mapq,
-                    //     }
-                    // };
+                // let align_result_len = align_results.len();
+                // if align_result_len > 0 {
 
-                
+                //     for (a_idx, a) in align_results.iter().enumerate() {
+                //         let a_parser = RecordParser::parse(&a, &new_header_view, seq_len);
 
-                    // for (a_idx, a) in align_results.iter().enumerate() {
-                    //     if a_idx > 0 {
-                    //         a_mapq = 0;
-
-                    //     } 
-                        // match p.aux(b"NM") {
-                        // Ok(value) => {
-                        //     println!("{} {} {:.?}", self.read_id(), p.mapq(), value);
-                        // },
-                        // Err(e) => {}
-                        // }
-                        // println!("{} {} {} {:?}", self.read_id(), 
-                        //                         a.target_name.as_ref().unwrap(),
-                        //                         a_mapq,
-                        //                        a.alignment.as_ref().unwrap().nm);
-                        // 
-                //         let mut new_record = if a.target_name.as_ref().unwrap() == &"0".to_string() {
+                     
+                //         let mut new_record = if a_parser.target == "0" {
                 //             Record::from(p.clone())
                             
                 //         } else {
-                //             Record::from(s[a.target_name.as_ref().unwrap().parse::<usize>().unwrap() - 1 as usize].clone())
+                //             Record::from(s[a_parser.target.parse::<usize>().unwrap() - 1 as usize].clone())
                 //         };
-                //         let new_flag = match a_idx {
-                //             0 => {
-                //                 match new_record.is_reverse() {
-                //                     true => match new_record.is_supplementary() {
-                //                         true => 0x910,
-                //                         false => 0x10,
-                //                     },
-                //                     false => match new_record.is_supplementary() {
-                //                         true => 0x900,
-                //                         false => 0x0,
+                        
+                //         if a_idx == 0 {
+                //             new_record.push_aux(b"RA", Aux::String(&"y")).unwrap();
+                //         }
+                //         // add RA tag, RA:Z:
+                        
+
+                //         let cigar_string = new_record.cigar().take();
+                //         let cigar_string: Option<&CigarString> = Some(&cigar_string);
+                //         match !a.is_secondary() {
+                //             true => {
+                //                 new_record.set(p.qname(), cigar_string, &p.seq().as_bytes(), p.qual());
+                //                 if new_record.is_reverse() {
+                //                     if new_record.is_supplementary() {
+                //                         new_record.set_flags(0x910);
+                //                     } else {
+                //                         new_record.set_flags(0x10);
+                //                     }
+                //                 } else {
+                //                     if new_record.is_supplementary() {
+                //                         new_record.set_flags(0x900);
+                //                     } else {
+                //                         new_record.set_flags(0x0);
                 //                     }
                 //                 }
                 //             },
-                //             _ => {
-                //                 match new_record.is_reverse() {
-                //                     true => 0x110,
-                //                     false => 0x100,
+                //             false => {
+                //                 if new_record.is_reverse() {
+                //                     if new_record.is_supplementary() {
+                //                         new_record.set_flags(0x910);
+                //                     } else {
+                //                         new_record.set_flags(0x110);
+                //                     }
+                //                 } else {
+                //                     if new_record.is_supplementary() {
+                //                         new_record.set_flags(0x1000);
+                //                     } else {
+                //                         new_record.set_flags(0x100);
+                //                     }
+                                    
                 //                 }
-                //             }
-                //         };
-                //         new_record.set_flags(new_flag);
-                        
-                //         match a_idx {
-                //             0 => {
-                //                 new_record.set(p.qname(), None, &p.seq().as_bytes(), p.qual());
-                //             },
-                //             _ => {
-                //                 new_record.set(p.qname(), None, &[], &[]);
+                //                 new_record.set(p.qname(), cigar_string, &[], &[]);
                 //             }
                 //         }
-                        
-                        
-                //         let new_score = calculate_alignment_score_from_cigar(a.alignment.as_ref().unwrap().cigar.as_ref().unwrap());
-                //         new_record.set_mapq(a_mapq.try_into().unwrap());
-                //         new_record.remove_aux(b"NM");
-                //         new_record.remove_aux(b"AS");
-                        
-                //         new_record.push_aux(b"NM", Aux::I32(a.alignment.as_ref().unwrap().nm));
-                //         new_record.push_aux(b"AS", Aux::I32(new_score));
-                        
-                //         new_record.remove_aux(b"tp");
-                //         match a_idx {
-                //             0 => {
-                //                 new_record.push_aux(b"tp", Aux::Char(b"P"[0]));
-                //             },
-                //             _ => {
-                //                 new_record.push_aux(b"tp", Aux::Char(b"S"[0]));
-                //             }
-                //         }
-                //         writer.write(&new_record).unwrap();
-                        
-                //     }
-                // } 
 
-                    //     writer.write(&new_record).unwrap();
+                //         let new_score: u32 = match a.aux(b"AS") {
+                //             Ok(value) => {
+                //                 match value {
+                //                     Aux::U8(v) => v.try_into().unwrap(),
+                //                     Aux::U16(v) => v.try_into().unwrap(),
+                //                     Aux::U32(v) => v.try_into().unwrap(),
+                //                     _ => 0,
+                //             }
+                //         },
+                //             Err(e) => calculate_alignment_score_from_cigar_string_view(a.cigar()).unwrap().try_into().unwrap_or(0),
+                //         };
+                //         let new_nm: u32 = match a.aux(b"NM") {
+                //             Ok(value) => {
+                //                 match value {
+                //                     Aux::U8(v) => v.try_into().unwrap(),
+                //                     Aux::U16(v) => v.try_into().unwrap(),
+                //                     Aux::U32(v) => v.try_into().unwrap(),
+                //                     _ => 0,
+                //                 }
+                //                 },
+                //                 Err(e) => 0,
+                //         };
                         
-                    // }
+                //         new_record.set_mapq(a.mapq().try_into().unwrap());
+                //         new_record.remove_aux(b"NM").unwrap();
+                //         new_record.remove_aux(b"AS").unwrap();
+                //         new_record.remove_aux(b"tp").unwrap();
+                //         new_record.push_aux(b"NM", Aux::U32(new_nm)).unwrap();
+                //         new_record.push_aux(b"AS", Aux::U32(new_score)).unwrap();
+                //         match a_idx {
+                //             0 => {
+                //                 new_record.push_aux(b"tp", Aux::Char(b"P"[0])).unwrap();
+                //             },
+                //             _ => {
+                //                 new_record.push_aux(b"tp", Aux::Char(b"S"[0])).unwrap();
+                //             }
+                //         }
+
+                        
+                    
+
+
+                //         writer.write(&new_record).unwrap();
+                //     }
+                
+                
                 } else {
                     writer.write(&p).unwrap();
                     if s.len() > 0 {
@@ -744,26 +776,28 @@ pub fn read_bam(input_bam: &String, seqs: &HashMap<String, String>, min_quality:
     
 }
 
-pub fn mapping_unit(index_file: &String, record: &Record) {
-    let aligner = Aligner::builder()
-        .with_index(index_file, None)
-        .unwrap()
-        .with_cigar();
-    let query = record.seq().as_bytes();
-    let res = aligner.map(&query, true, true, None, None);
+// pub fn mapping_unit(index_file: &String, record: &Record) {
+//     let aligner = Aligner::builder()
+//         .with_index(index_file, None)
+//         .unwrap()
+//         .with_cigar();
+//     let query = record.seq().as_bytes();
+//     let res = aligner.map(&query, true, true, None, None);
     
-}
+// }
 
-pub fn mapping(index_file: &String, input_bam: &String) {
-    let mut bam = Reader::from_path(input_bam).unwrap();
+// pub fn mapping(index_file: &String, input_bam: &String) {
+//     let mut bam = Reader::from_path(input_bam).unwrap();
     
-    let aligner = Aligner::builder()
-        .with_index(index_file, None)
-        .unwrap()
-        .with_cigar();
+//     let aligner = Aligner::builder()
+//         .with_index(index_file, None)
+//         .unwrap()
+//         .with_cigar();
 
-    for r in bam.records() {
-        let record = r.unwrap();
-        mapping_unit(index_file, &record);
-    }
-}
+//     for r in bam.records() {
+//         let record = r.unwrap();
+//         mapping_unit(index_file, &record);
+//     }
+// }
+
+// 

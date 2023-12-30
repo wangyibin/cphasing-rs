@@ -101,7 +101,7 @@ pub struct AlleleTable {
 impl BaseTable for AlleleTable {
     fn new(name: &String) -> AlleleTable {
         let mut header = AlleleHeader::new();
-        header.from_file(name);
+        let _ = header.from_file(name);
 
         AlleleTable { file: name.clone(),
                         header: header, }

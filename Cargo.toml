@@ -12,7 +12,7 @@ opt-level = 1
 overflow-checks = false
 
 [dependencies]
-minimap2 = { path = "../minimap2-rs", features = ["default"]}
+# minimap2 = { path = "../minimap2-rs", features = ["default"]}
 anyhow = "1.0.70"
 bio = "*"
 clap = { version = "4.4.10" }
@@ -20,9 +20,11 @@ chrono = { version = "0.4.24" }
 crossbeam = "0.8.2"
 crossbeam-channel = "0.5.8"
 csv = { version = "1.1.6" }
+concorde_rs = "0.1.1"
 flate2 = {version = "~1", default-features = false}
 gzp = { version = "*" }
 lazy_static = { version = "1.4.0" }
+levenshtein = "1.0.5"
 log = { version = "0.4.17" }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
@@ -43,7 +45,6 @@ serde = { version = "1.0", features = ["derive"]}
 seq_io = { version = "0.4.0-alpha.0" }
 tempfile = { version = "3.8.0" }
 # tokio = { features = ["fs", "io-util"] }
-
 [profile.release]
 opt-level = 'z'
 lto = true

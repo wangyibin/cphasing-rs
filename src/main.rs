@@ -86,14 +86,15 @@ fn main() {
             // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
+            let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
            
-
+            
             assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
-           
+        
             let writer = common_writer(&prunetable);
             let mut wtr = csv::WriterBuilder::new()
                 .delimiter(b'\t')
@@ -141,7 +142,9 @@ fn main() {
             
                 log::set_max_level(log::LevelFilter::Off);
                 let mut kpruners: HashMap<String, KPruner> = first_cluster_hashmap
-                            .keys().map(|x| (x.to_string(), KPruner::new(&alleletable, &contacts, &prunetable))).collect();
+                            .keys().map(|x| (x.to_string(), KPruner::new(
+                                &alleletable, &contacts, &prunetable,
+                                normalization_method))).collect();
                 
                 for (k, v) in first_cluster_hashmap {
                     log::info!("Pruning cluster `{}`", k);
@@ -163,7 +166,7 @@ fn main() {
                 log::info!("Cross-allelic counts: {}", cross_allelic_counts);
                 
             } else {
-                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable);
+                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, normalization_method);
                 kpruner.prune(&method.as_str(), &whitehash);
                 kpruner.prunetable.write(&mut wtr);
             }
@@ -257,7 +260,7 @@ fn main() {
 
             cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
         }
-        Some(("paf2table", sub_matches)) => {
+        Some(("paf2porec", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let empty_string = String::new();
             let bed = sub_matches.get_one::<String>("BED").unwrap_or(&empty_string);
@@ -441,6 +444,7 @@ fn main() {
 
         }
         _ => {
+            eprintln!("{:?}", matches.subcommand());
             eprintln!("No such subcommand.");
         },
     }

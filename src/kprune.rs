@@ -111,7 +111,8 @@ pub struct KPruner {
 }
 
 impl KPruner {
-    pub fn new(alleletable: &String, contacts: &String, prunetable: &String) -> KPruner {
+    pub fn new(alleletable: &String, contacts: &String, prunetable: &String,
+                    nomalization_method: &String) -> KPruner {
         
         // let mut count_re = CountRE::new(count_re);
         // count_re.parse();
@@ -120,7 +121,7 @@ impl KPruner {
       
         let mut alleletable = AlleleTable::new(alleletable);
         let unique_min = alleletable.header.to_unique_minimizer_density();
-        let contact_data = contacts.to_data(&unique_min);
+        let contact_data = contacts.to_data(&unique_min, nomalization_method);
         let contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
     
         KPruner {

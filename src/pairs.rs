@@ -408,7 +408,7 @@ impl Pairs {
 
         let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
         
-        let mut contact_hash: HashMap<ContigPair,u32>  = HashMap::new();
+        let mut contact_hash: HashMap<ContigPair, f64>  = HashMap::new();
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
@@ -424,9 +424,9 @@ impl Pairs {
                     let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
                     cp.order();
                     if !contact_hash.contains_key(&cp) {
-                        contact_hash.insert(cp, 1);
+                        contact_hash.insert(cp, 1.0);
                     } else {
-                        let count = contact_hash.get(&cp).unwrap() + 1;
+                        let count = *contact_hash.get(&cp).unwrap() as f64 + 1.0;
                         contact_hash.insert(cp, count);
                     }
                 },
@@ -460,7 +460,7 @@ impl Pairs {
         
         let mut contact_records: Vec<ContactRecord> = contact_hash.par_iter(
             ).map(|(cp, count)| {
-                if count >= &min_contacts{
+                if count >= &(min_contacts as f64){
                     let record = ContactRecord {
                         chrom1: cp.Contig1.to_owned(),
                         chrom2: cp.Contig2.to_owned(),
@@ -471,7 +471,7 @@ impl Pairs {
                     let record = ContactRecord {
                         chrom1: "".to_string(),
                         chrom2: "".to_string(),
-                        count: 0,
+                        count: 0.0,
                     };
                     record
                 }

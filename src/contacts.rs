@@ -16,7 +16,7 @@ use crate::core::{ BaseTable, ContigPair };
 pub struct ContactRecord {
     pub chrom1: String,
     pub chrom2: String,
-    pub count: u32,
+    pub count: f64,
 }
 
 impl ContactRecord {
@@ -24,13 +24,13 @@ impl ContactRecord {
         Self {
             chrom1: String::new(),
             chrom2: String::new(),
-            count: 0,
+            count: 0.0,
         }
     }
 
     pub fn is_some(&self) -> bool {
         match self.count {
-            0 => false,
+            0.0 => false,
             _ => true,
         }
     }
@@ -94,13 +94,13 @@ impl Contacts {
             let record = record.unwrap();
             let record: Vec<&str> = record.split("\t").collect();
             let contig_pair = record[0].to_string();
-            let count = record[1].parse::<u32>().unwrap();
+            let count = record[1].parse::<f64>().unwrap();
             let mut contact_record = ContactRecord::new();
             contact_record.chrom1 = contig_pair.split(" ").nth(0).unwrap().to_string();
             contact_record.chrom1.pop();
             contact_record.chrom2 = contig_pair.split(" ").nth(1).unwrap().to_string();
             contact_record.chrom2.pop();
-            contact_record.count = count;
+            contact_record.count = count as f64; 
 
             records.push(contact_record);
         }
@@ -113,7 +113,8 @@ impl Contacts {
         contacts
     }
 
-    pub fn to_data(&self, unique_min: &HashMap<String, f64>) -> HashMap<ContigPair, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+    pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
+                    normalization_method: &String) -> HashMap<ContigPair, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
@@ -123,7 +124,7 @@ impl Contacts {
         let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
             ).map(|record| {
                 let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-                let count = record.count as f64;
+                let count = record.count;
 
                 (contig_pair, count)
             }).collect();
@@ -136,33 +137,64 @@ impl Contacts {
             (contig_pair.Contig1.clone(), *count)
         }).collect::<HashMap<String, f64>>();
 
-
+        let normalization_method = normalization_method.as_str();
         data.par_iter_mut().for_each(|(contig_pair, count)| {
             let mut ratio = 0.0;
             if contig_pair.Contig1 == contig_pair.Contig2 {
                 ratio = *count as f64; 
             } else {
+                
                 let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
                 let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
-                let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
-                let m2 = unique_min.get(&contig_pair.Contig2).unwrap_or(&0.0);
-        
-                let m1_log = -(m1 + 1.0).log2();
-                let m2_log = -(m2 + 1.0).log2();
+                
+                let m1_log = match normalization_method   {
+                    "none" => 0.0,
+                    "cis" => 0.0,
+                    _ => {
+                        let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                        -(m1 + 1.0).log2()
+                    }
+                };
+                let m2_log = match normalization_method {
+                    "none" => 0.0,
+                    "cis" => 0.0,
+                    _ => {
+                        let m2 = unique_min.get(&contig_pair.Contig2).unwrap_or(&0.0);
+                        -(m2 + 1.0).log2()
+                    }
+                };
+
                 // if m1_log == 0.0 || m2_log == 0.0{
                 //     println!("{} {}: {} {} | {}: {} {}", count, contig_pair.Contig1, 
                 //                 m1_log, count1, contig_pair.Contig2, m2_log, count2);
                 // }
                 ratio = match count1 * count2 {
                     0.0 => 0.0,
-                    // _ => *count / ((count1) * (count2)).sqrt(),
-                
-                    //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
-                    _ => match m1_log * m2_log {
-                        0.0 => *count / ((count1 * count2).sqrt()),
-                        _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
-
+                    _ => {
+                        if normalization_method == "none" {
+                            *count  
+                        } 
+                        else if normalization_method == "cis" {
+                            *count / ((count1 * count2).sqrt())
+                        }
+                        else if normalization_method == "cis_unique" {
+                            match m1_log * m2_log {
+                                0.0 => 0.0,
+                                _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log)
+                            }
+                        }
+                        else {
+                            *count
+                        }
                     }
+                    // _ => *count / ((count1) * (count2)).sqrt(),
+                    // _ => *count,
+                    //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
+                    // _ => match m1_log * m2_log {
+                    //     0.0 => 0.0,
+                    //     _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
+
+                    // }
                 
                 };
             }
@@ -232,3 +264,37 @@ impl Contacts {
         }
     }
 }
+
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ContactMatrix {
+    pub file: String,
+    pub records: Vec<Vec<f64>>,
+}
+
+impl BaseTable for ContactMatrix {
+    fn new(name: &String) -> ContactMatrix {
+        ContactMatrix {
+            file: name.clone(),
+            records: Vec::new(),
+        }
+    }
+
+    fn file_name(&self) -> Cow<'_, str> {
+        let path = Path::new(&self.file);
+        path.file_name().expect("REASON").to_string_lossy()
+    }
+
+    fn prefix(&self) -> String {
+        let binding = self.file_name().to_string();
+        let file_path = Path::new(&binding);
+        let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
+
+        (*file_prefix).to_string()
+    }
+    
+}
+
+
+
+

@@ -80,6 +80,14 @@ pub fn cli() -> Command {
                         .default_value("greedy")
                         )
                 .arg(
+                    Arg::new("NORMALIZATION_METHOD")
+                        .long("normalization-method")
+                        .short('n')
+                        .value_parser(value_parser!(String))
+                        .default_value("cis_unique")
+                        .help("normalization method, cis, cis_unique, none")
+                )
+                .arg(
                     Arg::new("FIRST_CLUSTER")
                         .long("first-cluster")
                         .short('f')
