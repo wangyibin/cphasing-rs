@@ -157,7 +157,7 @@ fn main() {
                 // write kpruners prunetable into a file
                 let mut allelic_counts: u32 = 0;
                 let mut cross_allelic_counts: u32 = 0;
-                for (k, v) in kpruners {
+                for (_, v) in kpruners {
                     allelic_counts += v.allelic_counts;
                     cross_allelic_counts += v.cross_allelic_counts;
                     v.prunetable.write(&mut wtr);
@@ -328,9 +328,14 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
+            let split_num = sub_matches.get_one::<u32>("SPLIT_NUM").expect("error");
             let mut pairs = Pairs::new(&pairs);
-
-            let contacts = pairs.to_contacts(*min_contacts).unwrap();
+            let contacts = if *split_num > 1 {
+                pairs.to_split_contacts(*min_contacts, *split_num).unwrap()
+            } else {
+                pairs.to_contacts(*min_contacts).unwrap()
+            };
+           
             contacts.write(&output);
             log::info!("Contacts written to {}", output);
             

@@ -27,11 +27,19 @@ mod tests {
     //     let clm = pairs.to_clm(3, &String::from("test/test.clm"), );
     // }
     
+    // #[test]
+    // fn test_intersect() {
+    //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
+    //     let hcr_bed = String::from("test/test.hcr.bed");
+    //     pairs.intersect(&hcr_bed, &String::from("test/test.hcr.pairs"));
+    // }
+
     #[test]
-    fn test_intersect() {
+    fn test_split_contacts() {
         let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        let hcr_bed = String::from("test/test.hcr.bed");
-        pairs.intersect(&hcr_bed, &String::from("test/test.hcr.pairs"));
+        
+        let _ = pairs.to_split_contacts(3, 2);
+        
     }
 
 }

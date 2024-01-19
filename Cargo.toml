@@ -1,6 +1,6 @@
 [package]
 name = "cphasing"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2021"
 
 [[bin]]
@@ -15,6 +15,7 @@ overflow-checks = false
 # minimap2 = { path = "../minimap2-rs", features = ["default"]}
 anyhow = "1.0.70"
 bio = "*"
+block-aligner = { version = "0.5.0", features = ["simd_avx2"] }
 clap = { version = "4.4.10" }
 chrono = { version = "0.4.24" }
 crossbeam = "0.8.2"
@@ -24,7 +25,6 @@ concorde_rs = "0.1.1"
 flate2 = {version = "~1", default-features = false}
 gzp = { version = "*" }
 lazy_static = { version = "1.4.0" }
-levenshtein = "1.0.5"
 log = { version = "0.4.17" }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
@@ -48,3 +48,4 @@ tempfile = { version = "3.8.0" }
 [profile.release]
 opt-level = 'z'
 lto = true
+

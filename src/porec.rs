@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::borrow::Cow;
 use std::error::Error;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
+use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
 use crate::bed::Bed3;
@@ -328,16 +330,18 @@ impl PoreCTable {
 
 pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
     let mut wtr = common_writer(output);
-
     let mut idx = 0;
+
+
     'outer: for file in input {
         let mut rdr = PoreCTable::new(file).parse().unwrap();
         let mut max_idx: u64 = 0;
         'inner: for (i, line) in rdr.deserialize().enumerate() {
+            let line_number = i + 1;
             let mut record: PoreCRecord = match line {
                 Ok(v) => v,
                 Err(error) => {
-                    log::warn!("Could not parse line {}", i + 1);
+                    log::warn!("Could not parse line {}", line_number);
                     continue 'inner;
                 },
             };

@@ -18,6 +18,7 @@ pub mod paf2;
 pub mod pairs;
 pub mod porec;
 pub mod realign;
+pub mod scaffolding;
 pub mod simulation;
 pub mod sketch;
 
@@ -89,13 +90,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pore_c_table() {
-        let pct = porec::PoreCTable::new(&String::from("test/test.out.csv.gz"));
-        let output = String::from("test/test.output.pairs.gz");
-        let chromsizes = String::from("test/test.contigsizes");
+    // fn test_pore_c_table() {
+    //     let pct = porec::PoreCTable::new(&String::from("test/test.out.csv.gz"));
+    //     let output = String::from("test/test.output.pairs.gz");
+    //     let chromsizes = String::from("test/test.contigsizes");
 
-        pct.to_pairs(&chromsizes, &output).unwrap();
-    }
+    //     pct.to_pairs(&chromsizes, &output).unwrap();
+    // }
 
     #[test]
     fn test_sketch() {

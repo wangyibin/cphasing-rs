@@ -398,6 +398,92 @@ impl Pairs {
             log::info!("Successful output bam file `{}`", output);
 
     }  
+    // split contig to nparts by split_num and calculate the number of contacts
+    pub fn to_split_contacts(&mut self, min_contacts: u32, split_num: u32) -> anyResult<Contacts> {
+        let parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let contigsizes = self.header.chromsizes.clone();
+        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
+
+        let split_contigsizes: HashMap<String, u64> = contigsizes
+            .iter()
+            .map(|x| (x.chrom.clone(), x.size / split_num as u64))
+            .collect();
+
+        let mut contact_hash: HashMap<ContigPair, u32>  = HashMap::new();
+        for (idx, record) in rdr.records().enumerate() {
+            match record {
+                Ok(record) => {
+                   let record =  PairRecord {
+                        readID: idx as u64,
+                        chrom1: record[1].to_string(),
+                        pos1: record[2].parse::<u64>().unwrap(),
+                        chrom2: record[3].to_string(),
+                        pos2: record[4].parse::<u64>().unwrap(),
+                        strand1: record[5].parse::<char>().unwrap(),
+                        strand2: record[6].parse::<char>().unwrap(),
+                    };
+                    let spilt_index1 = record.pos1 / split_contigsizes.get(&record.chrom1).unwrap();
+                    let spilt_index2 = record.pos2 / split_contigsizes.get(&record.chrom2).unwrap();
+                   
+                    
+                    let mut cp = ContigPair::new(format!("{}_{}", record.chrom1, spilt_index1), 
+                                    format!("{}_{}", record.chrom2, spilt_index2));
+                    
+                    cp.order();
+                    if !contact_hash.contains_key(&cp) {
+                        contact_hash.insert(cp, 1);
+                    } else {
+                        let count = *contact_hash.get(&cp).unwrap() + 1;
+                        contact_hash.insert(cp, count);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                    continue
+                }
+               
+            }
+            
+        }
+        
+        // convert count to f64
+        let contact_hash: HashMap<ContigPair, f64> = contact_hash
+            .iter()
+            .map(|(cp, count)| {
+                let count = *count as f64;
+                (cp.clone(), count)
+            })
+            .collect();
+
+        let mut contact_records: Vec<ContactRecord> = contact_hash.par_iter(
+        ).map(|(cp, count)| {
+            if count >= &(min_contacts as f64){
+                let record = ContactRecord {
+                    chrom1: cp.Contig1.to_owned(),
+                    chrom2: cp.Contig2.to_owned(),
+                    count: *count,
+                };
+                record
+            } else {
+                let record = ContactRecord {
+                    chrom1: "".to_string(),
+                    chrom2: "".to_string(),
+                    count: 0.0,
+                };
+                record
+            }
+            
+        }).collect();
+    
+        contact_records.retain(|x| x.is_some());
+        contacts.records = contact_records;
+        Ok(contacts)
+    }
 
     pub fn to_contacts(&mut self, min_contacts: u32) -> anyResult<Contacts> {
         let parse_result = self.parse();

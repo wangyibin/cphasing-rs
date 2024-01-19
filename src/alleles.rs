@@ -89,6 +89,7 @@ pub struct AlleleRecord {
     pub mz: u64,
     pub mz_unique: u64,
     pub similarity: f64,
+    pub strand: i8,
 }
 
 

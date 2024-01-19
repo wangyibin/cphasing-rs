@@ -140,12 +140,26 @@ impl Contacts {
         let normalization_method = normalization_method.as_str();
         data.par_iter_mut().for_each(|(contig_pair, count)| {
             let mut ratio = 0.0;
+            let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
+            let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
+
             if contig_pair.Contig1 == contig_pair.Contig2 {
-                ratio = *count as f64; 
+                ratio = match normalization_method {
+                    "none" => *count as f64,
+                    "cis" => {
+                        match count1 * count2 {
+                            0.0 => 0.0,
+                            _ => *count / ((count1 * count2).sqrt())
+                        }
+                    },
+                    _ => {
+                        let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                        -(m1 + 1.0).log2()
+                    }
+                };
             } else {
                 
-                let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
-                let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
+               
                 
                 let m1_log = match normalization_method   {
                     "none" => 0.0,
@@ -164,10 +178,7 @@ impl Contacts {
                     }
                 };
 
-                // if m1_log == 0.0 || m2_log == 0.0{
-                //     println!("{} {}: {} {} | {}: {} {}", count, contig_pair.Contig1, 
-                //                 m1_log, count1, contig_pair.Contig2, m2_log, count2);
-                // }
+  
                 ratio = match count1 * count2 {
                     0.0 => 0.0,
                     _ => {

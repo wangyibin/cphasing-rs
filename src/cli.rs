@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser};
 
-const VERSION: &str = "0.0.15";
+const VERSION: &str = "0.0.16";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -84,7 +84,7 @@ pub fn cli() -> Command {
                         .long("normalization-method")
                         .short('n')
                         .value_parser(value_parser!(String))
-                        .default_value("cis_unique")
+                        .default_value("cis")
                         .help("normalization method, cis, cis_unique, none")
                 )
                 .arg(
@@ -406,6 +406,12 @@ pub fn cli() -> Command {
                 .arg(Arg::new("MIN_CONTACTS")
                         .long("min-contacts")
                         .short('c')
+                        .value_parser(value_parser!(u32))
+                        .default_value("1"))
+                .arg(
+                    Arg::new("SPLIT_NUM")
+                        .long("split-num")
+                        .short('n')
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
                 .arg(Arg::new("OUTPUT")

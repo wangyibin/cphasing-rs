@@ -1,3 +1,8 @@
+## [v0.0.16]
+## Enhancement
+- `aligner`, change to banded_semi_global_SW algorithm 
+
+
 ## [v0.0.15]
 ## New features
 - `realign`, first method of realign

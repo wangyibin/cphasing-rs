@@ -2,6 +2,9 @@
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
 // use minimap2::*;
+use bio::alignment::pairwise::*;
+use bio::alignment::AlignmentOperation::*;
+
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -263,12 +266,269 @@ fn map_seq_to_seqs_by_command(read_id: &String,mod_seq: &[u8], targets: Vec<SeqR
 fn map_seq_to_seqs_by_edit_distance(read_id: &String, 
                 mod_seq: &[u8], targets: Vec<SeqRecord>,
 
-            ) -> anyResult<Vec::<(usize, usize)>> {
-    extern crate levenshtein;
-    use levenshtein::levenshtein;
+            ) -> anyResult<Vec::<(usize, u32)>> {
     
-    let mut align_results: Vec::<(usize, usize)> = Vec::new();
+    use bio::alignment::distance::simd::*;
 
+    
+    let mut align_results: Vec::<(usize, u32)> = Vec::new();
+
+    // only retain the C and m in mod seq, and convert to str
+    let mut mod_seq = mod_seq.iter().filter(|x| {
+        match x {
+            b'C' | b'm' => true,
+            _ => false,
+        }
+    }).collect::<Vec<&u8>>();
+
+    // convert &u8 to u8 
+    let mut mod_seq = mod_seq.iter().map(|x| {
+        **x
+    }).collect::<Vec<u8>>();
+
+
+    for i in 0..targets.len() {
+        let target = &targets[i];
+        // only retain the C and m in target seq
+        let mut target_seq = target.seq.iter().filter(|x| {
+            match x {
+                b'C' | b'm' => true,
+                _ => false,
+            }
+        }).collect::<Vec<&u8>>();
+        let mut target_seq = target_seq.iter().map(|x| {
+            **x
+        }).collect::<Vec<u8>>();
+
+
+        let distance = levenshtein(&mod_seq, &target_seq);
+        align_results.push((i, distance));
+    }
+
+    // sort align_results by distance
+    align_results.sort_by(|a, b| a.1.cmp(&b.1));
+
+
+    Ok(align_results)
+}
+
+fn map_seq_to_seqs_by_local(read_id: &String, 
+                mod_seq: &[u8], targets: Vec<SeqRecord>,
+
+            ) -> anyResult<Vec::<(usize, i32)>> {
+    
+    let mut align_results: Vec::<(usize, i32)> = Vec::new();
+    let match_fn = |a: u8, b: u8| {
+        if a == b'm' {
+            if b == b'm' {
+                4i32
+            } else {
+                -5i32
+            }
+        } else {
+            if b == b'm' {
+                -5i32
+            } else {
+                if a == b {
+                    2i32
+                } else {
+                    -5i32
+                }
+            
+            }
+        }
+    };
+    let scoring = Scoring::new(-5, -2, &match_fn).xclip(-5).yclip(-5);
+
+
+    // only retain the C and m in mod seq, and convert to str
+    // let mut mod_seq = mod_seq.iter().filter(|x| {
+    //     match x {
+    //         b'C' | b'm' => true,
+    //         _ => false,
+    //     }
+    // }).collect::<Vec<&u8>>();
+
+    // convert &u8 to u8 
+    let mut mod_seq = mod_seq.iter().map(|x| {
+        *x
+    }).collect::<Vec<u8>>();
+    let mod_seq = String::from_utf8(mod_seq.to_vec()).unwrap();
+
+    for i in 0..targets.len() {
+        let target = &targets[i];
+        // only retain the C and m in target seq
+        // let mut target_seq = target.seq.iter().filter(|x| {
+        //     match x {
+        //         b'C' | b'm' => true,
+        //         _ => false,
+        //     }
+        // }).collect::<Vec<&u8>>();
+        let mut target_seq = target.seq.iter().map(|x| {
+            *x
+        }).collect::<Vec<u8>>();
+        let target_seq = String::from_utf8(target_seq.to_vec()).unwrap();
+
+        let mut aligner = Aligner::with_capacity_and_scoring(mod_seq.len(), target_seq.len(), scoring);
+        let alignment = aligner.semiglobal(mod_seq.as_bytes(), target_seq.as_bytes());
+        let score = alignment.score;
+
+        align_results.push((i, score));
+    }
+
+    // sort align_results by score ascending = False
+    align_results.sort_by(|a, b| a.1.cmp(&b.1).reverse());
+  
+
+    Ok(align_results)
+}
+
+fn map_seq_to_seqs_by_banded_semiglobal(read_id: &String, 
+                mod_seq: &[u8], targets: Vec<SeqRecord>,
+
+            ) -> anyResult<Vec::<(usize, i32)>> {
+    use bio::alignment::pairwise::banded::*;
+    use bio::alignment::sparse::hash_kmers;
+    use std::iter::repeat;
+    let mut align_results: Vec::<(usize, i32)> = Vec::new();
+    let scoring = Scoring {
+        match_fn: |a: u8, b: u8| if a == b { 2i32 } else { -5i32 },
+        match_scores: Some((2, -5)),
+        gap_open: -2,
+        gap_extend: -1,
+        xclip_prefix: -5,
+        xclip_suffix: -5,
+        yclip_prefix: -5,
+        yclip_suffix: -5,
+    };
+    
+    // only retain the C and m in mod seq, and convert to str
+    // let mut mod_seq = mod_seq.iter().filter(|x| {
+    //     match x {
+    //         b'C' | b'm' => true,
+    //         _ => false,
+    //     }
+    // }).collect::<Vec<&u8>>();
+
+    // convert &u8 to u8 
+    let mut mod_seq = mod_seq.iter().map(|x| {
+        *x
+    }).collect::<Vec<u8>>();
+    let mod_seq_kmers_hash = hash_kmers(&mod_seq, 15);
+
+    for i in 0..targets.len() {
+        let target = &targets[i];
+        // only retain the C and m in target seq
+        // let mut target_seq = target.seq.iter().filter(|x| {
+        //     match x {
+        //         b'C' | b'm' => true,
+        //         _ => false,
+        //     }
+        // }).collect::<Vec<&u8>>();
+        let mut target_seq = target.seq.iter().map(|x| {
+            *x
+        }).collect::<Vec<u8>>();
+        
+
+        let mut aligner = Aligner::with_capacity_and_scoring(target_seq.len(), mod_seq.len(), scoring, 15, 5);
+        let alignment = aligner.semiglobal_with_prehash(&target_seq, &mod_seq, &mod_seq_kmers_hash);
+        let score = alignment.score;
+  
+        align_results.push((i, score));
+    }
+
+    // sort align_results by score ascending = False
+    align_results.sort_by(|a, b| a.1.cmp(&b.1).reverse());
+
+
+    Ok(align_results)
+}
+
+
+fn map_seq_to_seqs_by_block_aligner(read_id: &String, 
+                mod_seq: &[u8], targets: Vec<SeqRecord>,
+
+            ) -> anyResult<Vec::<(usize, i32)>> {
+
+    use block_aligner::{cigar::*, scan_block::*, scores::*};
+    let min_block_size = 32;
+    let max_block_size = 256;
+    let gaps = Gaps { open: -2, extend: -1 };
+
+    let mut align_results: Vec::<(usize, i32)> = Vec::new();
+    let matrix = ByteMatrix::new_simple(4, -2);
+    
+    // only retain the C and m in mod seq, and convert to str
+    let mut mod_seq = mod_seq.iter().filter(|x| {
+        match x {
+            b'C' | b'm' => true,
+            _ => false,
+        }
+    }).collect::<Vec<&u8>>();
+    // convert m to G 
+    for i in 0..mod_seq.len() {
+        if mod_seq[i] == &b'm' {
+            mod_seq[i] = &b'G';
+        }
+    }
+
+    // convert &u8 to u8 
+    let mut mod_seq = mod_seq.iter().map(|x| {
+        **x
+    }).collect::<Vec<u8>>();
+    
+    let r = PaddedBytes::from_bytes::<ByteMatrix>(&mod_seq, max_block_size);
+
+    for i in 0..targets.len() {
+        let target = &targets[i];
+        // only retain the C and m in target seq
+        let mut target_seq = target.seq.iter().filter(|x| {
+            match x {
+                b'C' | b'm' => true,
+                _ => false,
+            }
+        }).collect::<Vec<&u8>>();
+
+        // convert m to G
+        for i in 0..target_seq.len() {
+            if target_seq[i] == &b'm' {
+                target_seq[i] = &b'G';
+            }
+        }
+        let mut target_seq = target_seq.iter().map(|x| {
+            **x
+        }).collect::<Vec<u8>>();
+        
+        let q = PaddedBytes::from_bytes::<ByteMatrix>(&target_seq, max_block_size);
+
+        let mut a = Block::<true, false>::new(q.len(), r.len(), max_block_size);
+        a.align(&q, &r, &matrix, gaps, min_block_size..=max_block_size, 0);
+
+        let res = a.res();
+
+        if read_id == &String::from("000c27e0-d06a-45f1-b108-38b81c661ee1_0_9_10") {
+            println!("{}: {:?}", read_id, res);
+        }
+        align_results.push((i, res.score));
+    }
+
+    // sort align_results by score ascending = False
+    align_results.sort_by(|a, b| a.1.cmp(&b.1).reverse());
+
+
+    Ok(align_results)
+}
+
+
+
+fn map_seq_to_seqs_by_sparse(read_id: &String, 
+                mod_seq: &[u8], targets: Vec<SeqRecord>,
+
+            ) -> anyResult<Vec::<(usize, u32)>> {
+    use bio::alignment::sparse::*;
+
+    let mut align_results: Vec::<(usize, u32)> = Vec::new();
+    let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
     // only retain the C and m in mod seq, and convert to str
     let mut mod_seq = mod_seq.iter().filter(|x| {
         match x {
@@ -297,12 +557,15 @@ fn map_seq_to_seqs_by_edit_distance(read_id: &String,
         }).collect::<Vec<u8>>();
         let target_seq = String::from_utf8(target_seq.to_vec()).unwrap();
 
-        let distance = levenshtein(&mod_seq, &target_seq);
-        align_results.push((i, distance));
+        let matches = find_kmer_matches(mod_seq.as_bytes(), target_seq.as_bytes(), 15);
+        let sparse_al = lcskpp(&matches, 15);
+        let score = sparse_al.score;
+  
+        align_results.push((i, score));
     }
 
-    // sort align_results by distance
-    align_results.sort_by(|a, b| a.1.cmp(&b.1));
+    // sort align_results by score ascending = False
+    align_results.sort_by(|a, b| a.1.cmp(&b.1).reverse());
 
 
     Ok(align_results)
@@ -449,13 +712,13 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         read_idx += 1;
                     }
                 
-                let align_results_edit =  map_seq_to_seqs_by_edit_distance(&read_id, &mod_seq, targets.clone()).unwrap();
-                let align_results_edit_len = align_results_edit.len();
-                if align_results_edit_len > 0 {
-                    if align_results_edit[0].1 == align_results_edit[1].1 {
+                let align_results =  map_seq_to_seqs_by_banded_semiglobal(&read_id, &mod_seq, targets.clone()).unwrap();
+                let align_results_len = align_results.len();
+                if align_results_len > 0 {
+                    if align_results[0].1 == align_results[1].1 {
                         continue 'outer;
                     }
-                    for (idx, a) in align_results_edit.iter().enumerate() {
+                    for (idx, a) in align_results.iter().enumerate() {
                         let a_idx = a.0;
                       
                         let mut new_record = if a_idx == 0 {
@@ -485,7 +748,7 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
 
 
                         } else {
-                            new_record.push_aux(b"RA", Aux::String(&"n")).unwrap();
+                            // new_record.push_aux(b"RA", Aux::String(&"n")).unwrap();
                             new_record.set_mapq(0);
                             if new_record.is_reverse() {
                                 if new_record.is_supplementary() {
@@ -504,11 +767,13 @@ fn do_some(au: &AlignmentUnit, seqs: &HashMap<String, String>,
                         }
 
                         new_record.remove_aux(b"NM").unwrap();
-                        new_record.remove_aux(b"AS").unwrap();
-                        new_record.remove_aux(b"tp").unwrap();
-                        new_record.push_aux(b"NM", Aux::U32(a.1.try_into().unwrap())).unwrap();
-                    
                         
+                        new_record.remove_aux(b"tp").unwrap();
+                        // new_record.push_aux(b"NM", Aux::U32(a.1.try_into().unwrap())).unwrap();
+                      
+                      
+                        new_record.remove_aux(b"AS").unwrap();
+                        new_record.push_aux(b"AS", Aux::I32(a.1)).unwrap();
                         match idx {
                             0 => {
                                 new_record.push_aux(b"tp", Aux::Char(b"P"[0])).unwrap();
