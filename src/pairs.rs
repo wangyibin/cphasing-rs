@@ -337,14 +337,14 @@ impl Pairs {
                     //     '-' => 16,
                     //     _ => 0 
                     // };
-                    let flag1 = 0;
+                    let flag1 = 65;
 
                     // let flag2 = match record[6].parse::<char>().unwrap() {
                     //     '+' => 0,
                     //     '-' => 16,
                     //     _ => 0 
                     // };
-                    let flag2 = 16;
+                    let flag2 = 145;
                     {
                         let mut bam_record1 = Record::new();
                         let cigar = CigarString(vec![Cigar::Match(150)]);
@@ -407,10 +407,10 @@ impl Pairs {
         };
 
         let contigsizes = self.header.chromsizes.clone();
-        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
+        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());       
 
         let split_contigsizes: HashMap<String, u64> = contigsizes
-            .iter()
+            .par_iter()
             .map(|x| (x.chrom.clone(), x.size / split_num as u64))
             .collect();
 
@@ -418,29 +418,15 @@ impl Pairs {
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                   let record =  PairRecord {
-                        readID: idx as u64,
-                        chrom1: record[1].to_string(),
-                        pos1: record[2].parse::<u64>().unwrap(),
-                        chrom2: record[3].to_string(),
-                        pos2: record[4].parse::<u64>().unwrap(),
-                        strand1: record[5].parse::<char>().unwrap(),
-                        strand2: record[6].parse::<char>().unwrap(),
-                    };
-                    let spilt_index1 = record.pos1 / split_contigsizes.get(&record.chrom1).unwrap();
-                    let spilt_index2 = record.pos2 / split_contigsizes.get(&record.chrom2).unwrap();
-                   
-                    
-                    let mut cp = ContigPair::new(format!("{}_{}", record.chrom1, spilt_index1), 
-                                    format!("{}_{}", record.chrom2, spilt_index2));
-                    
+               
+                    let split_index1 = record[2].parse::<u64>().unwrap() / split_contigsizes.get(&record[1]).unwrap();
+                    let split_index2 = record[4].parse::<u64>().unwrap() / split_contigsizes.get(&record[3]).unwrap();
+                    let mut cp = ContigPair::new(
+                                    format!("{}_{}", record[1].to_string(), split_index1), 
+                                    format!("{}_{}", record[3].to_string(), split_index2));
                     cp.order();
-                    if !contact_hash.contains_key(&cp) {
-                        contact_hash.insert(cp, 1);
-                    } else {
-                        let count = *contact_hash.get(&cp).unwrap() + 1;
-                        contact_hash.insert(cp, count);
-                    }
+
+                    *contact_hash.entry(cp).or_insert(0) += 1;
                 },
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -451,35 +437,29 @@ impl Pairs {
             
         }
         
-        // convert count to f64
-        let contact_hash: HashMap<ContigPair, f64> = contact_hash
-            .iter()
+       // convert count to f64
+       let contact_hash: HashMap<ContigPair, f64> = contact_hash
+            .into_par_iter()
             .map(|(cp, count)| {
-                let count = *count as f64;
-                (cp.clone(), count)
+                let count = count as f64;
+                (cp, count)
             })
             .collect();
 
-        let mut contact_records: Vec<ContactRecord> = contact_hash.par_iter(
-        ).map(|(cp, count)| {
-            if count >= &(min_contacts as f64){
+        let mut contact_records: Vec<ContactRecord> = contact_hash.into_par_iter(
+                ).filter_map(|(cp, count)| {
+                if count >= (min_contacts as f64){
                 let record = ContactRecord {
-                    chrom1: cp.Contig1.to_owned(),
-                    chrom2: cp.Contig2.to_owned(),
-                    count: *count,
-                };
-                record
+                chrom1: cp.Contig1,
+                chrom2: cp.Contig2,
+                count: count,
+            };
+            Some(record)
             } else {
-                let record = ContactRecord {
-                    chrom1: "".to_string(),
-                    chrom2: "".to_string(),
-                    count: 0.0,
-                };
-                record
+            None
             }
-            
         }).collect();
-    
+
         contact_records.retain(|x| x.is_some());
         contacts.records = contact_records;
         Ok(contacts)
@@ -498,23 +478,19 @@ impl Pairs {
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                   let record =  PairRecord {
-                        readID: idx as u64,
-                        chrom1: record[1].to_string(),
-                        pos1: record[2].parse::<u64>().unwrap(),
-                        chrom2: record[3].to_string(),
-                        pos2: record[4].parse::<u64>().unwrap(),
-                        strand1: record[5].parse::<char>().unwrap(),
-                        strand2: record[6].parse::<char>().unwrap(),
-                    };
-                    let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+                //    let record =  PairRecord {
+                //         readID: idx as u64,
+                //         chrom1: record[1].to_string(),
+                //         pos1: record[2].parse::<u64>().unwrap(),
+                //         chrom2: record[3].to_string(),
+                //         pos2: record[4].parse::<u64>().unwrap(),
+                //         strand1: record[5].parse::<char>().unwrap(),
+                //         strand2: record[6].parse::<char>().unwrap(),
+                //     };
+                    // let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
+                    let mut cp = ContigPair::new(record[1].to_string(), record[3].to_string());
                     cp.order();
-                    if !contact_hash.contains_key(&cp) {
-                        contact_hash.insert(cp, 1.0);
-                    } else {
-                        let count = *contact_hash.get(&cp).unwrap() as f64 + 1.0;
-                        contact_hash.insert(cp, count);
-                    }
+                    *contact_hash.entry(cp).or_insert(1.0) += 1.0;
                 },
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -524,26 +500,7 @@ impl Pairs {
             
         }
         
-        
-        // let contact_hash: Arc<Mutex<HashMap<ContigPair, u32>>> = Arc::new(Mutex::new(HashMap::new()));
-
-        // rdr.deserialize::<PairRecord>()
-        //     .par_bridge()
-        //     .try_for_each(|result: Result<PairRecord, csv::Error>| -> Result<(), csv::Error> {
-        //         let record = result?;
-        //         let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-        //         cp.order();
-
-        //         let mut hash = contact_hash.lock().unwrap();
-        //         if let Some(count) = hash.get_mut(&cp) {
-        //             *count += 1;
-        //         } else {
-        //             hash.insert(cp, 1);
-        //         }
-
-        //         Ok(())
-        // })?;
-        
+    
         let mut contact_records: Vec<ContactRecord> = contact_hash.par_iter(
             ).map(|(cp, count)| {
                 if count >= &(min_contacts as f64){
@@ -566,18 +523,6 @@ impl Pairs {
         
         contact_records.retain(|x| x.is_some());
         
-        // let contact_records: Vec<ContactRecord> = contact_hash
-        //     .lock()
-        //     .unwrap()
-        //     .iter()
-        //     .map(|(cp, count)| {
-        //         ContactRecord {
-        //             chrom1: cp.Contig1.to_owned(),
-        //             chrom2: cp.Contig2.to_owned(),
-        //             count: *count,
-        //         }
-        //     })
-        //     .collect();
         contacts.records = contact_records;
         Ok(contacts)
 
@@ -590,48 +535,50 @@ impl Pairs {
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
         };
 
+        // get output prefix
+        let output_prefix = Path::new(&output).file_stem().unwrap().to_str().unwrap();
+
         let pair_header = self.header.clone();
         let chromsizes: Vec<ChromSizeRecord> = pair_header.chromsizes.clone();
         // to hashmap
-        let chromsizes: HashMap<String, u64> = chromsizes
+        let chromsizes: HashMap<String, u32> = chromsizes
             .iter()
-            .map(|x| (x.chrom.clone(), x.size))
+            .map(|x| (x.chrom.clone(), x.size.try_into().unwrap()))
+            .collect();
+        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
+        let split_contigsizes: HashMap<&String, u32> = chromsizes
+            .par_iter()
+            .map(|(k, v)| (k, *v / 2))
             .collect();
 
-        let mut data: HashMap<ContigPair, Vec<Vec<u64>>> = HashMap::new();
+        let mut contact_hash: HashMap<ContigPair, u32>  = HashMap::new();
+        let mut data: HashMap<ContigPair, Vec<Vec<u32>>> = HashMap::new();
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                   let record =  PairRecord {
-                        readID: idx as u64,
-                        chrom1: record[1].to_string(),
-                        pos1: record[2].parse::<u64>().unwrap(),
-                        chrom2: record[3].to_string(),
-                        pos2: record[4].parse::<u64>().unwrap(),
-                        strand1: record[5].parse::<char>().unwrap(),
-                        strand2: record[6].parse::<char>().unwrap(),
-                    };
-
-                
-                    let contig1 = record.chrom1;
-                    let contig2 = record.chrom2;
-                    let mut pos1 = record.pos1;
-                    let mut pos2 = record.pos2;
-                    if contig1 > contig2 {
-                        std::mem::swap(&mut pos1, &mut pos2);
-                    }
-                    let mut contig_pair = ContigPair::new(contig1, contig2);
-                    contig_pair.order();
-            // let vec = data.entry(contig_pair).or_insert(Vec::new());
-            // vec.push(vec![pos1, pos2]);
-                    if let Some(vec) = data.get_mut(&contig_pair) {
-                        vec.push(vec![pos1, pos2]);
+                    let mut contig1 = record[1].to_string();
+                    let mut contig2 = record[3].to_string();
+                    let mut pos1 = record[2].parse::<u32>().unwrap();
+                    let mut pos2 = record[4].parse::<u32>().unwrap();
+                    
+                    let (contig1, contig2, pos1, pos2) = if contig1 > contig2 {
+                        (contig2, contig1, pos2, pos1)
                     } else {
-                        let mut vec = Vec::new();
-                        vec.push(vec![pos1, pos2]);
-                        
-                        data.insert(contig_pair, vec);
-                    }
+                        (contig1, contig2, pos1, pos2)
+                    };
+                    let mut split_index1 = pos1 / split_contigsizes.get(&contig1).unwrap();
+                    let mut split_index2 = pos2 / split_contigsizes.get(&contig2).unwrap();
+                    let mut cp = ContigPair::new(
+                        format!("{}_{}", contig1, split_index1), 
+                        format!("{}_{}", contig2, split_index2));
+
+                    let mut contig_pair = ContigPair::new(contig1, contig2);
+
+                    *contact_hash.entry(cp).or_insert(0) += 1;
+
+                    data.entry(contig_pair)
+                        .or_insert_with(Vec::new)
+                        .push(vec![pos1, pos2]);
                 },
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -639,6 +586,36 @@ impl Pairs {
                 }
             }
         }
+
+        // // convert count to f64
+        // let contact_hash: HashMap<ContigPair, f64> = contact_hash
+        //                                             .into_par_iter()
+        //                                             .map(|(cp, count)| {
+        //                                                 let count = count as f64;
+        //                                                 (cp, count)
+        //                                             })
+        //                                             .collect();
+
+        let mut contact_records: Vec<ContactRecord> = contact_hash.into_par_iter(
+            ).filter_map(|(cp, count)| {
+                if count >= min_contacts{
+                    let record = ContactRecord {
+                        chrom1: cp.Contig1,
+                        chrom2: cp.Contig2,
+                        count: count as f64,
+                    };
+                    Some(record)
+                } else {
+                    None
+                }
+         }).collect();
+    
+        contact_records.retain(|x| x.is_some());
+        contacts.records = contact_records;
+
+        contacts.write(&format!("{}.split.contacts", output_prefix.to_string()));
+        log::info!("Successful output split contacts file `{}`", &format!("{}.split.contacts", output_prefix.to_string()));
+
 
         log::info!("Calculating the distance between contigs");
         let result = data.par_iter(
@@ -653,37 +630,32 @@ impl Pairs {
             ).collect::<HashMap<_, _>>();
 
         let result = result.par_iter().map(|(cp, vec)|{
-                let length1 = chromsizes.get(&cp.Contig1).unwrap().clone();
-                let length2 = chromsizes.get(&cp.Contig2).unwrap().clone();
-                // let length1 = chromsizes.iter().find(|&x| x.chrom == cp.Contig1).unwrap().size;
-                // let length2 = chromsizes.iter().find(|&x| x.chrom == cp.Contig2).unwrap().size;
+                let length1 = chromsizes.get(&cp.Contig1).unwrap();
+                let length2 = chromsizes.get(&cp.Contig2).unwrap();
                 
                 let res = vec.par_iter().map(|x| {
                     let pos1 = x[0];
                     let pos2 = x[1];
-                    // ctg1+ ctg2+
-                    let res1 = length1 - pos1 + pos2;
-                    // ctg1+ ctg2-
-                    let res2 = length1 - pos1 + length2 - pos2;
-                    // ctg1- ctg2+
-                    let res3 = pos1 + pos2;
-                    // ctg1- ctg2-
-                    let res4 = pos1 + length2 - pos2;
-                    vec![res1, res2, res3, res4]
+                   
+                    vec![length1 - pos1 + pos2, // ctg1+ ctg2+
+                        length1 - pos1 + length2 - pos2, // ctg1+ ctg2-
+                        pos1 + pos2, // ctg1- ctg2+
+                        pos1 + length2 - pos2 // ctg1- ctg2-
+                        ]
                 }).collect::<Vec<_>>();
 
                 //zip 
-                let zipped: Vec<Vec<u64>> = res[0].par_iter().enumerate().map(|(i, _)| {
-                    res.par_iter().map(|x| x[i]).collect::<Vec<_>>()
+                let zipped: Vec<Vec<u32>> = res[0].iter().enumerate().map(|(i, _)| {
+                    res.iter().map(|x| x[i]).collect::<Vec<_>>()
                 }).collect::<Vec<_>>();
               
                 (cp, zipped)
                 
-            }).collect::<HashMap<_, Vec<Vec<u64>>>>();
+            }).collect::<HashMap<_, Vec<Vec<u32>>>>();
     
         
         let mut wtr = common_writer(output);
-
+        
         for (cp, res) in result {
             let count = res[0].len();
             
@@ -692,47 +664,27 @@ impl Pairs {
             } 
 
             for (i, res1) in res.iter().enumerate() {
-                let contig_pair = match i {
-                    0 => format!("{}+ {}+", cp.Contig1, cp.Contig2),
-                    1 => format!("{}+ {}-", cp.Contig1, cp.Contig2),
-                    2 => format!("{}- {}+", cp.Contig1, cp.Contig2),
-                    3 => format!("{}- {}-", cp.Contig1, cp.Contig2),
+                let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                match i {
+                    0 => {
+                        writeln!(wtr, "{}+ {}+\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                    },
+                    1 => {
+                        writeln!(wtr, "{}+ {}-\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                    },
+                    2 => {
+                        writeln!(wtr, "{}- {}+\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                    },
+                    3 => {
+                        writeln!(wtr, "{}- {}-\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                    },
                     _ => panic!("Error: Invalid index"),
                 };
-                let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                let line = format!("{}\t{}\t{}\n", contig_pair, count, res1);
-                wtr.write_all(line.as_bytes()).unwrap();
+
+
             }
 
-            // let mut tmp = HashMap::new();
-            // for i in 0..4 {
-            //     let mut tmp_vec = Vec::new();
-            //     tmp.insert(i, tmp_vec);
-            // }
-            
-            // for i in 0..count {
-            //     for j in 0..4 {
-            //         let tmp_res = res[i][j];
-            //         let mut tmp_vec = tmp.get_mut(&j).unwrap();
-            //         tmp_vec.push(tmp_res);
-            //     }  
-            // }
-            
-        //     for i in 0..4 {
-        //         let contig_pair = match i {
-        //             0 => format!("{}+ {}+", cp.Contig1, cp.Contig2),
-        //             1 => format!("{}+ {}-", cp.Contig1, cp.Contig2),
-        //             2 => format!("{}- {}+", cp.Contig1, cp.Contig2),
-        //             3 => format!("{}- {}-", cp.Contig1, cp.Contig2),
-        //             _ => panic!("Error: Invalid index"),
-        //         };
-        //         let res1 = tmp.get(&i).unwrap();
-        //         let count = res1.len();
-        //         let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-        //         let line = format!("{}\t{}\t{}\n", contig_pair, count, res1);
-        //         wtr.write_all(line.as_bytes()).unwrap();
-        // }
-    }
+        }
         log::info!("Successful output clm file `{}`", output);
     }
 
@@ -745,22 +697,17 @@ impl Pairs {
         self.header.from_pairs(&self.file);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
         
-
         for (idx, record) in self.parse().unwrap().records().enumerate() {
             let record = record.unwrap();
             let chrom1 = record[1].to_string();
             let pos1 = record[2].parse::<usize>().unwrap();
             let chrom2 = record[3].to_string();
             let pos2 = record[4].parse::<usize>().unwrap();
-            let strand1 = record[5].parse::<char>().unwrap();
-            let strand2 = record[6].parse::<char>().unwrap();
 
             let is_in_regions = if let Some(interval1) = interval_hash.get(&chrom1) {
                 if let Some(interval2) = interval_hash.get(&chrom2) {
-                    let iv1 = interval1.count(pos1, pos1+1);
-                    let iv2 = interval2.count(pos2, pos2+1);
-
-                    if iv1 > 0 && iv2 > 0 {
+                  
+                    if interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0 {
                         true
                     } else {
                         false
@@ -776,14 +723,22 @@ impl Pairs {
                 match is_in_regions {
                     true => continue,
                     false => {
-                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", idx, chrom1, pos1, chrom2, pos2, strand1, strand2).as_bytes()).unwrap();
+                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+                                                idx, chrom1, pos1, chrom2, pos2, 
+                                                record[5].parse::<char>().unwrap(), 
+                                                record[6].parse::<char>().unwrap()
+                                            ).as_bytes()).unwrap();
                     }
                 }
             } else {
 
                 match is_in_regions {
                     true => {
-                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", idx, chrom1, pos1, chrom2, pos2, strand1, strand2).as_bytes()).unwrap();
+                        wtr.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+                                                idx, chrom1, pos1, chrom2, pos2, 
+                                                record[5].parse::<char>().unwrap(), 
+                                                record[6].parse::<char>().unwrap()
+                                            ).as_bytes()).unwrap();
                     },
                     false => continue
                 }

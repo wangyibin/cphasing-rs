@@ -92,15 +92,19 @@ impl Contacts {
                 continue
             }
             let record = record.unwrap();
-            let record: Vec<&str> = record.split("\t").collect();
-            let contig_pair = record[0].to_string();
-            let count = record[1].parse::<f64>().unwrap();
+            let mut record_iter = record.split("\t");
+            let contig_pair = record_iter.next().unwrap().to_string();
+            let count = record_iter.next().unwrap().parse::<f64>().unwrap();
+            let mut contig_pair_iter = contig_pair.split(" ");
+            let chrom1 = contig_pair_iter.next().unwrap().to_string();
+            let chrom2 = contig_pair_iter.next().unwrap().to_string();
+
             let mut contact_record = ContactRecord::new();
-            contact_record.chrom1 = contig_pair.split(" ").nth(0).unwrap().to_string();
+            contact_record.chrom1 = chrom1;
             contact_record.chrom1.pop();
-            contact_record.chrom2 = contig_pair.split(" ").nth(1).unwrap().to_string();
+            contact_record.chrom2 = chrom2;
             contact_record.chrom2.pop();
-            contact_record.count = count as f64; 
+            contact_record.count = count;
 
             records.push(contact_record);
         }
@@ -166,6 +170,7 @@ impl Contacts {
                     "cis" => 0.0,
                     _ => {
                         let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                       
                         -(m1 + 1.0).log2()
                     }
                 };
@@ -219,7 +224,7 @@ impl Contacts {
             if ratio < 0.0 {
                 ratio = 0.0;
             }
-           
+            
             *count = ratio;
         
         });

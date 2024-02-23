@@ -79,8 +79,10 @@ fn main() {
         }
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
+            use rayon::prelude::*;
             use std::io::BufReader;
             use std::io::BufRead;
+            use std::sync::{Arc, Mutex};
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
@@ -91,16 +93,8 @@ fn main() {
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-           
-            
-            assert!(method == "fast" || method == "greedy", "method must be simple or greedy");
+            assert!(method == "fast" || method == "precise" || method == "greedy", "method must be in ['fast', 'precise', 'greedy']");
         
-            let writer = common_writer(&prunetable);
-            let mut wtr = csv::WriterBuilder::new()
-                .delimiter(b'\t')
-                .has_headers(false)
-                .from_writer(writer);
-
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -117,26 +111,54 @@ fn main() {
                 }
             }
 
-            let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
+            // let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
+            let first_cluster_hashmap = Arc::new(Mutex::new(HashMap::new()));
             if first_cluster != "none" {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
-                for line in reader.lines() {
-                    let line = line.unwrap();
+                // for line in reader.lines() {
+                //     let line = line.unwrap();
+                //     // split tab
+                //     let mut line = line.split("\t");
+                //     let group = line.next().unwrap().to_string();
+                //     let count = line.next().unwrap().to_string();
+                //     // split next with space
+                //     let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
+                   
+                //     let contigs: HashSet<String> = contigs.par_iter().map(|x| x.to_string()).collect();
+                //     if whitehash.len() > 0 {
+                //         let contigs: HashSet<String> = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
+                //     }
+                //     first_cluster_hashmap.insert(group, contigs);
+                // }
+                let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
+                lines.into_par_iter().for_each(|line| {
                     // split tab
                     let mut line = line.split("\t");
                     let group = line.next().unwrap().to_string();
                     let count = line.next().unwrap().to_string();
                     // split next with space
-                    let contigs: Vec<_> = line.next().unwrap().split(" ").collect();
+                    let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
                    
-                    let contigs: HashSet<String> = contigs.into_iter().map(|x| x.to_string()).collect();
+                    let contigs: HashSet<String> = contigs.into_par_iter().map(|x| x.to_string()).collect();
                     if whitehash.len() > 0 {
                         let contigs: HashSet<String> = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
                     }
+                    let mut first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
                     first_cluster_hashmap.insert(group, contigs);
-                }
+                });
             }
+
+            // Arc::new(Mutex::new(HashMap::new())) to HashMap
+            let first_cluster_hashmap = Arc::clone(&first_cluster_hashmap);
+            let first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
+            let first_cluster_hashmap = first_cluster_hashmap.clone();
+
+            let writer = common_writer(&prunetable);
+            let mut wtr = csv::WriterBuilder::new()
+                .delimiter(b'\t')
+                .has_headers(false)
+                .from_writer(writer);
 
             if first_cluster != "none" {
             
@@ -154,6 +176,7 @@ fn main() {
                     kpruner.prune(&method.as_str(), &_whitehash);
                 }
                 log::set_max_level(log::LevelFilter::Info);
+
                 // write kpruners prunetable into a file
                 let mut allelic_counts: u32 = 0;
                 let mut cross_allelic_counts: u32 = 0;
@@ -187,6 +210,16 @@ fn main() {
             let record_num = sub_matches.get_one::<usize>("RECORD_NUM").expect("error");
 
             split_fastq(&input_fastq, &output_prefix, *record_num).unwrap();
+        }
+        Some(("slidefastq", sub_matches)) => {
+            let input_fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let window = sub_matches.get_one::<u64>("WINDOW").expect("error");
+            let step = sub_matches.get_one::<u64>("STEP").expect("error");
+            let min_length = sub_matches.get_one::<u64>("MIN_LENGTH").expect("error");
+
+            let fa = Fastx::new(&input_fastq);
+            fa.slide(&output, *window, *step, *min_length);
         }
         Some(("simulator", sub_matches)) => {
             match sub_matches.subcommand() {
@@ -257,6 +290,7 @@ fn main() {
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
         }

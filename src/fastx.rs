@@ -1,5 +1,7 @@
 use anyhow::Result as AnyResult;
 use bio::io::fastq::{Reader, Record, Writer};
+// use bio::io::fasta::{Reader as FastaReader,
+//                     Writer as FastaReader}
 use bio::pattern_matching::horspool::Horspool;
 use indexmap::IndexMap;
 use std::collections::{ HashMap, HashSet };
@@ -107,8 +109,6 @@ impl Fastx {
                                     
                 },
                 |record, count| { // runs in main thread
-                    
-
                     chrom_count.entry(record.id().unwrap().to_owned()).or_insert(0).add_assign(*count as u64);
                     None::<()>
                 }).unwrap();
@@ -171,6 +171,51 @@ impl Fastx {
         }
         
         Ok(positions)
+    }
+
+    pub fn slide(&self, output: &String, window: u64, step: u64, min_length: u64) {
+        let window = window as usize;
+        let step = step as usize;
+        let min_length = min_length as usize;
+        let step = if step == 0 { window } else { step };
+        let reader = common_reader(&self.file);
+        let reader = Reader::new(reader);
+        let mut writer = common_writer(output);
+        let mut wtr = Writer::new(writer);
+        for result in reader.records() {
+            let record = result.unwrap();
+            let seq = record.seq();
+            let seq_length = seq.len();
+            if seq_length < min_length {
+                continue
+            }
+
+            
+            let qual = record.qual();
+
+            let mut start = 0;
+            let mut end = window;
+            let mut i = 0;
+            if end >= seq_length {
+                end = seq_length;
+            }
+
+            while start < seq_length {
+                let seq_window = &seq[start..end as usize];
+                let qual_window = &qual[start..end as usize];
+                let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
+                        None, seq_window, qual_window);
+                wtr.write_record(&record).unwrap();
+                start += step;
+                end += step;
+                if end >= seq_length {
+                    end = seq_length;
+                }
+             
+                i += 1;
+            } 
+  
+        }
     }
 }
 

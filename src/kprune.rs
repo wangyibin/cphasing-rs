@@ -9,14 +9,24 @@ use std::path::Path;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
-use rayon::{ ThreadPoolBuilder, ThreadPool };
 use pathfinding::prelude::{kuhn_munkres, Matrix, Weights};
+
 
 use crate::alleles::AlleleTable;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair };
 use crate::contacts::Contacts;
 use crate::count_re::CountRE;
+
+
+
+// kuhn munkres algorithm
+pub fn maximum_bipartite_matching(matrix: Matrix<OrderedFloat<f64>>) -> Vec<usize>  {
+
+    let (cash_flow, assignments) = kuhn_munkres(&matrix);
+
+    assignments
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PruneRecord {
@@ -121,6 +131,7 @@ impl KPruner {
       
         let mut alleletable = AlleleTable::new(alleletable);
         let unique_min = alleletable.header.to_unique_minimizer_density();
+   
         let contact_data = contacts.to_data(&unique_min, nomalization_method);
         let contig_pairs: Vec<ContigPair> = contact_data.keys().cloned().collect();
     
@@ -136,8 +147,10 @@ impl KPruner {
     }
 
     pub fn allelic(&mut self, whitehash: &HashSet<String>) -> HashSet<ContigPair> {
-        log::info!("Starting allelic identification");
+        log::info!("Starting allelic identification ...");
+        log::set_max_level(log::LevelFilter::Off);
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs(); 
+        log::set_max_level(log::LevelFilter::Info);
         // let prune_allelic_contig_pairs = self.contig_pairs.iter()
         //                                                 .filter(
         //                                                     |x| allelic_contig_pairs.contains(x))
@@ -158,7 +171,7 @@ impl KPruner {
             self.contacts.remove(contig_pair);
         }
         self.allelic_counts += allelic_contig_pairs.len() as u32;
-        log::info!("Allelic contig pairs: {}", allelic_contig_pairs.len());
+        log::info!("Allelic contig pairs: {}", self.allelic_counts);
         allelic_contig_pairs
 
     }
@@ -199,98 +212,116 @@ impl KPruner {
         potential_cross_allelic
     }
 
-    pub fn cross_allelic(&mut self, method: &str, whitehash: &HashSet<String>) -> Vec<ContigPair> {
-        
-        let mut allelic_contigs = self.alleletable.get_allelic_contigs(method, whitehash);
-    
+    pub fn cross_allelic(&mut self, method: &str, 
+                whitehash: &HashSet<String>) -> Vec<ContigPair> {
+        log::info!("Starting cross-allelic identification ...");
+        // let mut allelic_contigs = self.alleletable.get_allelic_contig_groups_by_cliques(whitehash);
+        log::set_max_level(log::LevelFilter::Off);
+
+        let mut allelic_contigs = match method {
+            "precise" => self.alleletable.get_allelic_contigs_precise(whitehash),
+            _ => self.alleletable.get_allelic_contigs(method, whitehash),
+        }; 
+        log::set_max_level(log::LevelFilter::Info);
 
         // remove both contig1 and contig2 not in whitehash
         if whitehash.len() > 0 {
-            self.contig_pairs.retain(|x| whitehash.contains(&x.Contig1) && whitehash.contains(&x.Contig2));
-            self.contig_pairs.retain(|x| allelic_contigs.contains_key(&x.Contig1) && allelic_contigs.contains_key(&x.Contig2));
+            self.contig_pairs.retain(|x| whitehash.contains(&x.Contig1) 
+                                        && whitehash.contains(&x.Contig2));
+            self.contig_pairs.retain(|x| allelic_contigs.contains_key(&x.Contig1) 
+                                        && allelic_contigs.contains_key(&x.Contig2));
         }
         
-      
         // filter contig pairs that contig1 == contig2 
         self.contig_pairs.retain(|x| x.Contig1 != x.Contig2);
 
-        let cross_allelic: Vec<&ContigPair> =  self.contig_pairs
+        let cross_allelic: Vec<ContigPair> =  self.contig_pairs
                                                     .par_iter()
                                                     .filter_map(|contig_pair| {
 
             let alleles1 = allelic_contigs.get(&contig_pair.Contig1)?;
             let alleles2 = allelic_contigs.get(&contig_pair.Contig2)?;
-                                     
-                            
-            let mut group1 = std::iter::once(&contig_pair.Contig1).chain(alleles1.iter()).collect::<Vec<&String>>();
-            let mut group2 = std::iter::once(&contig_pair.Contig2).chain(alleles2.iter()).collect::<Vec<&String>>();
-            if group1.len() > group2.len() {
-                std::mem::swap(&mut group1, &mut group2);
-            }
-            let mut matrix = Matrix::new(group1.len(), group2.len(), OrderedFloat(0.0));
-            matrix.par_iter_mut().enumerate().for_each(|(index, element) | {
-                let i = index / group2.len();
-                let j = index % group2.len();
+         
+            let mut is_weak = false;
+                                                        
+            'outer: for mut group1 in alleles1.iter() {
+                 // index of contig1 in group1 
+                 let mut idx1 = match group1.iter().position(|x| x == &contig_pair.Contig1) {
+                    Some(v) => v,
+                    None => continue 'outer,
+                 };
+                'inner: for mut group2 in alleles2.iter() {
+                    // index of contig2 in group2
+                    let mut idx2 = match group2.iter().position(|x| x == &contig_pair.Contig2) {
+                        Some(v) => v,
+                        None => continue 'inner,
+                    };
+
+                    if group1.len() > group2.len() {
+                        std::mem::swap(&mut group1, &mut group2);
+                        std::mem::swap(&mut idx1, &mut idx2);
+                    }
+
+                    let mut matrix = Matrix::new(group1.len(), group2.len(), OrderedFloat(0.0));
+                    matrix.iter_mut().enumerate().for_each(|(index, element) | {
+                        let i = index / group2.len();
+                        let j = index % group2.len();
+            
+                        let mut tmp_contig_pair = ContigPair::new(group1[i].to_string(), group2[j].to_string());
+                        tmp_contig_pair.order();
+                        let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
+                        
+                        *element = OrderedFloat(*score);
+                    });
+                    // if &contig_pair.Contig1 == &"2E.ctg151".to_string() && &contig_pair.Contig2 == &"2F.ctg129".to_string() {
+                    //     println!("{:?} {:?} {:?}", &contig_pair, group1, group2);
+                    //     dbg!("Same contig: {:?}", &matrix);
+                    //     println!("{} {}", idx1, idx2);
     
-                let mut tmp_contig_pair = ContigPair::new(group1[i].to_string(), group2[j].to_string());
-                tmp_contig_pair.order();
-                let score = self.contacts.get(&tmp_contig_pair).unwrap_or(&0.0);
-
-                *element = OrderedFloat(*score);
-            });
+                    // } 
+                    let assignments = maximum_bipartite_matching(matrix);
                     
+                    if assignments[idx1] != idx2 {
+                        is_weak = true;
+                    } else {
+                        is_weak = false;
+                    }
+                    // if &contig_pair.Contig1 == &"2E.ctg151".to_string() && &contig_pair.Contig2 == &"2F.ctg129".to_string() {
+                    //     println!("{}", is_weak);
+                    //     println!("{:?}", assignments);
+    
+                    // } 
+
+                    if is_weak {
+                        break 'outer; 
+                    }
+                
+                }
+            } 
+             
            
-
-            // if &contig_pair.Contig1 == &"5G.ctg44".to_string() && &contig_pair.Contig2 == &"5H.ctg72".to_string() {
-            //     println!("{:?}", &contig_pair);
-            //     dbg!("Same contig: {:?}", &matrix);
-
-            // }
-            
-            
-            // match matrix[(0, 0)] == OrderedFloat(0.0) {
-            //     true => {
-            //         Some(contig_pair)
-            //     },
-            //     false => {
-            //         let assignments = maximum_bipartite_matching(matrix);
-            //         if assignments[0] != 0 {
-            //             Some(contig_pair)
-            //         } else {
-            //             None
-            //         }
-            //     }
-            // }
-            // if &contig_pair.Contig1 == &"1A.ctg151".to_string() && &contig_pair.Contig2 == &"1B.ctg189".to_string() {
-            //     dbg!("{:?}", group1);
-            //     dbg!("{:?}", group2);
-            //     dbg!("Same contig: {:?}", &matrix);
-            // }
-            let assignments = maximum_bipartite_matching(matrix);
-            // if &contig_pair.Contig1 == &"1A.ctg151".to_string() && &contig_pair.Contig2 == &"1B.ctg189".to_string() {
-            //     dbg!(&assignments);
-              
-            // }     
-            if assignments[0] != 0 {
-                Some(contig_pair)
+            if is_weak {
+                Some(contig_pair.clone())
             } else {
                 None
             }
-
+                                                                               
             }).collect();
 
-
-        log::info!("Cross allelic contig pairs: {}", cross_allelic.len());
-        let cross_allelic = cross_allelic.into_iter().cloned().collect::<Vec<ContigPair>>();
+            
+        
+        // let cross_allelic = cross_allelic.into_iter().cloned().collect::<Vec<ContigPair>>();
         self.cross_allelic_counts += cross_allelic.len() as u32;
+        log::info!("Cross allelic contig pairs: {}", self.cross_allelic_counts);
         cross_allelic
     }
 
     pub fn prune(&mut self, method: &str, whitehash: &HashSet<String>) {
-        log::info!("Using {} method to prune", method);
+        log::info!("Using `{}` method to prune", method);
 
         let allelic = self.allelic(whitehash);
-        let potential_cross_allelic = self.potential_cross_allelic(whitehash);
+        // let potential_cross_allelic = self.potential_cross_allelic(whitehash);
+        // let potential_cross_allelic: HashSet<ContigPair> = HashSet::new();
         let cross_allelic = self.cross_allelic(method, whitehash);
         
         let allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
@@ -300,27 +331,29 @@ impl KPruner {
             let prune_record = PruneRecord {
                 contig1: contig_pair.Contig1.clone(),
                 contig2: contig_pair.Contig2.clone(),
-                mz1: 0,
-                mz2: 0,
-                mz_shared: record.mz_unique,
+                mz1: record.mz1,
+                mz2: record.mz2,
+                mz_shared: record.mz_shared,
                 similarity: record.similarity,
                 allele_type: 0,
             };
             self.prunetable.records.push(prune_record);
         }
 
-        for contig_pair in potential_cross_allelic.into_iter() {
-            let prune_record = PruneRecord {
-                contig1: contig_pair.Contig1.clone(),
-                contig2: contig_pair.Contig2.clone(),
-                mz1: 0,
-                mz2: 0,
-                mz_shared: 0,
-                similarity: 0.0,
-                allele_type: 1,
-            };
-            self.prunetable.records.push(prune_record);
-        }
+        
+
+        // for contig_pair in potential_cross_allelic.into_iter() {
+        //     let prune_record = PruneRecord {
+        //         contig1: contig_pair.Contig1.clone(),
+        //         contig2: contig_pair.Contig2.clone(),
+        //         mz1: 0,
+        //         mz2: 0,
+        //         mz_shared: 0,
+        //         similarity: 0.0,
+        //         allele_type: 1,
+        //     };
+        //     self.prunetable.records.push(prune_record);
+        // }
 
         for contig_pair in cross_allelic.into_iter() {
             let prune_record = PruneRecord {
@@ -338,10 +371,3 @@ impl KPruner {
     }
 }
 
-// kuhn munkres algorithm
-pub fn maximum_bipartite_matching(matrix: Matrix<OrderedFloat<f64>>) -> Vec<usize>  {
-
-    let (cash_flow, assignments) = kuhn_munkres(&matrix);
-
-    assignments
-}

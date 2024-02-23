@@ -46,7 +46,7 @@ pub fn cut_site(fastq: String, pattern: &[u8], output: String) -> Result<()>{
       
                 let cut_seq = &seq_str[start_pos..end_pos];
                 let cut_qual = &qual[start_pos..end_pos];
-                let new_name = record.id().to_owned() + "/" + &i.to_string();
+                let new_name = record.id().to_owned(); //+ "/" + &i.to_string();
                 writer.write(&new_name, None, cut_seq.as_bytes(), cut_qual).unwrap();
 
                 start_pos += cut_seq.len();

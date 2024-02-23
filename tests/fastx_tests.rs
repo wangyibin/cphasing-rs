@@ -28,13 +28,25 @@ mod tests {
     //     println!("{:?}", counts);
     // }
 
-    #[test] 
-    fn test_digest() {
-        let fasta = String::from("test/test.fa");
-        let fa = Fastx::new(&fasta);
-        let motif = String::from("GATC");
-        let pos = fa.digest(&motif, 50).unwrap();
-        println!("{:?}", pos);
+    // #[test] 
+    // fn test_digest() {
+    //     let fasta = String::from("test/test.fa");
+    //     let fa = Fastx::new(&fasta);
+    //     let motif = String::from("GATC");
+    //     let pos = fa.digest(&motif, 50).unwrap();
+    //     println!("{:?}", pos);
         
+    // }
+
+    #[test]
+    fn test_slide() {
+        let fastq = String::from("test/test.fq");
+        let fa = Fastx::new(&fastq);
+        let window: u64 = 10;
+        let step: u64 = 0;
+        let min_length: u64 = 4;
+        let output = String::from("test/out.slide");
+        fa.slide(&output, window, step, min_length);
+
     }
 }

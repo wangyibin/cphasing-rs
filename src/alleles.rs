@@ -6,10 +6,59 @@ use std::path::Path;
 use std::process::exit;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
-use crate::core::{ common_reader, common_writer };
+use petgraph::prelude::*;
+use petgraph::visit::NodeIndexable;
+use rayon::prelude::*;
 
+use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair };
 
+// maximal cliques 
+pub fn bron_kerbosch(
+    graph: &Graph<(), u64, Undirected>,
+    mut r: HashSet<NodeIndex>,
+    mut p: HashSet<NodeIndex>,
+    mut x: HashSet<NodeIndex>,
+    cliques: &mut Vec<HashSet<NodeIndex>>,
+) {
+    if p.is_empty() && x.is_empty() {
+        cliques.push(r.clone());
+        return;
+    }
+
+    let mut p_candidates = p.clone();
+    p_candidates.retain(|&v| {
+        let mut neighbors = graph.neighbors(v);
+        neighbors.all(|n| p.contains(&n))
+    });
+
+    let p_cloned = p.clone();
+    for v in p_cloned {
+        let mut neighbors = graph.neighbors(v);
+        let mut r_new = r.clone();
+        r_new.insert(v);
+
+        let p_new = p.intersection(&neighbors.clone().collect::<HashSet<_>>()).cloned().collect();
+        let x_new = x.intersection(&neighbors.collect::<HashSet<_>>()).cloned().collect();
+
+        bron_kerbosch(graph, r_new, p_new, x_new, cliques);
+
+        p.remove(&v);
+        x.insert(v);
+    }
+}
+
+pub fn find_cliques(graph: &Graph<(), u64, Undirected>) -> Vec<HashSet<NodeIndex>> {
+    let mut cliques = Vec::new();
+    let n = graph.node_count();
+    let mut all_nodes = (0..n).map(NodeIndex::new).collect::<HashSet<NodeIndex>>();
+    let mut r = HashSet::new();
+
+    let mut x = HashSet::new();
+
+    bron_kerbosch(graph, r, all_nodes, x, &mut cliques);
+    cliques
+}
 
 #[derive(Debug, Clone)]
 pub struct AlleleHeader {
@@ -85,9 +134,9 @@ pub struct AlleleRecord {
     pub idx2: u64,
     pub contig1: String,
     pub contig2: String,
-    pub length: u64,
-    pub mz: u64,
-    pub mz_unique: u64,
+    pub mz1: u64,
+    pub mz2: u64,
+    pub mz_shared: u64,
     pub similarity: f64,
     pub strand: i8,
 }
@@ -157,7 +206,10 @@ impl AlleleTable {
     
     pub fn get_allelic_contig_pairs(&self) -> HashSet<ContigPair> {
         let mut contig_pairs: HashSet<ContigPair> = HashSet::new();
-        let records = self.allele_records().unwrap();
+        let mut records = self.allele_records().unwrap();
+        // sort records by mz_shared in ascending order
+        // records.sort_by(|a, b| a.mz_shared.partial_cmp(&b.mz_shared).unwrap());
+
         for record in records {
             let contig1 = record.contig1;
             let contig2 = record.contig2;
@@ -167,6 +219,65 @@ impl AlleleTable {
         }
 
         contig_pairs
+    }
+
+    pub fn get_allelic_contig_groups_by_cliques(&self, whitehash: &HashSet<String>) -> HashMap<String, Vec<Vec<String>>> {
+        let mut records = self.allele_records().unwrap();
+        records.sort_by(|a, b| a.mz_shared.partial_cmp(&b.mz_shared).unwrap());
+        
+        let mut graph = Graph::<(), u64, Undirected>::new_undirected();
+        let mut nodes: HashMap<String, NodeIndex> = HashMap::new();
+        let mut idx_nodes: HashMap<NodeIndex, String> = HashMap::new();
+        for record in records {
+            let contig1 = record.contig1;
+            let contig2 = record.contig2;
+            if whitehash.len() > 0 {
+                if !whitehash.contains(&contig1) || !whitehash.contains(&contig2) {
+                    continue;
+                }
+            }
+            let mz_shared = record.mz_shared;
+            
+            let node1 = *nodes.entry(contig1.clone()).or_insert_with(|| graph.add_node(()));
+            let node2 = *nodes.entry(contig2.clone()).or_insert_with(|| graph.add_node(()));
+            idx_nodes.insert(node1, contig1.clone());
+            idx_nodes.insert(node2, contig2.clone());
+
+            graph.add_edge(node1, node2, 1);
+        }
+
+        let cliques = find_cliques(&graph);
+
+        let new_cliques = cliques.par_iter().map(|clique| {
+            let mut new_clique = Vec::new();
+            for node in clique {
+                let contig = idx_nodes.get(node).unwrap();
+                new_clique.push(contig.clone());
+            }
+            // sort clique by contig name
+            new_clique.sort();
+            new_clique
+        }).collect::<Vec<Vec<String>>>();
+
+        // remove duplicate 
+        let mut unique_cliques: Vec<Vec<String>> = Vec::new();
+        for clique in new_cliques {
+            if !unique_cliques.contains(&clique) {
+                unique_cliques.push(clique);
+            }
+        }
+        
+        let mut res = HashMap::new();
+        for clique in unique_cliques.iter() {
+            for contig in clique.iter() {
+                res.entry(contig.clone()).or_insert_with(Vec::new);
+                res.get_mut(contig).unwrap().push(clique.clone());
+            }
+           
+        }
+        
+        res 
+
     }
 
     pub fn get_allelic_record_by_contig_pairs(&self) -> HashMap<ContigPair, AlleleRecord> {
@@ -182,9 +293,8 @@ impl AlleleTable {
 
         data
     }
-    
-    pub fn get_allelic_contigs(&self, method: &str, whitehash: &HashSet<String>) -> HashMap<String, Vec<String>> {
-        let mut data: HashMap<String, Vec<String>> = HashMap::new();
+    pub fn get_allelic_contigs_precise(&self, whitehash: &HashSet<String>) -> HashMap<String, Vec<Vec<String>>> {
+        let mut data: HashMap<String, Vec<Vec<String>>> = HashMap::new();
         let records = self.allele_records().unwrap();
         for record in records {
             let contig1 = record.contig1;
@@ -196,18 +306,53 @@ impl AlleleTable {
             }
             if !data.contains_key(&contig1) {
                 data.insert(contig1.clone(), Vec::new());
-                data.get_mut(&contig1).unwrap().push(contig2.clone());
+                data.get_mut(&contig1).unwrap().push(vec![contig1.clone(), contig2.clone()]);
+            } else {
+                data.get_mut(&contig1).unwrap()[0].push(contig2.clone());
+            }
+            
+        }
+
+        data
+    }
+
+    pub fn get_allelic_contigs(&self, method: &str, whitehash: &HashSet<String>) -> HashMap<String, Vec<Vec<String>>> {
+        let mut data: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        let mut records = self.allele_records().unwrap();
+        // sort records by mz_shared in ascending order
+        records.sort_by(|a, b| a.mz_shared.partial_cmp(&b.mz_shared).unwrap());
+        for record in records {
+            let contig1 = record.contig1;
+            let contig2 = record.contig2;
+            if whitehash.len() > 0 {
+                if !whitehash.contains(&contig1) || !whitehash.contains(&contig2) {
+                    continue;
+                }
+            }
+            if !data.contains_key(&contig1) {
+                data.insert(contig1.clone(), vec![vec![contig1.clone(), contig2.clone()]]);
+                // data.get_mut(&contig1).unwrap().push(contig2.clone());
             } else {
                 if method == "fast" {
                     if data.contains_key(&contig1) {
                         continue;
                     }
                 }
-                data.get_mut(&contig1).unwrap().push(contig2.clone());
+                data.get_mut(&contig1).unwrap().push(vec![contig1.clone(), contig2.clone()]);
             }
             
         }
 
+        // data to HashMap<String, Vec<Vec<String>>>
+        // let mut res = HashMap::new();
+        // for (contig, contigs) in data.iter() {
+        //     for contig in contigs.iter() {
+        //         res.entry(contig.clone()).or_insert_with(Vec::new);
+        //         res.get_mut(contig).unwrap().push(contigs.clone());
+        //     }
+        // }
+        
+        // res
         data
     }
 

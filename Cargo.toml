@@ -35,6 +35,7 @@ itertools = { version = "0.10.5"}
 indexmap = { version = "2.1.0" }
 ordered-float = { version = "4.0", default-features = false }
 pathfinding = { version = "4.3.2" }
+petgraph = { version = "0.6" }
 rand = { version = "0.8.5"}
 rayon = { version = "1.8.0" }
 regex = { version = "1.9" }

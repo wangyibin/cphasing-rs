@@ -77,7 +77,7 @@ pub fn cli() -> Command {
                         .long("method")
                         .short('m')
                         .value_parser(value_parser!(String))
-                        .default_value("greedy")
+                        .default_value("precise")
                         )
                 .arg(
                     Arg::new("NORMALIZATION_METHOD")
@@ -131,6 +131,7 @@ pub fn cli() -> Command {
         ).subcommand(
             Command::new("splitfastq")
                 .about("split fastq by record number")
+                .alias("splitfq")
                 .arg(arg!(<FASTQ> "fastq"))
                 .arg(
                     Arg::new("RECORD_NUM")
@@ -145,7 +146,40 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("output.split"))
                 .arg_required_else_help(true),
-        ).subcommand(
+        )
+        .subcommand(
+            Command::new("slidefastq")
+                .about("slide fastq")
+                .alias("slidefq")
+                .arg(arg!(<FASTQ> "fastq"))
+                .arg(
+                    Arg::new("WINDOW")
+                        .long("window")
+                        .short('w')
+                        .value_parser(value_parser!(u64))
+                        .default_value("5000"))
+                .arg(
+                    Arg::new("STEP")
+                        .long("step")
+                        .short('s')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0"))
+                .arg(
+                    Arg::new("MIN_LENGTH")
+                        .long("min-lenth")
+                        .short('l')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("simulator")
                 .about("simulating test data")
                 .arg_required_else_help(true)
@@ -245,6 +279,13 @@ pub fn cli() -> Command {
                         .long("pattern")
                         .value_parser(value_parser!(String))
                         .default_value("GATCGATC"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -497,6 +538,7 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("chromsizes")
                 .about("generate chromsizes file")
+                .alias("contigsizes")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
                     Arg::new("OUTPUT")
