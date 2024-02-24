@@ -179,43 +179,67 @@ impl Fastx {
         let min_length = min_length as usize;
         let step = if step == 0 { window } else { step };
         let reader = common_reader(&self.file);
-        let reader = Reader::new(reader);
+        let reader = Reader::from_bufread(reader);
         let mut writer = common_writer(output);
         let mut wtr = Writer::new(writer);
-        for result in reader.records() {
-            let record = result.unwrap();
+        let mut output_counts = 0;
+        let mut slided_counts = 0;
+        let mut filter_counts = 0;
+        'outer: for result in reader.records() {
+            let record = match result {
+                Ok(record) => record,
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue
+                }
+            };
             let seq = record.seq();
             let seq_length = seq.len();
+            
             if seq_length < min_length {
+                filter_counts += 1;
                 continue
             }
-
+            output_counts += 1;
             
             let qual = record.qual();
 
             let mut start = 0;
             let mut end = window;
             let mut i = 0;
-            if end >= seq_length {
-                end = seq_length;
-            }
 
-            while start < seq_length {
+            
+            'inner: while start < seq_length {
+
+                if end > seq_length {
+                    end = seq_length;
+                }
                 let seq_window = &seq[start..end as usize];
                 let qual_window = &qual[start..end as usize];
                 let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
                         None, seq_window, qual_window);
-                wtr.write_record(&record).unwrap();
+                match wtr.write_record(&record) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        log::error!("Error writing record: {}", e);
+                    }
+                
+                };
                 start += step;
                 end += step;
-                if end >= seq_length {
-                    end = seq_length;
+                if end == seq_length {
+                    break 'inner;
                 }
-             
+                
                 i += 1;
             } 
-  
+
+            slided_counts += i;
+
+            
         }
+        log::info!("Filtered {} reads.", filter_counts);
+        log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
     }
 }
 
@@ -223,7 +247,7 @@ impl Fastx {
 pub fn split_fastq(input_fastq: &String, output_prefix: &String, 
              record_num: usize) -> Result<(), Box<dyn std::error::Error>> {
     let buf = common_reader(input_fastq);
-    let fastq = Reader::new(buf);
+    let fastq = Reader::from_bufread(buf);
     let mut i = 0;
     let mut j = 0;
     log::info!("write {} records to {}", &record_num, format!("{}_{}.fastq.gz", output_prefix, j));
