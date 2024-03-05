@@ -173,13 +173,16 @@ impl Fastx {
         Ok(positions)
     }
 
-    pub fn slide(&self, output: &String, window: u64, step: u64, min_length: u64) {
+    pub fn slide(&self, output: &String, 
+                    window: u64, step: u64, 
+                    min_length: u64) -> AnyResult<()>{
         let window = window as usize;
         let step = step as usize;
         let min_length = min_length as usize;
         let step = if step == 0 { window } else { step };
+        let mut total_reads = 0;
         let reader = common_reader(&self.file);
-        let reader = Reader::from_bufread(reader);
+        let reader = Reader::with_capacity(100000, reader);
         let mut writer = common_writer(output);
         let mut wtr = Writer::new(writer);
         let mut output_counts = 0;
@@ -207,13 +210,11 @@ impl Fastx {
             let mut start = 0;
             let mut end = window;
             let mut i = 0;
-
+            if end >= seq_length {
+                end = seq_length;
+            }
             
             'inner: while start < seq_length {
-
-                if end > seq_length {
-                    end = seq_length;
-                }
                 let seq_window = &seq[start..end as usize];
                 let qual_window = &qual[start..end as usize];
                 let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
@@ -227,8 +228,8 @@ impl Fastx {
                 };
                 start += step;
                 end += step;
-                if end == seq_length {
-                    break 'inner;
+                if end >= seq_length {
+                    end = seq_length;
                 }
                 
                 i += 1;
@@ -240,6 +241,7 @@ impl Fastx {
         }
         log::info!("Filtered {} reads.", filter_counts);
         log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
+        Ok(())
     }
 }
 

@@ -245,6 +245,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("count_re")
+                .alias("countre")
                 .about("count restriction enzyme sites, only support single enzyme")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
@@ -277,6 +278,7 @@ pub fn cli() -> Command {
                 .arg(
                     Arg::new("PATTERN")
                         .long("pattern")
+                        .short('p')
                         .value_parser(value_parser!(String))
                         .default_value("GATCGATC"))
                 .arg(

@@ -219,7 +219,7 @@ fn main() {
             let min_length = sub_matches.get_one::<u64>("MIN_LENGTH").expect("error");
 
             let fa = Fastx::new(&input_fastq);
-            fa.slide(&output, *window, *step, *min_length);
+            let _ = fa.slide(&output, *window, *step, *min_length);
         }
         Some(("simulator", sub_matches)) => {
             match sub_matches.subcommand() {

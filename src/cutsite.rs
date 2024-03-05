@@ -12,7 +12,7 @@ pub fn cut_site(fastq: String, pattern: &[u8], output: String) -> Result<()>{
     let fastq_path = Path::new(&fastq);
     
     let buffered = common_reader(&fastq);
-    let reader = fastq::Reader::new(buffered);
+    let reader = fastq::Reader::from_bufread(buffered);
     
     let write_buffered = common_writer(&output);
     let mut writer = fastq::Writer::new(write_buffered);

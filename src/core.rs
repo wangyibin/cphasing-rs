@@ -169,7 +169,7 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
         };
         Box::new(BufReader::with_capacity(
             BUFFER_SIZE,
-            read::GzDecoder::new(fp),
+            read::MultiGzDecoder::new(fp),
         ))
     } else {
 
@@ -200,7 +200,7 @@ pub fn common_writer(file: &str) -> Box<dyn Write> {
     
     if suffix == Some(OsStr::new("gz")) {
         let writer = ZBuilder::<Gzip, _>::new()
-            // .num_threads(4)
+            .num_threads(8)
             .compression_level(Compression::new(6))
             .from_writer(buffered);
         Box::new(writer)

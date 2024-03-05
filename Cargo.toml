@@ -22,8 +22,8 @@ crossbeam = "0.8.2"
 crossbeam-channel = "0.5.8"
 csv = { version = "1.1.6" }
 concorde_rs = "0.1.1"
-flate2 = {version = "~1", default-features = false}
-gzp = { version = "*" }
+flate2 = {version = "1.0.28", default-features = false}
+gzp = { version = "0.11.3"}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
 ndarray = { version = "0.15.6" }
