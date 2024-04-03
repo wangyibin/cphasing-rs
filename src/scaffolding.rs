@@ -53,7 +53,7 @@ impl SplitTour {
 
     pub fn from_contacts(&mut self, contact_hash: &HashMap<ContigPair, f64>, contig_list: &Vec<String>) {
         let mut split_contig_hash: HashMap<String, SplitContigUnit> = HashMap::new();
-        let mut i = 0;
+        let i = 0;
      
         for (contig_pair, contact) in contact_hash.iter(){
             

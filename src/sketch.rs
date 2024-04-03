@@ -20,7 +20,7 @@ pub struct MinimierData {
 
 
 // rolling hash algorithm
-fn hash (seq: &str, k: usize) -> u64 {
+pub fn hash (seq: &str, k: usize) -> u64 {
     let mut h = 0;
     for i in 0..k {
         

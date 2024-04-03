@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use anyhow::Result as AnyResult;
 use bio::io::fastq::{Reader, Record, Writer};
 // use bio::io::fasta::{Reader as FastaReader,
@@ -12,6 +13,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::io;
 use std::path::Path;
 use std::ops::AddAssign;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use seq_io::prelude::*;
 use seq_io::fastq;
@@ -20,6 +23,7 @@ use seq_io::parallel::{ read_process_fastx_records, read_process_recordsets };
 
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
+use crate::sketch::hash;
 
 pub struct Fastx {
     pub file: String,
@@ -142,8 +146,8 @@ impl Fastx {
                 seq.make_ascii_uppercase();
                 let seq_length = seq.len();
                 let seq_str = std::str::from_utf8(&seq).unwrap();
-                let mut occ: Vec<usize> = horspool.find_all(&seq).collect();
-                let mut len_vec = vec![seq_length];
+                let occ: Vec<usize> = horspool.find_all(&seq).collect();
+                let len_vec = vec![seq_length];
 
                 if occ.len() >= 1 {
                     let end_pos = seq_length;
@@ -188,7 +192,7 @@ impl Fastx {
         let mut output_counts = 0;
         let mut slided_counts = 0;
         let mut filter_counts = 0;
-        'outer: for result in reader.records() {
+        for result in reader.records() {
             let record = match result {
                 Ok(record) => record,
                 Err(e) => {
@@ -214,7 +218,7 @@ impl Fastx {
                 end = seq_length;
             }
             
-            'inner: while start < seq_length {
+            while start < seq_length {
                 let seq_window = &seq[start..end as usize];
                 let qual_window = &qual[start..end as usize];
                 let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
@@ -243,6 +247,120 @@ impl Fastx {
         log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
         Ok(())
     }
+
+    pub fn kmer_count(&self, k: usize) -> AnyResult<HashMap<String, u64>> {
+        let reader = common_reader(&self.file);
+        let reader = bio::io::fasta::Reader::new(reader);
+        log::info!("Counting kmers of length {}", k);
+        let mut kmer_count: HashMap<String, u64> = HashMap::new();
+        for result in reader.records() {
+            let record = match result {
+                Ok(record) => record,
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue
+                }
+            };
+            let seq = record.seq();
+            let seq_length = seq.len();
+            let seq_str = std::str::from_utf8(&seq).unwrap();
+            for i in 0..(seq_length - k + 1) {
+                let kmer = &seq_str[i..(i+k)];
+                *kmer_count.entry(kmer.to_string()).or_insert(0) += 1;
+                
+                let rev_kmer = bio::alphabets::dna::revcomp(kmer.bytes());
+                *kmer_count.entry(String::from_utf8(rev_kmer).unwrap()).or_insert(0) += 1;
+            }
+        }
+
+        log::info!("{} kmers counted", kmer_count.len());
+        Ok(kmer_count)
+    }
+
+    pub fn kmer_positions(&self, k: usize, kmer_list: &String, output: &String) -> AnyResult<()> {
+        let reader = common_reader(kmer_list);
+        let reader = BufReader::new(reader);
+        let mut kmer_set = HashSet::new();
+        for line in reader.lines() {
+            let line = line?;
+            let kmer_list = line.split("\t").collect::<Vec<&str>>();
+            kmer_set.insert(kmer_list[0].to_string());
+        }
+     
+        let reader = common_reader(&self.file);
+        let reader = bio::io::fasta::Reader::new(reader);
+        let mut writer = common_writer(output);
+
+        for result in reader.records() {
+            let record = match result {
+                Ok(record) => record,
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue
+                }
+            };
+            let seq = record.seq();
+            let seq_length = seq.len();
+            let seq_str = std::str::from_utf8(&seq).unwrap();
+            for i in 0..(seq_length - k + 1) {
+                let kmer = &seq_str[i..(i+k)];
+                if kmer_set.contains(kmer) {
+                    writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
+                } else {
+                    let rev_kmer = String::from_utf8(bio::alphabets::dna::revcomp(kmer.bytes())).unwrap();
+                    if kmer_set.contains(&rev_kmer) {
+                        writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
+                    }
+                }
+
+            }
+        }
+      
+        Ok(())
+    }
+
+    pub fn mask_high_frequency_kmer(&self, k: usize, threshold: u64, output: &String) -> AnyResult<()> {
+        let kmer_count = self.kmer_count(k)?;
+        let mut high_freq_kmer: Vec<&String> = Vec::new();
+        for (kmer, count) in kmer_count.iter() {
+            if *count > threshold {
+                high_freq_kmer.push(kmer);
+            }
+        }
+
+        // k number of "N"
+        let mut n = String::new();
+        for _ in 0..k {
+            n.push('N');
+        }
+
+        let reader = common_reader(&self.file);
+        let reader = bio::io::fasta::Reader::new(reader);
+        let mut writer = common_writer(output);
+        for result in reader.records() {
+            let record = match result {
+                Ok(record) => record,
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue
+                }
+            };
+            
+            let seq = record.seq();
+            let seq_length = seq.len();
+
+            let seq_str = std::str::from_utf8(&seq).unwrap();
+            let mut masked_seq = seq_str.to_string();
+            for kmer in &high_freq_kmer {
+                let re = regex::Regex::new(kmer).unwrap();
+                masked_seq = re.replace_all(&masked_seq, n.clone()).to_string();
+            }
+            writer.write_all(format!(">{}\n{}\n", record.id(), masked_seq).as_bytes());
+           
+        }
+        Ok(())
+    }
+
 }
 
 // split fastq into several files by record number

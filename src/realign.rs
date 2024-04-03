@@ -1,4 +1,5 @@
 #[warn(unused_assignments)]
+#[allow(dead_code)]
 use anyhow::Result as anyResult;
 use rust_htslib::bam::{ 
     self,
@@ -152,7 +153,7 @@ impl BaseTable for PAFTable {
 
 impl PAFTable {
     pub fn parse(&self) -> anyResult<Box<dyn BufRead + Send + 'static>> {
-        let mut reader = common_reader(&self.file);
+        let reader = common_reader(&self.file);
         Ok(reader)
     }
 
@@ -235,7 +236,7 @@ impl PAFAlignmentUnit {
         }
 
         {
-        'outer: for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
+        for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
             if p.mapq > 1 {
                 continue;
             }
@@ -299,7 +300,7 @@ impl PAFAlignmentUnit {
         }
 
         
-        'outer: for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
+        for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
             if p.mapq >= mapq {
                 continue;
             }
@@ -389,9 +390,9 @@ pub fn parse_paf_read_unit(read_unit: &PAFReadUnit) -> PAFAlignmentUnit {
 
 
 pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-    let mut paf = PAFTable::new(input_paf);
+    let paf = PAFTable::new(input_paf);
     let parse_result = paf.parse();
-    let mut rdr = match parse_result {
+    let rdr = match parse_result {
         Ok(v) => v,
         Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
     };
@@ -527,7 +528,7 @@ impl AlignmentUnit {
             return;
         }
       
-        'outer: for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
+        for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
             if p.mapq() >= mapq {
                 continue;
             }
@@ -542,7 +543,7 @@ impl AlignmentUnit {
 
             }
             
-            'inger: for (j, r) in s.iter().enumerate() {
+            for (j, r) in s.iter().enumerate() {
                 let target: u64 = r.tid().try_into().unwrap();
                 if high_mapq.contains_key(&target) {
                     res_record_idx.insert(target, j);
@@ -623,7 +624,7 @@ pub fn read_bam(input_bam: &String, mapq: u8, output: &String) {
     let bam_header = HeaderView::from_header(&bam_header);
 
     let mut total_reads: u64 = 0;
-    let mut total_alignments: u64 = 0;
+    let total_alignments: u64 = 0;
     let mut total_unmapped: u64 = 0;
     let mut old_read_id = String::from("");
 

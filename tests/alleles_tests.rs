@@ -1,5 +1,5 @@
 use cphasing::core::{ BaseTable };
-use cphasing::alleles::{ AlleleRecord, AlleleTable };
+use cphasing::alleles::*;
 
 #[cfg(test)]    
 mod tests {
@@ -20,15 +20,32 @@ mod tests {
     //     // println!("{:?}", allele_records);
     // }
     
-    #[test]
-    fn test_allelic_contigs_by_cliques() {
-        let file = "test/ploidy-2.2.100k.allele.table";
-        let mut allele_table = AlleleTable::new(&file.to_string());
+    // #[test]
+    // fn test_allelic_contigs_by_cliques() {
+    //     let file = "test/ploidy-2.2.100k.allele.table";
+    //     let mut allele_table = AlleleTable::new(&file.to_string());
        
-        let mut contigs = allele_table.header.contigs.clone();
-        let contig_cliques = allele_table.get_allelic_contig_groups_by_cliques();
+    //     let mut contigs = allele_table.header.contigs.clone();
+    //     let contig_cliques = allele_table.get_allelic_contig_groups_by_cliques();
         
       
-    }
+    // }
     
+    // #[test]
+    // fn test_allele_strand_table() {
+    //     let file = "/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-4.2/50k/test_wfmash_allele/ploidy-4.2.50k.allele.strand.table";
+    //     let mut allele_table = AlleleStrandTable::new(&file.to_string());
+    //     let allele_records = allele_table.allele_strand_records().unwrap();
+    //     let info = allele_table.get_info();
+    //     println!("{:?}", info);
+    // }
+
+    #[test]
+    fn test_allele_table() {
+        let file = "/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-4.2/50k/test_wfmash_allele/ploidy-4.2.50k.allele.table";
+        let mut allele_table = AlleleTable::new(&file.to_string());
+        let allele_records = allele_table.allele_records().unwrap();
+        println!("{:?}", allele_records);
+    }
+
 }

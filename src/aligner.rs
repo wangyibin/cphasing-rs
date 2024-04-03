@@ -1,4 +1,4 @@
-#[warn(unused_assignments)]
+#[allow(unused)]
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
 // use minimap2::*;
@@ -282,7 +282,7 @@ fn map_seq_to_seqs_by_edit_distance(read_id: &String,
     }).collect::<Vec<&u8>>();
 
     // convert &u8 to u8 
-    let mut mod_seq = mod_seq.iter().map(|x| {
+    let mod_seq = mod_seq.iter().map(|x| {
         **x
     }).collect::<Vec<u8>>();
 
@@ -290,13 +290,13 @@ fn map_seq_to_seqs_by_edit_distance(read_id: &String,
     for i in 0..targets.len() {
         let target = &targets[i];
         // only retain the C and m in target seq
-        let mut target_seq = target.seq.iter().filter(|x| {
+        let target_seq = target.seq.iter().filter(|x| {
             match x {
                 b'C' | b'm' => true,
                 _ => false,
             }
         }).collect::<Vec<&u8>>();
-        let mut target_seq = target_seq.iter().map(|x| {
+        let target_seq = target_seq.iter().map(|x| {
             **x
         }).collect::<Vec<u8>>();
 
@@ -411,7 +411,7 @@ fn map_seq_to_seqs_by_banded_semiglobal(read_id: &String,
     // }).collect::<Vec<&u8>>();
 
     // convert &u8 to u8 
-    let mut mod_seq = mod_seq.iter().map(|x| {
+    let mod_seq = mod_seq.iter().map(|x| {
         *x
     }).collect::<Vec<u8>>();
     let mod_seq_kmers_hash = hash_kmers(&mod_seq, 15);

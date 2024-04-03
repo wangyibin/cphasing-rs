@@ -342,7 +342,7 @@ pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &Strin
 
     let mut prev_read_idx = String::new();
     let mut read = Vec::new();
-    'outer: for record in bed_reader.records() {
+    for record in bed_reader.records() {
         let record = record.unwrap();
         let chrom = record.get(0).unwrap();
         let start = record.get(1).unwrap().parse::<usize>().unwrap();

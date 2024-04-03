@@ -466,6 +466,7 @@ impl Pairs {
     }
 
     pub fn to_contacts(&mut self, min_contacts: u32) -> anyResult<Contacts> {
+        use hashbrown::HashSet;
         let parse_result = self.parse();
         let mut rdr = match parse_result {
             Ok(r) => r,
@@ -529,7 +530,9 @@ impl Pairs {
     }   
 
     pub fn to_clm(&mut self, min_contacts: u32, output: &String) {
+        use hashbrown::HashMap;
         let parse_result = self.parse();
+
         let mut rdr = match parse_result {
             Ok(r) => r,
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
@@ -545,9 +548,13 @@ impl Pairs {
             .iter()
             .map(|x| (x.chrom.clone(), x.size.try_into().unwrap()))
             .collect();
+        match chromsizes.len() {
+            0 => log::warn!("chromsizes is empty !!!, please check it."),
+            _ => {}
+        }
         let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
         let split_contigsizes: HashMap<&String, u32> = chromsizes
-            .par_iter()
+            .iter()
             .map(|(k, v)| (k, *v / 2))
             .collect();
 
@@ -556,24 +563,24 @@ impl Pairs {
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                    let mut contig1 = record[1].to_string();
-                    let mut contig2 = record[3].to_string();
-                    let mut pos1 = record[2].parse::<u32>().unwrap();
-                    let mut pos2 = record[4].parse::<u32>().unwrap();
+                    let contig1 = record[1].to_string();
+                    let contig2 = record[3].to_string();
+                    let pos1 = record[2].parse::<u32>().unwrap_or_default();
+                    let pos2 = record[4].parse::<u32>().unwrap_or_default();
                     
                     let (contig1, contig2, pos1, pos2) = if contig1 > contig2 {
                         (contig2, contig1, pos2, pos1)
                     } else {
                         (contig1, contig2, pos1, pos2)
                     };
-                    let mut split_index1 = pos1 / split_contigsizes.get(&contig1).unwrap();
-                    let mut split_index2 = pos2 / split_contigsizes.get(&contig2).unwrap();
-                    let mut cp = ContigPair::new(
+                    let split_index1 = pos1 / split_contigsizes.get(&contig1).unwrap();
+                    let split_index2 = pos2 / split_contigsizes.get(&contig2).unwrap();
+                    let cp = ContigPair::new(
                         format!("{}_{}", contig1, split_index1), 
                         format!("{}_{}", contig2, split_index2));
 
                     let mut contig_pair = ContigPair::new(contig1, contig2);
-
+                    contig_pair.order();
                     *contact_hash.entry(cp).or_insert(0) += 1;
 
                     data.entry(contig_pair)
@@ -629,7 +636,7 @@ impl Pairs {
                 }
             ).collect::<HashMap<_, _>>();
 
-        let result = result.par_iter().map(|(cp, vec)|{
+        let result = result.into_par_iter().map(|(cp, vec)|{
                 let length1 = chromsizes.get(&cp.Contig1).unwrap();
                 let length2 = chromsizes.get(&cp.Contig2).unwrap();
                 
@@ -662,34 +669,34 @@ impl Pairs {
             if count < min_contacts as usize {
                 continue
             } 
-
+            let mut buffer = Vec::new();
             for (i, res1) in res.iter().enumerate() {
                 let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                 match i {
                     0 => {
-                        writeln!(wtr, "{}+ {}+\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                        write!(buffer, "{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1).unwrap();
                     },
                     1 => {
-                        writeln!(wtr, "{}+ {}-\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                        write!(buffer, "{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1).unwrap();
                     },
                     2 => {
-                        writeln!(wtr, "{}- {}+\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                        write!(buffer, "{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1).unwrap();
                     },
                     3 => {
-                        writeln!(wtr, "{}- {}-\t{}\t{}", cp.Contig1, cp.Contig2, count, res1).unwrap();
+                        write!(buffer, "{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1).unwrap();
                     },
                     _ => panic!("Error: Invalid index"),
                 };
 
-
             }
+            wtr.write_all(&buffer).unwrap();
 
         }
         log::info!("Successful output clm file `{}`", output);
     }
 
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
-        type Iv_u8 = Interval<usize, u8>;
+        type IvU8 = Interval<usize, u8>;
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
         let mut wtr = common_writer(output);

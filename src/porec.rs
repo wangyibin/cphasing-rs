@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use anyhow::Result as anyResult;
 
 use itertools::{Itertools, Combinations};
@@ -123,6 +124,10 @@ impl Concatemer {
         self.records.clear();
     }
 
+    pub fn count(&self) -> usize {
+        self.records.len()
+    }
+
     pub fn sort(&mut self) {
         // self.records.sort_by(| a, b | a.partial_cmp(&b).unwrap());
         self.records.sort_unstable_by_key(|x| (x.target.clone(), x.target_start));
@@ -148,7 +153,7 @@ impl ConcatemerSummary {
     
     pub fn count(&mut self, concatemer: &Concatemer) {
 
-        let concatemer_count: u32 = concatemer.records.len().try_into().unwrap();
+        let concatemer_count: u32 = concatemer.count().try_into().unwrap();
         *self.summary.entry(concatemer_count).or_insert(0) += 1;
 
     }
@@ -216,13 +221,15 @@ impl PoreCTable {
         Ok(rdr)
     }
 
-    pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8) -> Result<(), Box<dyn Error>> {
+    pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8, 
+                        min_order: usize, max_order: usize,
+                    ) -> Result<(), Box<dyn Error>> {
         let parse_result = self.parse();
         let mut rdr = match parse_result {
             Ok(v) => v,
             Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
         };
-
+        log::info!("Only retain concatemer that order in the range of [{}, {})", min_order, max_order);
         let chromsizes: ChromSize = ChromSize::new(chromsizes);
         let chromsizes_data: Vec<ChromSizeRecord> = chromsizes.to_vec().unwrap();
 
@@ -254,14 +261,18 @@ impl PoreCTable {
                 },
             };
             if record.read_idx != old_read_idx && flag == true {
-                concatemer.sort();
-                
-                concatemer_summary.count(&concatemer);
-
-                for pair in concatemer.decompose() {
-                    wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
-                    read_id += 1;
+                let order = concatemer.count();
+                if (order < max_order) & (order >= min_order) {
+                    concatemer.sort();
+                    concatemer_summary.count(&concatemer);
+                    for pair in concatemer.decompose() {
+                        wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
+                        read_id += 1;
+                    }
+                    
+                    
                 }
+                
                 concatemer.clear();
             }
             flag = true;
@@ -269,15 +280,19 @@ impl PoreCTable {
             if record.mapq < min_quality {
                 continue
             }
+            
             concatemer.push(record);
            
         }
 
         // process last concatemer
-        concatemer.sort();
-        for pair in concatemer.decompose() {
-            wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
-            read_id += 1;
+        if (concatemer.count() < max_order) & (concatemer.count() >= min_order) {
+            concatemer.sort();
+            concatemer_summary.count(&concatemer);
+            for pair in concatemer.decompose() {
+                wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
+                read_id += 1;
+            }
         }
 
         log::info!("Successful output pairs `{}`", output);
@@ -287,7 +302,7 @@ impl PoreCTable {
     }
 
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
-        type Iv_u8 = Interval<usize, u8>;
+        type IvU8 = Interval<usize, u8>;
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
         let mut wtr = common_writer(output);
@@ -333,23 +348,37 @@ pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
     let mut idx = 0;
 
 
-    'outer: for file in input {
-        let mut rdr = PoreCTable::new(file).parse().unwrap();
+    for file in input {
+        // let mut rdr = PoreCTable::new(file).parse().unwrap();
+        // let mut max_idx: u64 = 0;
+        // 'inner: for (i, line) in rdr.deserialize().enumerate() {
+        //     let line_number = i + 1;
+        //     let mut record: PoreCRecord = match line {
+        //         Ok(v) => v,
+        //         Err(error) => {
+        //             log::warn!("Could not parse line {}", line_number);
+        //             continue 'inner;
+        //         },
+        //     };
+        //     if record.read_idx > max_idx {
+        //         max_idx = record.read_idx.clone();
+        //     }
+        //     record.read_idx += idx ;
+        
+        let mut reader = common_reader(file);
         let mut max_idx: u64 = 0;
-        'inner: for (i, line) in rdr.deserialize().enumerate() {
-            let line_number = i + 1;
-            let mut record: PoreCRecord = match line {
-                Ok(v) => v,
-                Err(error) => {
-                    log::warn!("Could not parse line {}", line_number);
-                    continue 'inner;
-                },
-            };
-            if record.read_idx > max_idx {
-                max_idx = record.read_idx.clone();
-            }
-            record.read_idx += idx ;
+        for (i, line) in reader.lines().enumerate() {
+            let line = line.unwrap();
+            let mut line = line.split("\t");
+            let mut read_idx: u64 = line.next().unwrap().parse().unwrap();
             
+            if read_idx > max_idx {
+                max_idx = read_idx;
+            }
+            
+            read_idx += idx as u64;
+            let mut record = line.collect::<Vec<&str>>().join("\t");
+            record = format!("{}\t{}", read_idx, record);
             wtr.write_all(record.to_string().as_bytes()).unwrap();
             wtr.write_all(b"\n").unwrap();
         }

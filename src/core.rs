@@ -141,6 +141,38 @@ impl ContigPair {
 
 }
 
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct ContigPair2<'a> {
+    pub Contig1: &'a String,
+    pub Contig2: &'a String,
+}
+
+impl ContigPair2<'_> {
+    pub fn new<'a>(contig1: &'a String, contig2: &'a String) -> ContigPair2<'a> {
+
+        ContigPair2 { Contig1: contig1, Contig2: contig2 }
+    }
+
+    // pub fn from_vec(vec: Vec<&String>) -> ContigPair2 {
+    //     ContigPair2 { Contig1: &(*vec[0]).to_string(), 
+    //                 Contig2: &(*vec[1]).to_string()}
+    // }
+
+    pub fn swap(&mut self) {
+        std::mem::swap(&mut self.Contig1, &mut self.Contig2);
+    }
+
+    pub fn order(&mut self) {
+        if *self.Contig1 > *self.Contig2 {
+            self.swap();
+        }
+    }
+
+
+}
+
+
+
 
 // {parse_input, parse_output, common_reader, common_writer} learn from https://github.com/mrvollger/rustybam/blob/main/src/myio.rs
 pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 'static>> {

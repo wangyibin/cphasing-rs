@@ -1,3 +1,4 @@
+#[macro_use] extern crate scan_fmt;
 use indexmap::IndexMap;
 use cphasing::aligner::read_bam;
 use cphasing::bam::split_bam;
@@ -18,6 +19,7 @@ use cphasing::pairs::Pairs;
 use cphasing::porec::{
         PoreCTable, merge_porec_tables };
 use cphasing::kprune::{ PruneTable, KPruner };
+use cphasing::prune::{ Pruner };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec };
 use std::collections::{ HashMap, HashSet };
@@ -93,7 +95,8 @@ fn main() {
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            assert!(method == "fast" || method == "precise" || method == "greedy", "method must be in ['fast', 'precise', 'greedy']");
+            assert!(method == "fast" || method == "precise" || method == "greedy", 
+                     "method must be in ['fast', 'precise', 'greedy']");
         
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
@@ -111,6 +114,11 @@ fn main() {
                 }
             }
 
+            let mut whitehash2: HashSet<&String> = HashSet::new();
+            for x in whitehash.iter() {
+                whitehash2.insert(x);
+            }
+          
             // let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
             let first_cluster_hashmap = Arc::new(Mutex::new(HashMap::new()));
             if first_cluster != "none" {
@@ -136,13 +144,13 @@ fn main() {
                     // split tab
                     let mut line = line.split("\t");
                     let group = line.next().unwrap().to_string();
-                    let count = line.next().unwrap().to_string();
+                    let _count = line.next().unwrap().to_string();
                     // split next with space
                     let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
                    
-                    let contigs: HashSet<String> = contigs.into_par_iter().map(|x| x.to_string()).collect();
+                    let mut contigs: HashSet<String> = contigs.into_par_iter().map(|x| x.to_string()).collect();
                     if whitehash.len() > 0 {
-                        let contigs: HashSet<String> = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
+                        contigs = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
                     }
                     let mut first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
                     first_cluster_hashmap.insert(group, contigs);
@@ -154,11 +162,11 @@ fn main() {
             let first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
             let first_cluster_hashmap = first_cluster_hashmap.clone();
 
-            let writer = common_writer(&prunetable);
-            let mut wtr = csv::WriterBuilder::new()
-                .delimiter(b'\t')
-                .has_headers(false)
-                .from_writer(writer);
+            let mut writer = common_writer(&prunetable);
+            // let mut wtr = csv::WriterBuilder::new()
+            //     .delimiter(b'\t')
+            //     .has_headers(false)
+            //     .from_writer(writer);
 
             if first_cluster != "none" {
             
@@ -172,8 +180,11 @@ fn main() {
                     log::info!("Pruning cluster `{}`", k);
                     let kpruner = kpruners.get_mut(&k).unwrap();
                     let _whitehash: HashSet<String> = v.into_iter().collect();
-                    
-                    kpruner.prune(&method.as_str(), &_whitehash);
+                    let mut _whitehash2: HashSet<&String> = HashSet::new();
+                    for x in _whitehash.iter() {
+                        _whitehash2.insert(&x);
+                    }
+                    kpruner.prune(&method.as_str(), &_whitehash2, &mut writer );
                 }
                 log::set_max_level(log::LevelFilter::Info);
 
@@ -183,15 +194,148 @@ fn main() {
                 for (_, v) in kpruners {
                     allelic_counts += v.allelic_counts;
                     cross_allelic_counts += v.cross_allelic_counts;
-                    v.prunetable.write(&mut wtr);
+                    // v.prunetable.write(&mut wtr);
                 }
                 log::info!("Allelic counts: {}", allelic_counts);
                 log::info!("Cross-allelic counts: {}", cross_allelic_counts);
                 
             } else {
                 let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, normalization_method);
-                kpruner.prune(&method.as_str(), &whitehash);
-                kpruner.prunetable.write(&mut wtr);
+                kpruner.prune(&method.as_str(), &whitehash2, &mut writer);
+                // kpruner.prunetable.write(&mut wtr);
+            }
+            
+            log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
+
+        }
+        Some(("prune", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
+            use rayon::prelude::*;
+            use std::io::BufReader;
+            use std::io::BufRead;
+            use std::sync::{Arc, Mutex};
+            let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
+            let allele_strand_table = sub_matches.get_one::<String>("ALLELESTRANDTABLE").expect("required");
+            let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
+            let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let method = sub_matches.get_one::<String>("METHOD").expect("error");
+            let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
+            let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
+            let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
+            assert !(method == "fast" || method == "precise" || method == "greedy", 
+                     "method must be in ['fast', 'precise', 'greedy']");
+            let method = method.as_str();
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
+            let mut whitehash: HashSet<String> = HashSet::new();
+
+            if whitelist != "none" {
+                let reader = common_reader(&whitelist);
+                let reader = BufReader::new(reader);
+                for line in reader.lines() {
+                    let line = line.unwrap();
+                    whitehash.insert(line);
+                }
+            }
+            let mut whitehash2: HashSet<&String> = HashSet::new();
+            for x in whitehash.iter() {
+                whitehash2.insert(x);
+            }
+
+            let first_cluster_hashmap = Arc::new(Mutex::new(HashMap::new()));
+            if first_cluster != "none" {
+                let reader = common_reader(&first_cluster);
+                let reader = BufReader::new(reader);
+
+                let first_cluster_hashmap = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
+            }
+            if first_cluster != "none" {
+                let reader = common_reader(&first_cluster);
+                let reader = BufReader::new(reader);
+              
+                let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
+                lines.into_par_iter().for_each(|line| {
+                    // split tab
+                    let mut line = line.split("\t");
+                    let group = line.next().unwrap().to_string();
+                    let _count = line.next().unwrap().to_string();
+                    // split next with space
+                    let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
+                   
+                    let mut contigs: HashSet<String> = contigs.into_par_iter().map(|x| x.to_string()).collect();
+                    if !whitehash.is_empty() {
+                        contigs = contigs.intersection(&whitehash).cloned().collect();
+                    }
+                    let mut first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
+                    first_cluster_hashmap.insert(group, contigs);
+                });
+            }
+
+            let first_cluster_hashmap = Arc::clone(&first_cluster_hashmap);
+            let first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
+            let first_cluster_hashmap = first_cluster_hashmap.clone();
+
+            let mut writer = common_writer(&prunetable);
+       
+            if first_cluster != "none" {
+            
+                log::set_max_level(log::LevelFilter::Off);
+                let mut pruners: HashMap<String, Pruner> = first_cluster_hashmap
+                            .keys().map(|x| (x.to_string(), Pruner::new(
+                                &alleletable,  &allele_strand_table, &contacts,
+                                normalization_method))).collect();
+                
+                for (k, v) in first_cluster_hashmap {
+                    log::info!("Pruning cluster `{}`", k);
+                    let pruner = pruners.get_mut(&k).unwrap();
+                    let _whitehash: HashSet<String> = v.into_iter().collect();
+                    let mut _whitehash2: HashSet<&String> = HashSet::new();
+                    for x in _whitehash.iter() {
+                        _whitehash2.insert(&x);
+                    }
+                    
+                    match method {
+                        "fast" => {
+                            pruner.kprune(&_whitehash2, &method, &mut writer);
+                        }
+                        "precise" => {
+                            pruner.kprune(&_whitehash2, &method, &mut writer);
+                        }
+                        "greedy" => {
+                            pruner.prune(&_whitehash2, &mut writer);
+                        }
+                        _ => {
+                            eprintln!("No such method.");
+                        }
+                    }
+                  
+                }
+                log::set_max_level(log::LevelFilter::Info);
+                
+            } else {
+                let mut pruner = Pruner::new(&alleletable, &allele_strand_table, &contacts, 
+                                                 normalization_method);
+                match method {
+                        "fast" => {
+                            pruner.kprune(&whitehash2, &method, &mut writer);
+                        }
+                        "precise" => {
+                            pruner.kprune(&whitehash2, &method, &mut writer);
+                        }
+                        "greedy" => {
+                            pruner.prune(&whitehash2, &mut writer);
+                        }
+                        _ => {
+                            eprintln!("No such method.");
+                        }
+                    }
+                
             }
             
             log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
@@ -243,7 +387,46 @@ fn main() {
             }
             
         }
+        Some(("kmer", sub_matches)) => {
+            match sub_matches.subcommand() {
+                Some(("count", sub_sub_matches)) => {
+                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
+                    let k = sub_sub_matches.get_one::<usize>("K").expect("error");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
 
+                    let fasta = Fastx::new(&input_fasta);
+                    let kmer_count = fasta.kmer_count(*k).unwrap();
+                    let mut writer = common_writer(&output);
+                    for (k, v) in kmer_count.iter() {
+                        writer.write(format!("{}\t{}\n", k, v).as_bytes()).unwrap();
+                    }
+
+                }
+                Some(("mask", sub_sub_matches)) => {
+                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
+                    let k = sub_sub_matches.get_one::<usize>("K").expect("error");
+                    let ploidy = sub_sub_matches.get_one::<u64>("PLOIDY").expect("error");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+                    
+                    let fasta = Fastx::new(&input_fasta);
+                    fasta.mask_high_frequency_kmer(*k, *ploidy, output).unwrap();
+                },
+                Some(("position", sub_sub_matches)) => {
+                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
+                    let k = sub_sub_matches.get_one::<usize>("K").expect("required");
+                    let kmer_list = sub_sub_matches.get_one::<String>("KMER_LIST").expect("required");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+                    
+                    let fasta = Fastx::new(&input_fasta);
+                    let _ = fasta.kmer_positions(*k, &kmer_list, &output);
+
+                }
+                _ => {
+                    eprintln!("{:?}", sub_matches.subcommand());
+                    eprintln!("No such subcommand.");
+                }
+            }
+        }
         Some(("digest", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
@@ -315,9 +498,11 @@ fn main() {
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
+            let max_order = sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
             let prt = PoreCTable::new(&table);
 
-            prt.to_pairs(&chromsizes, &output, *min_quality).unwrap();
+            prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
         }
         Some(("porec-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
@@ -345,6 +530,7 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
@@ -355,7 +541,7 @@ fn main() {
             let table_output = format!("{}.porec.gz", prefix);
             pt.paf2table(&bed, &table_output, min_quality, min_identity, min_length, max_order).unwrap();
             let prt = PoreCTable::new(&table_output);
-            prt.to_pairs(&chromsizes, &output, *min_quality).unwrap();
+            prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
 
         }
         Some(("pairs2contacts", sub_matches)) => {

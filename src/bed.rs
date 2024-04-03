@@ -8,7 +8,7 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::methy::ModRecord;
 
-type Iv_u8 = Interval<usize, u8>;
+type IvU8 = Interval<usize, u8>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed3Record {
@@ -49,16 +49,16 @@ impl Bed3 {
     }
     
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
-        let mut hcr: HashMap<String, Vec<Iv_u8>> = HashMap::new();
+        let mut hcr: HashMap<String, Vec<IvU8>> = HashMap::new();
         for i in self {
             if hcr.contains_key(&i.chrom) {
-                hcr.get_mut(&i.chrom).unwrap().push(Iv_u8 {
+                hcr.get_mut(&i.chrom).unwrap().push(IvU8 {
                     start: i.start,
                     stop: i.end,
                     val: 0,
                 });
             } else {
-                hcr.insert(i.chrom, vec![Iv_u8 {
+                hcr.insert(i.chrom, vec![IvU8 {
                     start: i.start,
                     stop: i.end,
                     val: 0,

@@ -256,7 +256,7 @@ impl PAFTable {
                     ) -> Result<(), Box<dyn Error>> {
         
 
-        type Iv_u8 = Interval<usize, u8>;
+        type IvU8 = Interval<usize, u8>;
         
         let is_filter_digest = if bed != "" { true } else { false };
        
