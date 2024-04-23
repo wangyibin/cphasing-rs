@@ -486,6 +486,7 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            // let min_order = sub_matches.get_one::<u32>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
 
             let pt = PAFTable::new(&paf);
@@ -548,12 +549,13 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let split_num = sub_matches.get_one::<u32>("SPLIT_NUM").expect("error");
             let mut pairs = Pairs::new(&pairs);
             let contacts = if *split_num > 1 {
-                pairs.to_split_contacts(*min_contacts, *split_num).unwrap()
+                pairs.to_split_contacts(*min_contacts, *split_num, *min_quality).unwrap()
             } else {
-                pairs.to_contacts(*min_contacts).unwrap()
+                pairs.to_contacts(*min_contacts, *min_quality).unwrap()
             };
            
             contacts.write(&output);
@@ -565,6 +567,7 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
@@ -573,26 +576,28 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-            pairs.to_clm(*min_contacts, &output);
-            let contacts = Contacts::from_clm(&output);
-            contacts.write(&contacts.file);
+            pairs.to_clm(*min_contacts, *min_quality, &output, );
+            // let contacts = Contacts::from_clm(&output);
+            // contacts.write(&contacts.file);
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_mnd(&output).unwrap();
+            pairs.to_mnd(*min_quality, &output).unwrap();
         }
         
         Some(("pairs2bam", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_bam(&output);
+            pairs.to_bam(*min_quality, &output);
         }
         
         Some(("pairs-intersect", sub_matches)) => {

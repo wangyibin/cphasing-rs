@@ -25,6 +25,31 @@ use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 use crate::sketch::hash;
 
+
+enum FileType {
+    Fasta,
+    Fastq,
+    Unknown,
+}
+
+fn get_file_type(filename: &str) -> io::Result<FileType>  {
+    let reader = common_reader(&filename);
+    let mut lines = reader.lines();
+    let first_line = match lines.next() {
+        Some(line) => line?,
+        None => return Ok(FileType::Unknown),
+    };
+
+    if first_line.starts_with(">") {
+        Ok(FileType::Fasta)
+    } else if first_line.starts_with("@") {
+        Ok(FileType::Fastq)
+    } else {
+        Ok(FileType::Unknown)
+    }
+}
+
+
 pub struct Fastx {
     pub file: String,
 }
@@ -185,66 +210,135 @@ impl Fastx {
         let min_length = min_length as usize;
         let step = if step == 0 { window } else { step };
         let mut total_reads = 0;
+
+        let file_type = get_file_type(&self.file).unwrap();
         let reader = common_reader(&self.file);
-        let reader = Reader::with_capacity(100000, reader);
-        let mut writer = common_writer(output);
-        let mut wtr = Writer::new(writer);
-        let mut output_counts = 0;
-        let mut slided_counts = 0;
-        let mut filter_counts = 0;
-        for result in reader.records() {
-            let record = match result {
-                Ok(record) => record,
-                Err(e) => {
-                    log::error!("Error reading record: {}", e);
-                    continue
-                }
-            };
-            let seq = record.seq();
-            let seq_length = seq.len();
-            
-            if seq_length < min_length {
-                filter_counts += 1;
-                continue
-            }
-            output_counts += 1;
-            
-            let qual = record.qual();
-
-            let mut start = 0;
-            let mut end = window;
-            let mut i = 0;
-            if end >= seq_length {
-                end = seq_length;
-            }
-            
-            while start < seq_length {
-                let seq_window = &seq[start..end as usize];
-                let qual_window = &qual[start..end as usize];
-                let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
-                        None, seq_window, qual_window);
-                match wtr.write_record(&record) {
-                    Ok(_) => {},
-                    Err(e) => {
-                        log::error!("Error writing record: {}", e);
+        match file_type {
+            FileType::Fastq => {
+                let reader = Reader::with_capacity(100000, reader);
+                let mut writer = common_writer(output);
+                let mut wtr = Writer::new(writer);
+                let mut output_counts = 0;
+                let mut slided_counts = 0;
+                let mut filter_counts = 0;
+                for result in reader.records() {
+                    let record = match result {
+                        Ok(record) => record,
+                        Err(e) => {
+                            log::error!("Error reading record: {}", e);
+                            continue
+                        }
+                    };
+                    let seq = record.seq();
+                    let seq_length = seq.len();
+                    
+                    if seq_length < min_length {
+                        filter_counts += 1;
+                        continue
                     }
-                
-                };
-                start += step;
-                end += step;
-                if end >= seq_length {
-                    end = seq_length;
+                    output_counts += 1;
+                    
+                    let qual = record.qual();
+
+                    let mut start = 0;
+                    let mut end = window;
+                    let mut i = 0;
+                    if end >= seq_length {
+                        end = seq_length;
+                    }
+                    
+                    while start < seq_length {
+                        let seq_window = &seq[start..end as usize];
+                        let qual_window = &qual[start..end as usize];
+                        let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
+                                None, seq_window, qual_window);
+                        match wtr.write_record(&record) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                log::error!("Error writing record: {}", e);
+                            }
+                        
+                        };
+                        start += step;
+                        end += step;
+                        if end >= seq_length {
+                            end = seq_length;
+                        }
+                        
+                        i += 1;
+                    } 
+
+                    slided_counts += i;
+
+                    
                 }
-                
-                i += 1;
-            } 
-
-            slided_counts += i;
-
+                log::info!("Filtered {} reads.", filter_counts);
+                log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
+            },
+            FileType::Fasta => {
+                let reader = bio::io::fasta::Reader::with_capacity(100000, reader);
+                let mut writer = common_writer(output);
+                let mut wtr = bio::io::fasta::Writer::new(writer);
+                let mut output_counts = 0;
+                let mut slided_counts = 0;
+                let mut filter_counts = 0;
+                for result in reader.records() {
+                    let record = match result {
+                        Ok(record) => record,
+                        Err(e) => {
+                            log::error!("Error reading record: {}", e);
+                            continue
+                        }
+                    };
+                    let seq = record.seq();
+                    let seq_length = seq.len();
+                    
+                    if seq_length < min_length {
+                        filter_counts += 1;
+                        continue
+                    }
+                    output_counts += 1;
             
+                    let mut start = 0;
+                    let mut end = window;
+                    let mut i = 0;
+                    if end >= seq_length {
+                        end = seq_length;
+                    }
+                    
+                    while start < seq_length {
+                        let seq_window = &seq[start..end as usize];
+                       
+                        let record = bio::io::fasta::Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
+                                None, seq_window);
+                        match wtr.write_record(&record) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                log::error!("Error writing record: {}", e);
+                            }
+                        
+                        };
+                        start += step;
+                        end += step;
+                        if end >= seq_length {
+                            end = seq_length;
+                        }
+                        
+                        i += 1;
+                    } 
+
+                    slided_counts += i;
+
+                    
+                }
+                log::info!("Filtered {} reads.", filter_counts);
+                log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
+            },
+            FileType::Unknown => {
+                log::error!("Unknown type of input file. must a fastq or a fasta.");
+            }
         }
-        log::info!("Filtered {} reads.", filter_counts);
-        log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
+        
         Ok(())
     }
 
@@ -386,8 +480,6 @@ pub fn split_fastq(input_fastq: &String, output_prefix: &String,
         }
     }
 
-
-    
     Ok(())
 }
 

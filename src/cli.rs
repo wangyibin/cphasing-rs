@@ -450,13 +450,13 @@ pub fn cli() -> Command {
                         .short('l')
                         .value_parser(value_parser!(u32))
                         .default_value("30"))
-                .arg(
-                    Arg::new("MIN_ORDER")
-                        .long("min-order")
-                        .short('m')
-                        .value_parser(value_parser!(usize))
-                        .default_value("50")
-                )
+                // .arg(
+                //     Arg::new("MIN_ORDER")
+                //         .long("min-order")
+                //         .short('m')
+                //         .value_parser(value_parser!(usize))
+                //         .default_value("2")
+                // )
                 .arg(
                     Arg::new("MAX_ORDER")
                         .long("max-order")
@@ -618,6 +618,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
                 .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(
                     Arg::new("SPLIT_NUM")
                         .long("split-num")
                         .short('n')
@@ -641,6 +647,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
                 .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("0"))
+                .arg(
                     Arg::new("THREADS")
                         .long("threads")
                         .short('t')
@@ -659,6 +671,12 @@ pub fn cli() -> Command {
                 .about("convert pairs to mnd file")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -670,6 +688,12 @@ pub fn cli() -> Command {
             Command::new("pairs2bam")
                 .about("convert pairs to pseudo bam file")
                 .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
