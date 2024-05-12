@@ -20,6 +20,25 @@ use crate::pairs::{ PairRecord, PairHeader };
 use crate::paf::PAFLine;
 
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PoreCRecordPlus {
+    pub read_idx: u64,
+    pub query_length: u32,
+    pub query_start: u32,
+    pub query_end: u32,
+    pub query_strand: char,
+    pub target: String, 
+    #[serde(skip_serializing)]
+    pub target_length: u64,
+    pub target_start: u64, 
+    pub target_end: u64,
+    pub mapq: u8,
+    pub identity: f32, 
+    pub filter_reason: String,
+} 
+
+
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PoreCRecord {
@@ -36,6 +55,73 @@ pub struct PoreCRecord {
     pub filter_reason: String,
 } 
 
+impl PartialOrd for PoreCRecordPlus {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.query_start.partial_cmp(&other.query_start)
+    }
+}
+
+impl PartialEq for PoreCRecordPlus {
+    fn eq(&self, other: &Self) -> bool {
+        self.query_start == other.query_start
+    }
+}
+
+
+
+impl PoreCRecordPlus {
+    pub fn from_paf_record(record: PAFLine, read_idx: u64,
+                            identity: f32, filter_reason: String) -> Self {
+        PoreCRecordPlus {
+            read_idx: read_idx,
+            query_length: record.query_length,
+            query_start: record.query_start,
+            query_end: record.query_end,
+            query_strand: record.query_strand,
+            target: record.target,
+            target_length: record.target_length,
+            target_start: record.target_start,
+            target_end: record.target_end,
+            mapq: record.mapq,
+            identity: identity,
+            filter_reason: filter_reason
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            self.read_idx,
+            self.query_length,
+            self.query_start,
+            self.query_end,
+            self.query_strand,
+            self.target,
+            self.target_start,
+            self.target_end,
+            self.mapq,
+            self.identity,
+            self.filter_reason,
+        )
+    }
+
+    pub fn is_in_regions(&self, interval_hash: &HashMap<String, Lapper<usize, u8>>) -> bool {
+        let is_in_regions: bool = if let Some(interval) = interval_hash.get(&self.target) {
+            let iv_start = interval.count((self.target_start - 1) as usize, self.target_start as usize);
+            let iv_end = interval.count((self.target_end - 1) as usize, self.target_end as usize);
+            if iv_start > 0 && iv_end > 0 {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        is_in_regions
+    }
+
+
+}
 
 
 impl PoreCRecord {

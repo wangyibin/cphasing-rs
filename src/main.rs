@@ -8,7 +8,7 @@ use cphasing::core::{
     common_writer, ContigPair,
     check_program};
 use cphasing::count_re::CountRE;
-use cphasing::contacts::Contacts;
+// use cphasing::contacts::Contacts;
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
@@ -486,12 +486,14 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let max_edge = sub_matches.get_one::<u64>("MAX_EDGE").expect("error");
             // let min_order = sub_matches.get_one::<u32>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
 
             let pt = PAFTable::new(&paf);
 
-            pt.paf2table(bed, output, min_quality, min_identity, min_length, max_order).unwrap();
+            pt.paf2table(bed, output, min_quality, min_identity, 
+                            min_length, max_order, max_edge).unwrap();
 
         }
         Some(("porec2pairs", sub_matches)) => {
@@ -531,6 +533,7 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let max_edge = sub_matches.get_one::<u64>("MAX_EDGE").expect("error");
             let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -540,10 +543,19 @@ fn main() {
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
-            pt.paf2table(&bed, &table_output, min_quality, min_identity, min_length, max_order).unwrap();
+            pt.paf2table(&bed, &table_output, min_quality, min_identity, 
+                            min_length, max_order, max_edge).unwrap();
             let prt = PoreCTable::new(&table_output);
             prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
 
+        }
+        Some(("pairs-filter", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let mut pairs = Pairs::new(&pairs);
+
+            pairs.filter_by_mapq(*min_quality, &output);
         }
         Some(("pairs2contacts", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -604,6 +616,7 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut pairs = Pairs::new(&pairs);
@@ -611,7 +624,7 @@ fn main() {
             if *invert {
                 log::info!("Invert the table.");
             }
-            pairs.intersect(&bed, *invert, &output);
+            pairs.intersect(&bed, *invert, *min_quality, &output);
         }
 
         Some(("chromsizes", sub_matches)) => {

@@ -443,13 +443,22 @@ pub fn cli() -> Command {
                         .long("min-identity")
                         .short('p')
                         .value_parser(value_parser!(f32))
-                        .default_value("0.75"))
+                        .default_value("0.8"))
                 .arg(
                     Arg::new("MIN_LENGTH")
                         .long("min-length")
                         .short('l')
                         .value_parser(value_parser!(u32))
-                        .default_value("30"))
+                        .default_value("150"))
+                .arg(
+                    Arg::new("MAX_EDGE")
+                        .long("min-edge")
+                        .short('e')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0")
+                        .help("remove the alignments located in the edge of contigs")
+                        
+                )
                 // .arg(
                 //     Arg::new("MIN_ORDER")
                 //         .long("min-order")
@@ -570,7 +579,7 @@ pub fn cli() -> Command {
                         .long("min-identity")
                         .short('p')
                         .value_parser(value_parser!(f32))
-                        .default_value("0.75")
+                        .default_value("0.8")
                         .help("minimum identity of the alignment")
                     )
                 .arg(
@@ -578,8 +587,16 @@ pub fn cli() -> Command {
                         .long("min-length")
                         .short('l')
                         .value_parser(value_parser!(u32))
-                        .default_value("30")
+                        .default_value("150")
                         .help("minimum length of the alignment")
+                    )
+                .arg(
+                    Arg::new("MAX_EDGE")
+                        .long("min-edge")
+                        .short('e')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0")
+                        .help("remove the alignments located in the edge of contigs")
                     )
                 .arg(
                     Arg::new("MIN_ORDER")
@@ -605,6 +622,26 @@ pub fn cli() -> Command {
                         .default_value("-")
                         .help("output file, default is stdout")
                 )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs-filter")
+                .alias("filterpairs")
+                .alias("filter-pairs")
+                .about("filter pairs by mapq")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
+                .arg(Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -716,6 +753,12 @@ pub fn cli() -> Command {
                         .default_value("false")
                         .help("invert the selection")
                 )
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("1"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

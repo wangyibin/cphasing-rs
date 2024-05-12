@@ -14,7 +14,7 @@ use rust_lapper::{Interval, Lapper};
 use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
-use crate::porec::PoreCRecord;
+use crate::porec::PoreCRecordPlus as PoreCRecord;
 
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -73,7 +73,6 @@ impl ReadSummary {
         let low_mq: u64 = 0;
         let complex: u64 = 0;
         let mapping: u64 = 0;
-
 
         ReadSummary {
             pass: pass,
@@ -190,6 +189,14 @@ impl Concatemer {
         }
     }
 
+    pub fn filter_edges(&mut self, max_length: u64) {
+        for (i, record) in self.records.iter_mut().enumerate() {
+            if record.target_start < max_length || (record.target_length - record.target_end) < max_length {
+                record.filter_reason = String::from("low_mq");
+                self.filter_reasons[i] = String::from("low_mq");
+            }
+        }
+    }
 
     pub fn stat(&self) -> HashMap<String, u32> {
         let mut pass_count: u32 = 0;
@@ -252,12 +259,13 @@ impl PAFTable {
     pub fn paf2table(&self, bed: &String,
                      output: &String, min_quality: &u8, 
                      min_identity: &f32,  min_length: &u32,
-                     max_order: &u32,
+                     max_order: &u32, 
+                     max_edge_length: &u64,
                     ) -> Result<(), Box<dyn Error>> {
         
 
         type IvU8 = Interval<usize, u8>;
-        
+    
         let is_filter_digest = if bed != "" { true } else { false };
        
         let bed = if is_filter_digest {
@@ -292,7 +300,7 @@ impl PAFTable {
         let mut read_singleton_count: u64 = 0;
         let mut read_low_mq_count: u64 = 0;
         let mut read_complex_count: u64 = 0;
-
+        let is_filter_edges = *max_edge_length > 0;
         for (line_num, line) in rdr.deserialize().enumerate() {
             // parse error to continue
             let record: PAFLine = match line {
@@ -307,6 +315,10 @@ impl PAFTable {
                 
                 if is_filter_digest {
                     concatemer.filter_digest(&interval_hash);
+                }
+
+                if is_filter_edges {
+                    concatemer.filter_edges(*max_edge_length);
                 }
 
                 if concatemer.is_singleton() {
