@@ -690,6 +690,18 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(u8))
                         .default_value("0"))
                 .arg(
+                    Arg::new("NO_OUTPUT_SPLIT_CONTACTS")
+                        .long("no-output-split")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("Dont output split contacts."))
+                .arg(
+                    Arg::new("LOW_MEMORY")
+                        .long("low-memory")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("use low memory mode, which is slower but use less memory."))
+                .arg(
                     Arg::new("THREADS")
                         .long("threads")
                         .short('t')

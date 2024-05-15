@@ -580,6 +580,8 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let no_output_split_contacts = sub_matches.get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS").expect("error");
+            let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
@@ -588,7 +590,12 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-            pairs.to_clm(*min_contacts, *min_quality, &output, );
+            let output_split_contacts = match no_output_split_contacts {
+                true => false,
+                false => true
+            };
+
+            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, *low_memory);
             // let contacts = Contacts::from_clm(&output);
             // contacts.write(&contacts.file);
         }
