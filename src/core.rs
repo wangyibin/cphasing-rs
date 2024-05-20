@@ -22,6 +22,7 @@ use std::result::Result;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use serde::{ Deserialize, Serialize };
+use rayon::prelude::*;
 
 
 const BUFFER_SIZE: usize = 512 * 1024;
@@ -108,6 +109,8 @@ impl ChromSize {
         vec.sort_unstable_by_key(|x| x.chrom.clone());
         Ok(vec)
     }
+
+   
 }
 
 
@@ -261,4 +264,24 @@ pub fn check_program(program: &str) {
 }
 
 
+// split contig size by binsize
+pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u64) -> anyResult<HashMap<String, Vec<u64>>> {
+    
+    let bins_db: HashMap<String, Vec<u64>> = contigsizes.par_iter().map(|(contig, size)| {
+        let n_bins: u64 = size / binsize;
+        let mut bins = Vec::new();
+        for i in 0..(n_bins + 1) {
+            bins.push(i * binsize);
+        }
 
+
+        if let Some(last) = bins.last_mut() {
+            *last = *size;
+        }
+
+        (contig.to_string(), bins)
+    }).collect();
+
+    Ok(bins_db)
+
+}

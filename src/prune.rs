@@ -93,7 +93,7 @@ impl Pruner {
                 allelic_data: HashMap::new(),
                 cross_allelic_data: HashMap::new(),
             };
-            'outer: for i in 0..(record.data.len() - 1) {
+            for i in 0..(record.data.len() - 1) {
                 'inner: for j in (i+1)..record.data.len() {
                     
                     let mut contig1 = &record.data[i]; 
@@ -122,7 +122,7 @@ impl Pruner {
                 return prune_line_record;
             }
 
-            'outer: for contig in record.data.iter() {
+            for contig in record.data.iter() {
                 
                 'inner: for mut query_contig in allcontigs.iter() {
                     if &contig == query_contig {

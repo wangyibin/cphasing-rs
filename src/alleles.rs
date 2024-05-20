@@ -549,7 +549,7 @@ impl AlleleTable {
         let mut contig_pairs: HashSet<ContigPair2> = HashSet::new();
         
         'outer: for record in &self.allele_records {
-            'middle: for i in 0..record.data.len() - 1 {
+            for i in 0..record.data.len() - 1 {
                 'inner: for j in (i+1)..record.data.len() {
                     let contig1 = &record.data[i];
                     let contig2 = &record.data[j];

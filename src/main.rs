@@ -578,6 +578,7 @@ fn main() {
             use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            // let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let no_output_split_contacts = sub_matches.get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS").expect("error");
@@ -598,6 +599,16 @@ fn main() {
             pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, *low_memory);
             // let contacts = Contacts::from_clm(&output);
             // contacts.write(&contacts.file);
+        }
+        Some(("pairs2depth", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let binsize = sub_matches.get_one::<u64>("BINSIZE").expect("error");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let mut pairs = Pairs::new(&pairs);
+            pairs.to_depth(*binsize, *min_quality, &output);
+
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

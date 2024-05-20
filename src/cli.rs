@@ -683,6 +683,13 @@ pub fn cli() -> Command {
                         .short('c')
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
+                // .arg(
+                //     Arg::new("BINSIZE")
+                //         .long("binsize")
+                //         .short('b')
+                //         .value_parser(value_parser!(u32))
+                //         .default_value("10000")
+                // )
                 .arg(
                     Arg::new("MIN_QUALITY")
                         .long("min-quality")
@@ -708,6 +715,32 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(usize))
                         .default_value("4"))
                 .arg(Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs2depth")
+                .about("convert pairs to depth file")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("BINSIZE")
+                        .long("binsize")
+                        .short('b')
+                        .value_parser(value_parser!(u64))
+                        .default_value("10000")
+                )
+                .arg(
+                    Arg::new("MIN_QUALITY")
+                        .long("min-quality")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("0"))
+                .arg(
+                    Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))

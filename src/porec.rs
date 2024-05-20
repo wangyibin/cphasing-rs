@@ -1,9 +1,10 @@
 #[allow(dead_code)]
 use anyhow::Result as anyResult;
-
+use crossbeam_channel::unbounded;
+use std::thread;
 use itertools::{Itertools, Combinations};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{ BTreeMap, HashMap };
 use std::borrow::Cow;
 use std::error::Error;
 use std::path::Path;
@@ -15,7 +16,7 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ChromSize, ChromSizeRecord };
+use crate::core::{ BaseTable, binify, ChromSize, ChromSizeRecord };
 use crate::pairs::{ PairRecord, PairHeader };
 use crate::paf::PAFLine;
 
@@ -387,14 +388,28 @@ impl PoreCTable {
         Ok(())
     }
 
+    pub fn to_depth(&mut self, contigsizes: &String, binsize:u64, min_quality: u8, output: &String) {
+        use hashbrown::HashMap as BrownHashMap;
+        let mut parse_result = self.parse().unwrap();
+        let contigsizes = ChromSize { file: contigsizes.to_string() };
+        let contigsizes_data = contigsizes.data().unwrap();
+
+        let mut depth: BrownHashMap<String, BTreeMap<u64, u64>> = BrownHashMap::new();
+        let bins_db = binify(&contigsizes_data, binsize).unwrap();
+    }
+
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
         type IvU8 = Interval<usize, u8>;
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
-        let mut wtr = common_writer(output);
+        let writer = common_writer(output);
+        let mut wtr = csv::WriterBuilder::new()
+                        .has_headers(false)
+                        .delimiter(b'\t')
+                        .from_writer(writer);
 
-        for (i, line) in self.parse().unwrap().deserialize().enumerate() {
-            let record: PoreCRecord = match line {
+        for (i, line) in self.parse().unwrap().records().enumerate() {
+            let record = match line {
                 Ok(v) => v,
                 Err(error) => {
                     log::warn!("Could not parse line {}", i + 1);
@@ -402,30 +417,70 @@ impl PoreCTable {
                 },
             };
 
-            let is_in_regions: bool = if let Some(interval) = interval_hash.get(&record.target) {
-                let iv = interval.count(record.target_start as usize, record.target_end as usize);
-                if iv > 0 {
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+            let target_start = record[6].parse::<usize>().unwrap();
+            let target_end = record[7].parse::<usize>().unwrap();
 
-            if invert {
-                if !is_in_regions {
-                    wtr.write_all(record.to_string().as_bytes()).unwrap();
-                    wtr.write_all(b"\n").unwrap();
-                }
-            } else {
-                if is_in_regions {
-                    wtr.write_all(record.to_string().as_bytes()).unwrap();
-                    wtr.write_all(b"\n").unwrap();
-                }
+            let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
+                    interval.count(target_start, target_end) > 0 });
+
+            if is_in_regions ^ invert {
+                wtr.write_record(&record);
             }
+
         }
-        log::info!("Successful output intersection porec table into `{}`", output);
+        
+       
+
+        // let output = output.to_string();
+        // let input = common_reader(&self.file);
+        // let mut rdr = csv::ReaderBuilder::new()
+        //                     .flexible(true)
+        //                     .has_headers(false)
+        //                     .comment(Some(b'#'))
+        //                     .delimiter(b'\t')
+        //                     .from_reader(input);
+
+        // let (sender, receiver) = unbounded();
+
+        // let producer = thread::spawn(move || {
+        //     for (i, line) in rdr.records().enumerate() {
+        //         let record = match line {
+        //             Ok(v) => v,
+        //             Err(error) => {
+        //                 log::warn!("Could not parse line {}", i + 1);
+        //                 continue;
+        //             },
+        //     };
+
+        //     let target_start = record[6].parse::<usize>().unwrap();
+        //     let target_end = record[7].parse::<usize>().unwrap();
+
+        //     let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
+        //         interval.count(target_start, target_end) > 0 });
+
+        //     if is_in_regions ^ invert {
+        //         sender.send(record).unwrap();
+        //     }
+        // }
+
+    // });
+
+
+    
+    // let writer = common_writer(&output);
+    // let mut wtr = csv::WriterBuilder::new()
+    //             .has_headers(false)
+    //             .delimiter(b'\t')
+    //             .from_writer(writer);
+
+    // for record in receiver {
+    //     wtr.write_record(&record).unwrap();
+    // }
+
+    // wtr.flush().unwrap();
+    
+    log::info!("Successful output intersection porec table into `{}`", output);
+
     }
 }
 

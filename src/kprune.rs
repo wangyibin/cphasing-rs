@@ -232,7 +232,7 @@ impl KPruner {
         //     contacts_data2.entry(contig_pair.Contig2).or_insert_with(HashMap::new).insert(contig_pair.Contig1, *count);
         // }
         let mut contig_pairs: Vec<&ContigPair2> = contacts_data.keys().collect();
-        let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs(); ;
+        let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs();
 
         contig_pairs.retain(|x| !allelic_contig_pairs.contains(x));
 
@@ -326,7 +326,10 @@ impl KPruner {
                         // std::mem::swap(&mut idx1, &mut idx2);
                         std::mem::swap(&mut group1_length, &mut group2_length)
                     }
-
+                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
+                    //     dbg!("{:?}", &group1);
+                    //     dbg!("{:?}", &group2);
+                    // }
 
                     let mut matrix = Matrix::new(group1_length, group2_length, OrderedFloat(0.0));
                     matrix.iter_mut().enumerate().for_each(|(index, element) | {
@@ -342,14 +345,19 @@ impl KPruner {
                         
                     });
 
+                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
+                    //     dbg!("{:?}", &matrix);
+                    // }
                     let assignments = maximum_bipartite_matching(matrix);
-                    
+                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
+                    //     dbg!("{:?}", &assignments);
+                    // }
                     if assignments[idx1] != idx2 {
                         is_weak = true;
                     } else {
                         is_weak = false;
                     }
-
+                    
                     if is_weak {
                         break 'outer; 
                     }

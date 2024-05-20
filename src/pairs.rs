@@ -9,7 +9,7 @@ use rust_htslib::bam::{
     Header, header::HeaderRecord,
     Writer};
 use std::borrow::Cow;
-use std::collections::{ HashMap, HashSet };
+use std::collections::{ BTreeMap, HashMap, HashSet };
 use std::error::Error;
 use std::hash::{ Hash, Hasher };
 use std::path::Path;
@@ -22,7 +22,13 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::bed::Bed3;
 use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ChromSizeRecord, ContigPair, ContigPair2};
+use crate::core::{ 
+    BaseTable, 
+    ChromSize,
+    ChromSizeRecord, 
+    ContigPair, ContigPair2,
+    binify
+};
 use crate::mnd::MndRecord;
 use crate::porec::PoreCRecord;
 use crate::contacts::{ Contacts, ContactRecord };
@@ -652,6 +658,7 @@ impl Pairs {
     }   
 
     pub fn to_clm(&mut self, min_contacts: u32, 
+                // binsize: u32,
                 min_quality: u8,  output: &String,
                 output_split_contacts: bool, low_memory: bool) {
         use hashbrown::HashMap;
@@ -672,6 +679,21 @@ impl Pairs {
             .iter()
             .map(|x| (x.chrom.clone(), x.size.try_into().unwrap()))
             .collect();
+
+        // let bins_db: HashMap<String, Vec<u32>> = chromsizes.par_iter().map(|(contig, size)| {
+        //     let n_bins: u32 = size / binsize;
+        //     let mut bins = Vec::new();
+        //     for i in 0..(n_bins + 1) {
+        //         bins.push(i * binsize);
+        //     }
+    
+    
+        //     if let Some(last) = bins.last_mut() {
+        //         *last = *size;
+        //     }
+    
+        //     (contig.to_string(), bins)
+        // }).collect();
 
         let contig_idx: HashMap<String, u32> = chromsizes.keys()
             .enumerate()
@@ -695,7 +717,8 @@ impl Pairs {
             .iter()
             .map(|(k, v)| (*k, *v / 2))
             .collect();
-
+        
+        let mut depth: HashMap<String, BTreeMap<u32, u32>> = HashMap::new();
         let mut contact_hash: HashMap<(SplitIdx, SplitIdx), u32>  = HashMap::new();
         let filter_mapq = min_quality > 0;
         let mut data: HashMap<(&u32, &u32), Vec<Vec<u32>>> = HashMap::new();
@@ -711,12 +734,16 @@ impl Pairs {
                         }
                     }
                     
-
+                    
                     let contig1_str = &record[1];
                     let contig2_str = &record[3];
                     let pos1 = record[2].parse::<u32>().unwrap_or_default();
                     let pos2 = record[4].parse::<u32>().unwrap_or_default();
                     
+                    // depth.entry(record[1].to_string()).or_insert(BTreeMap::new()).entry((pos1 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+                    // depth.entry(record[3].to_string()).or_insert(BTreeMap::new()).entry((pos2 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+
+
                     let (contig1, contig2, pos1, pos2) = if contig1_str > contig2_str {
                         (contig2_str, contig1_str, pos2, pos1)
                     } else {
@@ -751,6 +778,21 @@ impl Pairs {
                 }
             }
         }
+
+        // let depth: BTreeMap<_, _> = depth.into_iter().collect();
+        // let mut wtr = common_writer(&format!("{}.depth", output_prefix.to_string()));
+        // for (contig, bins) in depth {
+        //     for (bin, count) in bins {
+        //         let bin_start = bin * binsize;
+        //         let mut bin_end = bin_start + binsize;
+        //         let size = chromsizes.get(&contig).unwrap_or(&0);
+        //         if bin_end > *size {
+        //             bin_end = *size;
+        //         }
+        //         wtr.write_all(format!("{}\t{}\t{}\t{}\n", 
+        //                                 contig, bin_start, bin_end, count).as_bytes()).unwrap();
+        //     }
+        // }
 
         if output_split_contacts {
             let mut contact_records: Vec<ContactRecord> = contact_hash.into_par_iter(
@@ -1098,6 +1140,90 @@ impl Pairs {
     log::info!("Successful output new pairs file into `{}`", output);
     
 
+    }
+
+    pub fn to_depth(&mut self, binsize: u64, min_quality: u8, output: &String) {
+        use hashbrown::HashMap as BrownHashMap;
+        let mut parse_result = self.parse().unwrap();
+        let pair_header = &self.header;
+        let contigsizes = &pair_header.chromsizes;
+        let contigsizes_data: HashMap<String, u64> = contigsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+
+        let mut depth: BrownHashMap<String, BTreeMap<u64, u64>> = BrownHashMap::new();
+        let bins_db = binify(&contigsizes_data, binsize).unwrap();
+        let filter_mapq = min_quality > 0;
+
+        for (i, record) in parse_result.records().enumerate() {
+            let record = record.unwrap();
+            if filter_mapq {
+                if record.len() >= 8 {
+                    let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+                    if mapq <= min_quality {
+                        continue
+                    }
+                }
+            }
+
+            let pos1 = record[2].parse::<u64>().unwrap();
+            let pos2 = record[4].parse::<u64>().unwrap();
+
+            depth.entry(record[1].to_string()).or_insert(BTreeMap::new()).entry((pos1 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+            depth.entry(record[3].to_string()).or_insert(BTreeMap::new()).entry((pos2 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+
+        }
+
+        let depth: BTreeMap<_, _> = depth.into_iter().collect();
+        let mut wtr = common_writer(output);
+        
+        for (contig, bins) in depth {
+            for (bin, count) in bins{
+                let bin_start = bin * binsize;
+                let mut bin_end = bin_start + binsize;
+                let size = contigsizes_data.get(&contig).unwrap_or(&0);
+                if bin_end > *size {
+                    bin_end = *size;
+                }
+                wtr.write_all(format!("{}\t{}\t{}\t{}\n", 
+                                        contig, bin_start, bin_end, count).as_bytes()).unwrap();
+            }
+        }
+
+        // let depth = Arc::new(Mutex::new(HashMap::new()));
+        // self.parse().unwrap().records().enumerate().par_bridge().for_each(|(i, record)| {
+        //     let record = record.unwrap();
+        //     if filter_mapq {
+        //         if record.len() >= 8 {
+        //             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+        //             if mapq <= min_quality {
+        //                 return;
+        //             }
+        //         }
+        //     }
+
+        //     let pos1 = record[2].parse::<u64>().unwrap();
+        //     let pos2 = record[4].parse::<u64>().unwrap();
+
+        //     let mut depth = depth.lock().unwrap();
+        //     depth.entry(record[1].to_string()).or_insert(BTreeMap::<u64, u64>::new()).entry((pos1 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+        //     depth.entry(record[3].to_string()).or_insert(BTreeMap::<u64, u64>::new()).entry((pos2 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+        // });
+
+        // let depth: BTreeMap<_, _> = Arc::try_unwrap(depth).unwrap().into_inner().unwrap().into_iter().collect();
+        // let mut wtr = common_writer(output);
+
+        // for (chrom, bins) in depth {
+        //     for (bin, count) in bins{
+        //         let bin_start = bin * binsize;
+        //         let mut bin_end = bin_start + binsize;
+        //         let size = contigsizes_data.get(&chrom).unwrap();
+        //         if bin_end > *size {
+        //             bin_end = *size;
+        //         }
+        //         wtr.write_all(format!("{}\t{}\t{}\t{}\n", 
+        //                                 chrom, bin_start, bin_end, count).as_bytes()).unwrap();
+        //     }
+        // }
+        
     }
 }
 
