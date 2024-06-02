@@ -106,7 +106,8 @@ impl PairHeader {
                                     "chrom2".to_string(), 
                                     "pos2".to_string(), 
                                     "strand1".to_string(),
-                                    "strand2".to_string()
+                                    "strand2".to_string(),
+                                    "mapq".to_string()
                                     ];
         self.chromsizes = chromsizes;
         self.header = pair_header;
@@ -1144,6 +1145,7 @@ impl Pairs {
 
     pub fn to_depth(&mut self, binsize: u64, min_quality: u8, output: &String) {
         use hashbrown::HashMap as BrownHashMap;
+        use dashmap::DashMap;
         let mut parse_result = self.parse().unwrap();
         let pair_header = &self.header;
         let contigsizes = &pair_header.chromsizes;
@@ -1188,7 +1190,8 @@ impl Pairs {
             }
         }
 
-        // let depth = Arc::new(Mutex::new(HashMap::new()));
+        log::info!("Successful output depth file into `{}`", output);
+        // let depth = Arc::new(Mutex::new(DashMap::new()));
         // self.parse().unwrap().records().enumerate().par_bridge().for_each(|(i, record)| {
         //     let record = record.unwrap();
         //     if filter_mapq {
@@ -1225,6 +1228,116 @@ impl Pairs {
         // }
         
     }
+
+    pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
+        type IvU8 = Interval<usize, u8>;
+        let bed = Bed3::new(break_bed);
+        let interval_hash = bed.to_interval_hash();
+        
+        let mut writer = common_writer(output);
+
+        let mut parse_result = self.parse().unwrap();
+        let pair_header = &self.header;
+        let contigsizes = &pair_header.chromsizes;
+        let contigsizes_data: HashMap<String, u64> = contigsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+        let mut new_contigsizes_data = contigsizes_data.clone();
+        for contig in contigsizes_data.keys() {
+            if interval_hash.contains_key(contig) {
+                new_contigsizes_data.remove(contig);
+                let interval = interval_hash.get(contig).unwrap();
+                let mut res = interval.iter().collect::<Vec<_>>();
+                for sub_res in res.iter() {
+                    let new_contig = format!("{}:{}-{}", contig, sub_res.start, sub_res.stop);
+                    let size = sub_res.stop - sub_res.start + 1;
+                    new_contigsizes_data.insert(new_contig.clone(), size.try_into().unwrap());
+                }
+            }
+        }
+        // HashMap to Vec<ChromSizeRecord>
+        let mut new_contigsizes: Vec<ChromSizeRecord> = new_contigsizes_data.iter().map(|(chrom, size)| ChromSizeRecord{chrom: chrom.clone(), size: *size}).collect();
+
+        self.header = PairHeader::new();
+        self.header.from_chromsizes(new_contigsizes);
+        writer.write_all(self.header.to_string().as_bytes()).unwrap();
+        
+    
+        let mut wtr = csv::WriterBuilder::new()
+                        .has_headers(false)
+                        .delimiter(b'\t')
+                        .from_writer(writer);
+        
+
+        for (idx, record) in self.parse().unwrap().records().enumerate() {
+            let record = record.unwrap();
+            let chrom1 = &record[1];
+            let pos1 = record[2].parse::<usize>().unwrap();
+            let chrom2 = &record[3];
+            let pos2 = record[4].parse::<usize>().unwrap();
+
+            let is_break_contig1 = interval_hash.contains_key(chrom1);
+            let is_break_contig2 = interval_hash.contains_key(chrom2);
+
+            if is_break_contig1 || is_break_contig2 {
+                let mut new_record = csv::StringRecord::new();
+                let (new_chrom1, new_pos1) = match is_break_contig1 {
+                    true => {
+                        let interval = interval_hash.get(chrom1).unwrap();
+                        let mut res = interval.find(pos1, pos1+1).collect::<Vec<_>>();
+                        if res.len() > 0 {
+                            let new_pos = pos1 - res[0].start;
+                            let new_chrom1 = format!("{}:{}-{}", chrom1, res[0].start, res[0].stop);
+                            (new_chrom1, new_pos )
+                        } else {
+                            (chrom1.to_string(), pos1 )
+                        }
+                    }
+                    false => {
+                        (chrom1.to_string(), pos1 )
+                    }
+                };
+
+                let (new_chrom2, new_pos2) = match is_break_contig2 {
+                    true => {
+                        let interval = interval_hash.get(chrom2).unwrap();
+                        let mut res = interval.find(pos2, pos2+1).collect::<Vec<_>>();
+                        if res.len() > 0 {
+                            let new_pos = pos2 - res[0].start;
+                            let new_chrom2 = format!("{}:{}-{}", chrom2, res[0].start, res[0].stop);
+                            (new_chrom2, new_pos )
+                        } else {
+                            (chrom2.to_string(), pos2)
+                        }
+                    }
+                    false => {
+                        (chrom2.to_string(), pos2 )
+                    }
+                };
+
+                new_record.push_field(&idx.to_string());
+                new_record.push_field(&new_chrom1);
+                new_record.push_field(&new_pos1.to_string());
+                new_record.push_field(&new_chrom2);
+                new_record.push_field(&new_pos2.to_string());
+                new_record.push_field(&record[5]);
+                new_record.push_field(&record[6]);
+
+                if record.len() >= 8 {
+                    new_record.push_field(&record[7]);
+                }
+
+                wtr.write_record(&new_record);
+
+
+            } else {
+                wtr.write_record(&record);
+            }
+
+           
+        }
+
+        log::info!("Successful output new pairs file into `{}`", output);
+    }
+
 }
 
 

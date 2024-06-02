@@ -396,6 +396,7 @@ impl PoreCTable {
 
         let mut depth: BrownHashMap<String, BTreeMap<u64, u64>> = BrownHashMap::new();
         let bins_db = binify(&contigsizes_data, binsize).unwrap();
+        // incomplete
     }
 
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
@@ -481,6 +482,71 @@ impl PoreCTable {
     
     log::info!("Successful output intersection porec table into `{}`", output);
 
+    }
+
+    pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
+        type IvU8 = Interval<usize, u8>;
+        let bed = Bed3::new(break_bed);
+        let interval_hash = bed.to_interval_hash();
+        let writer = common_writer(output);
+        let mut wtr = csv::WriterBuilder::new()
+                        .has_headers(false)
+                        .delimiter(b'\t')
+                        .from_writer(writer);
+
+        for (i, line) in self.parse().unwrap().records().enumerate() {
+            let record = match line {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Could not parse line {}", i + 1);
+                    continue
+                },
+            };
+
+
+            let target_start = record[6].parse::<usize>().unwrap();
+            let target_end = record[7].parse::<usize>().unwrap();
+            
+            let is_break_contig = interval_hash.contains_key(&record[5]);
+            
+            if is_break_contig {
+                
+                let interval = interval_hash.get(&record[5]).unwrap();
+                let mut res = interval.find(target_start, target_end).collect::<Vec<_>>();
+                
+                if res.len() > 0 {
+                    let mut new_record = csv::StringRecord::new();
+                    new_record.push_field(&record[0]);
+                    new_record.push_field(&record[1]);
+                    new_record.push_field(&record[2]);
+                    new_record.push_field(&record[3]);
+                    new_record.push_field(&record[4]);
+                    let target = record[5].to_string();
+                    let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
+                    new_record.push_field(&new_target);
+
+                    let new_target_start = target_start - res[0].start + 1;
+                    let new_target_end = target_end - res[0].start + 1;
+                    new_record.push_field(&new_target_start.to_string());
+                    new_record.push_field(&new_target_end.to_string());
+                    new_record.push_field(&record[8]);
+                    new_record.push_field(&record[9]);
+                    new_record.push_field(&record[10]);
+
+                    wtr.write_record(&new_record);
+                   
+
+                } else {
+                    wtr.write_record(&record);
+                }
+               
+               
+            } else {
+                wtr.write_record(&record);
+            }
+
+        }
+        log::info!("Successful output contigs corrected porec table into `{}`", output);
     }
 }
 

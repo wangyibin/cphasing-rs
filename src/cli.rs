@@ -219,6 +219,14 @@ pub fn cli() -> Command {
                         .default_value("0")
                 )
                 .arg(
+                    Arg::new("FILETYPE")
+                        .long("filetype")
+                        .short('f')
+                        .value_parser(value_parser!(String))
+                        .default_value("auto")
+                        .help("filtype of sequences, auto dont support for stream input")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -514,6 +522,21 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("porec-break")
+                .about("Break contigs at break points.")
+                .arg(arg!(<TABLE> "pore-c table"))
+                .arg(arg!(<BREAK_BED> "break points in bed format"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+
+        )
+        .subcommand(
             Command::new("porec-merge")
                 .about("Merge multiple pore-c table file into single file")
                 .arg(
@@ -636,6 +659,19 @@ pub fn cli() -> Command {
                         .short('q')
                         .value_parser(value_parser!(u8))
                         .default_value("1"))
+                .arg(Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs-break")
+                .about("Break contigs at chimeric points follwed a bed")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(arg!(<BREAK_BED> "break contigs with a bed format"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')

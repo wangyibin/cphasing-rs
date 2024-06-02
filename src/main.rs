@@ -361,9 +361,10 @@ fn main() {
             let window = sub_matches.get_one::<u64>("WINDOW").expect("error");
             let step = sub_matches.get_one::<u64>("STEP").expect("error");
             let min_length = sub_matches.get_one::<u64>("MIN_LENGTH").expect("error");
+            let filetype = sub_matches.get_one::<String>("FILETYPE").expect("error").as_str();
 
             let fa = Fastx::new(&input_fastq);
-            let _ = fa.slide(&output, *window, *step, *min_length);
+            let _ = fa.slide(&output, *window, *step, *min_length, &filetype);
         }
         Some(("simulator", sub_matches)) => {
             match sub_matches.subcommand() {
@@ -507,6 +508,15 @@ fn main() {
 
             prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
         }
+        Some(("porec-break", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut prt = PoreCTable::new(&table);
+            prt.break_contigs(&break_bed, &output);
+
+        }
         Some(("porec-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -548,6 +558,14 @@ fn main() {
             let prt = PoreCTable::new(&table_output);
             prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
 
+        }
+        Some(("pairs-break", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut pairs = Pairs::new(&pairs);
+            pairs.break_contigs(&break_bed, &output);
         }
         Some(("pairs-filter", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

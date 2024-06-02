@@ -26,6 +26,7 @@ use crate::core::BaseTable;
 use crate::sketch::hash;
 
 
+#[derive(Debug, Clone)]
 enum FileType {
     Fasta,
     Fastq,
@@ -204,14 +205,20 @@ impl Fastx {
 
     pub fn slide(&self, output: &String, 
                     window: u64, step: u64, 
-                    min_length: u64) -> AnyResult<()>{
+                    min_length: u64, filetype: &str) -> AnyResult<()>{
         let window = window as usize;
         let step = step as usize;
         let min_length = min_length as usize;
         let step = if step == 0 { window } else { step };
         let mut total_reads = 0;
+        let file_type = match filetype {
+            "fasta" => FileType::Fasta,
+            "fastq" => FileType::Fastq,
+            _ => {
+                get_file_type(&self.file).unwrap()
+            }
+        };
 
-        let file_type = get_file_type(&self.file).unwrap();
         let reader = common_reader(&self.file);
         match file_type {
             FileType::Fastq => {
@@ -279,6 +286,7 @@ impl Fastx {
                 let reader = bio::io::fasta::Reader::with_capacity(100000, reader);
                 let mut writer = common_writer(output);
                 let mut wtr = bio::io::fasta::Writer::new(writer);
+                
                 let mut output_counts = 0;
                 let mut slided_counts = 0;
                 let mut filter_counts = 0;
