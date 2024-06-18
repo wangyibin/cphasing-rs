@@ -28,6 +28,7 @@ gzp = { version = "0.11.3"}
 hashbrown = { version = "0.14.3", features=[ "rayon" ]}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
+jemallocator = { version = "*" }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}

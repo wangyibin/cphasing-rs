@@ -20,7 +20,7 @@ use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
-use crate::bed::Bed3;
+use crate::bed::{ Bed3, Bed4 };
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ 
     BaseTable, 
@@ -97,6 +97,8 @@ impl PairHeader {
                 }
             }
         }
+        
+        log::info!("Load contigsizes from pairs file.")
     }
 
     pub fn from_chromsizes(&mut self, chromsizes: Vec<ChromSizeRecord>) {
@@ -357,7 +359,7 @@ impl Pairs {
     }
 
     // convert pairs to pseudo bam file 
-    pub fn to_bam(&mut self, min_quality: u8, output: &String) {
+    pub fn to_bam(&mut self, min_quality: u8, output: &String, threads: usize ) {
         let parse_result = self.parse();
         let mut rdr = match parse_result {
             Ok(r) => r,
@@ -387,6 +389,7 @@ impl Pairs {
         let bam_header_view = HeaderView::from_header(&bam_header);
 
         let mut wtr = Writer::from_path(output, &bam_header, bam::Format::Bam).unwrap();
+        wtr.set_threads(threads);
         let filter_mapq = min_quality > 0;
         for (id, record) in rdr.records().enumerate() {
             match record {
@@ -1143,19 +1146,23 @@ impl Pairs {
 
     }
 
-    pub fn to_depth(&mut self, binsize: u64, min_quality: u8, output: &String) {
+    pub fn to_depth(&mut self, binsize: u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap as BrownHashMap;
-        use dashmap::DashMap;
-        let mut parse_result = self.parse().unwrap();
+        
+        let mut parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
         let pair_header = &self.header;
-        let contigsizes = &pair_header.chromsizes;
-        let contigsizes_data: HashMap<String, u64> = contigsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+        let contigsizes_data = &pair_header.chromsizes;
+        let contigsizes_data: BrownHashMap<String, u64> = contigsizes_data.iter().map(|x| (x.chrom.clone(), x.size)).collect();
 
-        let mut depth: BrownHashMap<String, BTreeMap<u64, u64>> = BrownHashMap::new();
-        let bins_db = binify(&contigsizes_data, binsize).unwrap();
+        let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
+        // let bins_db = binify(&contigsizes_data, binsize.try_into().unwrap()).unwrap();
         let filter_mapq = min_quality > 0;
 
-        for (i, record) in parse_result.records().enumerate() {
+        for (i, record) in rdr.records().enumerate() {
             let record = record.unwrap();
             if filter_mapq {
                 if record.len() >= 8 {
@@ -1166,11 +1173,41 @@ impl Pairs {
                 }
             }
 
-            let pos1 = record[2].parse::<u64>().unwrap();
-            let pos2 = record[4].parse::<u64>().unwrap();
+            let pos1 = record[2].parse::<u32>().unwrap();
+            let pos2 = record[4].parse::<u32>().unwrap();
 
-            depth.entry(record[1].to_string()).or_insert(BTreeMap::new()).entry((pos1 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
-            depth.entry(record[3].to_string()).or_insert(BTreeMap::new()).entry((pos2 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
+            if !depth.contains_key(&record[1]) {
+                let size1 = contigsizes_data.get(&record[1]).unwrap_or(&0);
+                if size1 != &0 {
+                    let mut bins1 = vec![0; (*size1 / binsize as u64 + 1) as usize];
+
+                    depth.insert(record[1].to_string(), bins1);
+                }
+        
+            } 
+            if !depth.contains_key(&record[3]) {
+                let size2 = contigsizes_data.get(&record[3]).unwrap_or(&0);
+                if size2 != &0 {
+                    let mut bins2 = vec![0; (*size2 / binsize as u64 + 1) as usize];
+                    depth.insert(record[3].to_string(), bins2);
+                }
+               
+            }
+
+            if let Some(bins1) = depth.get_mut(&record[1]) {
+                bins1[pos1 as usize / binsize as usize] += 1;
+            }
+            
+            if let Some(bins2) = depth.get_mut(&record[3]) {
+                bins2[pos2 as usize / binsize as usize] += 1;
+            }
+            // let size1 = contigsizes_data.get(&record[1]).unwrap_or(&0);
+            // let bins1 = depth.entry((&record[1]).to_string()).or_insert_with(|| vec![0; (*size1 / binsize as u64 + 1) as usize]);
+            // bins1[pos1 as usize / binsize as usize] += 1;
+        
+            // let size2 = contigsizes_data.get(&record[3]).unwrap_or(&0);
+            // let bins2 = depth.entry((&record[3]).to_string()).or_insert_with(|| vec![0; (*size2 / binsize as u64 + 1) as usize]);
+            // bins2[pos2 as usize / binsize as usize] += 1;
 
         }
 
@@ -1178,15 +1215,16 @@ impl Pairs {
         let mut wtr = common_writer(output);
         
         for (contig, bins) in depth {
-            for (bin, count) in bins{
-                let bin_start = bin * binsize;
-                let mut bin_end = bin_start + binsize;
-                let size = contigsizes_data.get(&contig).unwrap_or(&0);
-                if bin_end > *size {
-                    bin_end = *size;
+            let size = contigsizes_data.get(&contig).unwrap_or(&0);
+            for (bin, count) in bins.iter().enumerate() {
+                let bin_start = bin * binsize as usize;
+                let mut bin_end = bin_start + binsize as usize;
+
+                if bin_end > (*size).try_into().unwrap() {
+                    bin_end = *size as usize;
                 }
-                wtr.write_all(format!("{}\t{}\t{}\t{}\n", 
-                                        contig, bin_start, bin_end, count).as_bytes()).unwrap();
+                write!(wtr, "{}\t{}\t{}\t{}\n", 
+                            contig, bin_start, bin_end, count).unwrap();
             }
         }
 
@@ -1230,13 +1268,18 @@ impl Pairs {
     }
 
     pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
-        type IvU8 = Interval<usize, u8>;
-        let bed = Bed3::new(break_bed);
+        type IvString = Interval<usize, String>;
+        let bed = Bed4::new(break_bed);
         let interval_hash = bed.to_interval_hash();
         
         let mut writer = common_writer(output);
 
-        let mut parse_result = self.parse().unwrap();
+        let mut parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
         let pair_header = &self.header;
         let contigsizes = &pair_header.chromsizes;
         let contigsizes_data: HashMap<String, u64> = contigsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
@@ -1247,14 +1290,16 @@ impl Pairs {
                 let interval = interval_hash.get(contig).unwrap();
                 let mut res = interval.iter().collect::<Vec<_>>();
                 for sub_res in res.iter() {
-                    let new_contig = format!("{}:{}-{}", contig, sub_res.start, sub_res.stop);
+                    // let new_contig = format!("{}:{}-{}", contig, sub_res.start, sub_res.stop);
+                    let new_contigs = &sub_res.val;
                     let size = sub_res.stop - sub_res.start + 1;
-                    new_contigsizes_data.insert(new_contig.clone(), size.try_into().unwrap());
+                    new_contigsizes_data.insert(new_contigs.clone(), size.try_into().unwrap());
                 }
             }
         }
         // HashMap to Vec<ChromSizeRecord>
-        let mut new_contigsizes: Vec<ChromSizeRecord> = new_contigsizes_data.iter().map(|(chrom, size)| ChromSizeRecord{chrom: chrom.clone(), size: *size}).collect();
+        let mut new_contigsizes: Vec<ChromSizeRecord> = new_contigsizes_data.iter().map(
+                    |(chrom, size)| ChromSizeRecord{chrom: chrom.clone(), size: *size}).collect();
 
         self.header = PairHeader::new();
         self.header.from_chromsizes(new_contigsizes);
@@ -1266,54 +1311,134 @@ impl Pairs {
                         .delimiter(b'\t')
                         .from_writer(writer);
         
+        // let mut buffer = Vec::with_capacity(100_000);
+        
+        // for record in rdr.records() {
+        //     let record = record.unwrap(); 
+        //     buffer.push(record);
+        //     if buffer.len() >= 100_000 {
+        //         buffer.par_iter_mut().map( |record| {
+        //             let chrom1 = &record[1];
+        //             let chrom2 = &record[3];
 
-        for (idx, record) in self.parse().unwrap().records().enumerate() {
+        //             let is_break_contig1 = interval_hash.contains_key(chrom1);
+        //             let is_break_contig2 = interval_hash.contains_key(chrom2);
+                    
+        //             if is_break_contig1 || is_break_contig2 {
+        //                 let mut new_record = csv::StringRecord::new();
+        //                 let pos1 = record[2].parse::<usize>().unwrap();
+        //                 let pos2 = record[4].parse::<usize>().unwrap();
+        //                 let (new_chrom1, new_pos1) = match is_break_contig1 {
+        //                     true => {
+        //                         let interval = interval_hash.get(chrom1).unwrap();
+        //                         let mut res = interval.find(pos1, pos1+1).collect::<Vec<_>>();
+        //                         if res.len() > 0 {
+        //                             let new_pos = pos1 - res[0].start;
+        //                             let new_chrom1 = format!("{}:{}-{}", chrom1, res[0].start, res[0].stop);
+        //                             (new_chrom1, new_pos )
+        //                         } else {
+        //                             (chrom1.to_string(), pos1 )
+        //                         }
+        //                     }
+        //                     false => {
+        //                         (chrom1.to_string(), pos1 )
+        //                     }
+        //                 };
+        
+        //                 let (new_chrom2, new_pos2) = match is_break_contig2 {
+        //                     true => {
+        //                         let interval = interval_hash.get(chrom2).unwrap();
+        //                         let mut res = interval.find(pos2, pos2+1).collect::<Vec<_>>();
+        //                         if res.len() > 0 {
+        //                             let new_pos = pos2 - res[0].start;
+        //                             let new_chrom2 = format!("{}:{}-{}", chrom2, res[0].start, res[0].stop);
+        //                             (new_chrom2, new_pos )
+        //                         } else {
+        //                             (chrom2.to_string(), pos2)
+        //                         }
+        //                     }
+        //                     false => {
+        //                         (chrom2.to_string(), pos2 )
+        //                     }
+        //                 };
+
+        //                 new_record.push_field(&record[0]);
+        //                 new_record.push_field(&new_chrom1);
+        //                 new_record.push_field(&new_pos1.to_string());
+        //                 new_record.push_field(&new_chrom2);
+        //                 new_record.push_field(&new_pos2.to_string());
+        //                 new_record.push_field(&record[5]);
+        //                 new_record.push_field(&record[6]);
+        
+        //                 if record.len() >= 8 {
+        //                     new_record.push_field(&record[7]);
+        //                 }
+
+        //                 new_record
+        //             }
+        //             else {
+        //                 record.clone()
+        //             }
+        //         });
+
+        //         for r in buffer.iter() {
+        //             wtr.write_record(r).unwrap();
+        //         }
+
+        //         buffer.clear();
+        //     }
+        // }
+
+     
+        for (idx, record) in rdr.records().enumerate() {
             let record = record.unwrap();
             let chrom1 = &record[1];
-            let pos1 = record[2].parse::<usize>().unwrap();
             let chrom2 = &record[3];
-            let pos2 = record[4].parse::<usize>().unwrap();
-
+        
             let is_break_contig1 = interval_hash.contains_key(chrom1);
             let is_break_contig2 = interval_hash.contains_key(chrom2);
 
             if is_break_contig1 || is_break_contig2 {
+                let pos1 = record[2].parse::<usize>().unwrap();
+                let pos2 = record[4].parse::<usize>().unwrap();
                 let mut new_record = csv::StringRecord::new();
-                let (new_chrom1, new_pos1) = match is_break_contig1 {
+                let (new_chrom1, new_pos1): (&str, usize) = match is_break_contig1 {
                     true => {
                         let interval = interval_hash.get(chrom1).unwrap();
                         let mut res = interval.find(pos1, pos1+1).collect::<Vec<_>>();
                         if res.len() > 0 {
-                            let new_pos = pos1 - res[0].start;
-                            let new_chrom1 = format!("{}:{}-{}", chrom1, res[0].start, res[0].stop);
+                            let new_pos = pos1 - res[0].start + 1;
+                            // let new_chrom1 = format!("{}:{}-{}", chrom1, res[0].start, res[0].stop);
+                            let new_chrom1 = &res[0].val;
                             (new_chrom1, new_pos )
                         } else {
-                            (chrom1.to_string(), pos1 )
+                            (chrom1, pos1 )
                         }
                     }
                     false => {
-                        (chrom1.to_string(), pos1 )
+                        (chrom1, pos1 )
                     }
                 };
 
-                let (new_chrom2, new_pos2) = match is_break_contig2 {
+                let (new_chrom2, new_pos2): (&str, usize) = match is_break_contig2 {
                     true => {
                         let interval = interval_hash.get(chrom2).unwrap();
                         let mut res = interval.find(pos2, pos2+1).collect::<Vec<_>>();
                         if res.len() > 0 {
-                            let new_pos = pos2 - res[0].start;
-                            let new_chrom2 = format!("{}:{}-{}", chrom2, res[0].start, res[0].stop);
-                            (new_chrom2, new_pos )
+                            let new_pos = pos2 - res[0].start + 1;
+                            // let new_chrom2 = format!("{}:{}-{}", chrom2, res[0].start, res[0].stop);
+                            let new_chrom2 = &res[0].val;
+                            (new_chrom2, new_pos)
                         } else {
-                            (chrom2.to_string(), pos2)
+                            (chrom2, pos2)
                         }
                     }
                     false => {
-                        (chrom2.to_string(), pos2 )
+                        (chrom2, pos2 )
                     }
                 };
 
-                new_record.push_field(&idx.to_string());
+                new_record.push_field(&record[0]);
                 new_record.push_field(&new_chrom1);
                 new_record.push_field(&new_pos1.to_string());
                 new_record.push_field(&new_chrom2);
@@ -1323,16 +1448,19 @@ impl Pairs {
 
                 if record.len() >= 8 {
                     new_record.push_field(&record[7]);
+                } 
+
+                if record.len() >= 9 {
+                    new_record.push_field(&record[8]);
                 }
 
-                wtr.write_record(&new_record);
+                wtr.write_record(&new_record).unwrap();
 
 
             } else {
-                wtr.write_record(&record);
+                wtr.write_record(&record).unwrap();
             }
 
-           
         }
 
         log::info!("Successful output new pairs file into `{}`", output);

@@ -14,7 +14,7 @@ use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
-use crate::bed::Bed3;
+use crate::bed::{ Bed3, Bed4 };
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, binify, ChromSize, ChromSizeRecord };
 use crate::pairs::{ PairRecord, PairHeader };
@@ -388,13 +388,13 @@ impl PoreCTable {
         Ok(())
     }
 
-    pub fn to_depth(&mut self, contigsizes: &String, binsize:u64, min_quality: u8, output: &String) {
+    pub fn to_depth(&mut self, contigsizes: &String, binsize:u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap as BrownHashMap;
         let mut parse_result = self.parse().unwrap();
         let contigsizes = ChromSize { file: contigsizes.to_string() };
         let contigsizes_data = contigsizes.data().unwrap();
 
-        let mut depth: BrownHashMap<String, BTreeMap<u64, u64>> = BrownHashMap::new();
+        let mut depth: BrownHashMap<String, BTreeMap<u32, u32>> = BrownHashMap::new();
         let bins_db = binify(&contigsizes_data, binsize).unwrap();
         // incomplete
     }
@@ -485,8 +485,8 @@ impl PoreCTable {
     }
 
     pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
-        type IvU8 = Interval<usize, u8>;
-        let bed = Bed3::new(break_bed);
+        type IvString = Interval<usize, String>;
+        let bed = Bed4::new(break_bed);
         let interval_hash = bed.to_interval_hash();
         let writer = common_writer(output);
         let mut wtr = csv::WriterBuilder::new()
@@ -521,10 +521,11 @@ impl PoreCTable {
                     new_record.push_field(&record[2]);
                     new_record.push_field(&record[3]);
                     new_record.push_field(&record[4]);
-                    let target = record[5].to_string();
-                    let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
+                    // let target = record[5].to_string();
+                    // let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
+                    let new_target = &res[0].val;
                     new_record.push_field(&new_target);
-
+                    
                     let new_target_start = target_start - res[0].start + 1;
                     let new_target_end = target_end - res[0].start + 1;
                     new_record.push_field(&new_target_start.to_string());

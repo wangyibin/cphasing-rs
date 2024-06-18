@@ -25,7 +25,7 @@ use serde::{ Deserialize, Serialize };
 use rayon::prelude::*;
 
 
-const BUFFER_SIZE: usize = 512 * 1024;
+const BUFFER_SIZE: usize = 64 * 1024;
 type DynResult<T> = anyResult<T, Box<dyn Error + 'static>>;
 
 pub trait BaseTable {
@@ -265,10 +265,10 @@ pub fn check_program(program: &str) {
 
 
 // split contig size by binsize
-pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u64) -> anyResult<HashMap<String, Vec<u64>>> {
+pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u32) -> anyResult<HashMap<String, Vec<u32>>> {
     
-    let bins_db: HashMap<String, Vec<u64>> = contigsizes.par_iter().map(|(contig, size)| {
-        let n_bins: u64 = size / binsize;
+    let bins_db: HashMap<String, Vec<u32>> = contigsizes.par_iter().map(|(contig, size)| {
+        let n_bins: u32 = (size / binsize as u64).try_into().unwrap();
         let mut bins = Vec::new();
         for i in 0..(n_bins + 1) {
             bins.push(i * binsize);
@@ -276,7 +276,7 @@ pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u64) -> anyResult<Has
 
 
         if let Some(last) = bins.last_mut() {
-            *last = *size;
+            *last = *size as u32;
         }
 
         (contig.to_string(), bins)

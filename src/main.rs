@@ -1,7 +1,7 @@
 #[macro_use] extern crate scan_fmt;
 use indexmap::IndexMap;
 use cphasing::aligner::read_bam;
-use cphasing::bam::split_bam;
+use cphasing::bam::{ split_bam, bam2pairs };
 use cphasing::cli::cli;
 use cphasing::core::{ 
     BaseTable,  common_reader, 
@@ -27,7 +27,10 @@ use std::io::Write;
 use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
+use jemallocator::Jemalloc;
 
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
 
@@ -620,7 +623,7 @@ fn main() {
         }
         Some(("pairs2depth", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
-            let binsize = sub_matches.get_one::<u64>("BINSIZE").expect("error");
+            let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
@@ -642,10 +645,19 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_bam(*min_quality, &output);
+            pairs.to_bam(*min_quality, &output, *threads);
+        }
+        Some(("bam2pairs", sub_matches)) => {
+            let bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            bam2pairs(&bam, *min_quality, &output, *threads);
+
+            
         }
         
         Some(("pairs-intersect", sub_matches)) => {

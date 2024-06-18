@@ -9,6 +9,7 @@ use rust_lapper::{Interval, Lapper};
 use crate::methy::ModRecord;
 
 type IvU8 = Interval<usize, u8>;
+type IvString = Interval<usize, String>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed3Record {
@@ -94,6 +95,96 @@ impl Iterator for Bed3 {
         }
     }
 }
+
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Bed4Record {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub gene: String,
+}
+
+pub struct Bed4 {
+    pub file: File,
+    pub reader: csv::Reader<File>,
+}
+
+impl Bed4 {
+    pub fn new(bed: &String) -> Self {
+        if Path::new(bed).exists() {
+            let file = File::open(bed).unwrap();
+            let reader = csv::ReaderBuilder::new()
+                .flexible(true)
+                .delimiter(b'\t')
+                .has_headers(false)
+                .from_reader(file.try_clone().unwrap());
+            Self {
+                file: file,
+                reader: reader,
+            }
+        } else {
+            Self {
+                file: File::create(bed).unwrap(),
+                reader: csv::ReaderBuilder::new()
+                    .flexible(true)
+                    .delimiter(b'\t')
+                    .has_headers(false)
+                    .from_reader(File::create(bed).unwrap().try_clone().unwrap()),
+            }
+        }
+        
+    }
+    
+    pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, String>> {
+        let mut hcr: HashMap<String, Vec<IvString>> = HashMap::new();
+        for i in self {
+            if hcr.contains_key(&i.chrom) {
+                hcr.get_mut(&i.chrom).unwrap().push(IvString {
+                    start: i.start,
+                    stop: i.end,
+                    val: i.gene,
+                });
+            } else {
+                hcr.insert(i.chrom, vec![IvString {
+                    start: i.start,
+                    stop: i.end,
+                    val: i.gene,
+                }]);
+            }
+        }
+        let mut hcr_lapper: HashMap<String, Lapper<usize, String>> = HashMap::new();
+        for (k, v) in hcr.iter() {
+            hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+        }
+        hcr_lapper
+    }
+}
+
+
+impl Iterator for Bed4 {
+    type Item = Bed4Record;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let record = self.reader.records().next();
+        match record {
+            Some(Ok(record)) => {
+                let chrom = record[0].to_string();
+                let start = record[1].parse::<usize>().unwrap();
+                let end = record[2].parse::<usize>().unwrap();
+                let gene = record[3].to_string();
+                Some(Bed4Record {
+                    chrom: chrom,
+                    start: start,
+                    end: end,
+                    gene: gene
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BedCpGRecord {
