@@ -161,6 +161,7 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("splitbam")
                 .about("split bam by record number")
+                .alias("split-bam")
                 .arg(arg!(<BAM> "align bam from `dorado`"))
                 .arg(
                     Arg::new("RECORD_NUM")
@@ -175,7 +176,22 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("output.split"))
                 .arg_required_else_help(true),
-        ).subcommand(
+        )
+        .subcommand(
+            Command::new("splitclm")
+                .alias("split-clm")
+                .about("Split clm by the cluster file.")
+                .arg(arg!(<CLM> "clm"))
+                .arg(arg!(<CLUSTER> "cluster"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .help("output dir, default splitclm")
+                        .value_parser(value_parser!(String))
+                        .default_value("./"))
+        )
+        .subcommand(
             Command::new("splitfastq")
                 .about("split fastq by record number")
                 .alias("splitfq")
@@ -232,6 +248,24 @@ pub fn cli() -> Command {
                         .short('o')
                         .value_parser(value_parser!(String))
                         .default_value("-"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("slide2raw")
+                .about("Convert slided read id to raw in bam file")
+                .arg(arg!(<BAM> "slided read mapping bam"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("4"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -738,12 +772,12 @@ pub fn cli() -> Command {
                         .action(ArgAction::SetTrue)
                         .default_value("false")
                         .help("Dont output split contacts."))
-                .arg(
-                    Arg::new("LOW_MEMORY")
-                        .long("low-memory")
-                        .action(ArgAction::SetTrue)
-                        .default_value("false")
-                        .help("use low memory mode, which is slower but use less memory."))
+                // .arg(
+                //     Arg::new("LOW_MEMORY")
+                //         .long("low-memory")
+                //         .action(ArgAction::SetTrue)
+                //         .default_value("false")
+                //         .help("use low memory mode, which is slower but use less memory."))
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")

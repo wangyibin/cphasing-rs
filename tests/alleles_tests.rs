@@ -40,12 +40,18 @@ mod tests {
     //     println!("{:?}", info);
     // }
 
+    // #[test]
+    // fn test_allele_table() {
+    //     let file = "/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-4.2/50k/test_wfmash_allele/ploidy-4.2.50k.allele.table";
+    //     let mut allele_table = AlleleTable::new(&file.to_string());
+    //     let allele_records = allele_table.allele_records().unwrap();
+    //     println!("{:?}", allele_records);
+    // }
     #[test]
-    fn test_allele_table() {
-        let file = "/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-4.2/50k/test_wfmash_allele/ploidy-4.2.50k.allele.table";
-        let mut allele_table = AlleleTable::new(&file.to_string());
-        let allele_records = allele_table.allele_records().unwrap();
-        println!("{:?}", allele_records);
+    fn test_alleles() {
+        let fasta = String::from("/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-2.2/2m/ploidy-2.2.2m.fasta");
+        let mut alleles = AllelesFasta::new(&fasta);
+        let mut allele = alleles.seqs();
+        alleles.run(19, 19);
     }
-
 }

@@ -1,8 +1,9 @@
 #[macro_use] extern crate scan_fmt;
 use indexmap::IndexMap;
 use cphasing::aligner::read_bam;
-use cphasing::bam::{ split_bam, bam2pairs };
+use cphasing::bam::{ split_bam, bam2pairs, slide2raw};
 use cphasing::cli::cli;
+use cphasing::clm::Clm;
 use cphasing::core::{ 
     BaseTable,  common_reader, 
     common_writer, ContigPair,
@@ -351,6 +352,15 @@ fn main() {
 
             split_bam(&input_bam, &output_prefix, *record_num).unwrap();
         }
+        Some(("splitclm", sub_matches)) => {
+            let input_clm = sub_matches.get_one::<String>("CLM").expect("required");
+            let cluster_file = sub_matches.get_one::<String>("CLUSTER").expect("required");
+            let output_dir = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let clm = Clm::new(&input_clm);
+            clm.split_clm(&cluster_file, &output_dir).unwrap();
+
+        }
         Some(("splitfastq", sub_matches)) => {
             let input_fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -368,6 +378,13 @@ fn main() {
 
             let fa = Fastx::new(&input_fastq);
             let _ = fa.slide(&output, *window, *step, *min_length, &filetype);
+        }
+        Some(("slide2raw", sub_matches)) => {
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            slide2raw(&input_bam, &output, *threads);
+            
         }
         Some(("simulator", sub_matches)) => {
             match sub_matches.subcommand() {
@@ -603,7 +620,7 @@ fn main() {
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let no_output_split_contacts = sub_matches.get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS").expect("error");
-            let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
+            // let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
@@ -617,7 +634,7 @@ fn main() {
                 false => true
             };
 
-            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, *low_memory);
+            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, true);
             // let contacts = Contacts::from_clm(&output);
             // contacts.write(&contacts.file);
         }

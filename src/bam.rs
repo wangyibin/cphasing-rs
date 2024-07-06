@@ -45,6 +45,40 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
     Ok(())
 }
 
+pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
+    let mut bam = if input_bam == &String::from("-") {
+        Reader::from_stdin().expect("Failed to read from stdin")
+    } else {
+        Reader::from_path(input_bam).expect("Failed to read from the provided path")
+    };
+    bam.set_threads(threads);
+
+    let header = Header::from_template(bam.header());
+    
+
+    let mut wtr = Writer::from_path(output, &header, bam::Format::Bam).unwrap();
+    wtr.set_threads(threads);
+    while let Some(r) = bam.records().next() {
+        let record = r.unwrap();
+        let mut new_record = record.clone();
+        let mut read_id = std::str::from_utf8(record.qname()).unwrap();
+        let (read_id, suffix) = read_id.rsplit_once("_").unwrap();
+        let mut flag = record.flags();
+        
+        if suffix != "0" {
+            flag  += 2048;
+        }
+
+        new_record.set_qname(read_id.as_bytes());
+        new_record.set_flags(flag);
+
+        wtr.write(&new_record).unwrap();
+        
+
+    }
+
+}
+
 
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
     
@@ -102,8 +136,8 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
         
         let mut chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
         let mut chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap())).unwrap().to_string();
-        let mut pos1 = record.pos();
-        let mut pos2 = record2.pos();
+        let mut pos1 = record.pos() + 1;
+        let mut pos2 = record2.pos() + 1;
         let mut strand1 = if record.is_reverse() { "-" } else { "+" };
         let mut strand2 = if record2.is_reverse() { "-" } else { "+" };
 

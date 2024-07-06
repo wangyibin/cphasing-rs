@@ -220,7 +220,7 @@ impl KPruner {
 
     pub fn prune(&mut self, method: &str, 
                 whitehash: &HashSet<&String>,
-                mut writer: &mut Box<dyn Write> ) {
+                mut writer: &mut Box<dyn Write + Send> ) {
         log::info!("Starting allelic identification ...");
         log::set_max_level(log::LevelFilter::Off);
         let unique_min = self.alleletable.header.to_unique_minimizer_density();

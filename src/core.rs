@@ -1,8 +1,10 @@
 use anyhow::Result as anyResult;
 use bio::io::fastq;
 use flate2::read;
+use flate2::write::GzEncoder;
 use gzp::deflate::Gzip;
 use gzp::{ZBuilder, Compression};
+use gzp::{par::compress::{ParCompress, ParCompressBuilder}};
 use rust_htslib::bam::{
     self, 
     record::Aux, record::Cigar, 
@@ -25,7 +27,7 @@ use serde::{ Deserialize, Serialize };
 use rayon::prelude::*;
 
 
-const BUFFER_SIZE: usize = 64 * 1024;
+const BUFFER_SIZE: usize = 128 * 1024;
 type DynResult<T> = anyResult<T, Box<dyn Error + 'static>>;
 
 pub trait BaseTable {
@@ -174,6 +176,28 @@ impl ContigPair2<'_> {
 
 }
 
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct ContigPair3<'a> {
+    pub Contig1: &'a str,
+    pub Contig2: &'a str,
+}
+
+impl ContigPair3<'_> {
+    pub fn new<'a>(contig1: &'a str, contig2: &'a str) -> ContigPair3<'a> {
+
+        ContigPair3 { Contig1: contig1, Contig2: contig2 }
+    }
+
+    pub fn swap(&mut self) {
+        std::mem::swap(&mut self.Contig1, &mut self.Contig2);
+    }
+
+    pub fn order(&mut self) {
+        if *self.Contig1 > *self.Contig2 {
+            self.swap();
+        }
+    }
+}
 
 
 
@@ -227,17 +251,18 @@ pub fn parse_output(path: Option<PathBuf>) -> anyResult<Box<dyn Write + Send + '
     Ok(op)
 }
 
-pub fn common_writer(file: &str) -> Box<dyn Write> {
+pub fn common_writer(file: &str) -> Box<dyn Write + Send + 'static> {
     let suffix = Path::new(file).extension();
     let file_path = PathBuf::from(file);
 
     let buffered = parse_output(Some(file_path)).expect("Error: failed to create output file ");
     
     if suffix == Some(OsStr::new("gz")) {
-        let writer = ZBuilder::<Gzip, _>::new()
-            .num_threads(8)
-            .compression_level(Compression::new(6))
+        let writer = ParCompressBuilder::<Gzip>::new()
+            .num_threads(8).expect("REASON")
+            // .compression_level(Compression::new(6))
             .from_writer(buffered);
+
         Box::new(writer)
     } else {
         buffered

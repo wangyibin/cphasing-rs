@@ -74,7 +74,7 @@ impl PoreCRecordPlus {
     pub fn from_paf_record(record: PAFLine, read_idx: u64,
                             identity: f32, filter_reason: String) -> Self {
         PoreCRecordPlus {
-            read_idx: read_idx,
+            read_idx,
             query_length: record.query_length,
             query_start: record.query_start,
             query_end: record.query_end,
@@ -84,8 +84,8 @@ impl PoreCRecordPlus {
             target_start: record.target_start,
             target_end: record.target_end,
             mapq: record.mapq,
-            identity: identity,
-            filter_reason: filter_reason
+            identity,
+            filter_reason
         }
     }
 
@@ -129,7 +129,7 @@ impl PoreCRecord {
     pub fn from_paf_record(record: PAFLine, read_idx: u64,
                             identity: f32, filter_reason: String) -> PoreCRecord{
         PoreCRecord {
-            read_idx: read_idx,
+            read_idx,
             query_length: record.query_length,
             query_start: record.query_start,
             query_end: record.query_end,
@@ -138,8 +138,8 @@ impl PoreCRecord {
             target_start: record.target_start,
             target_end: record.target_end,
             mapq: record.mapq,
-            identity: identity,
-            filter_reason: filter_reason
+            identity,
+            filter_reason
         }
     }
 
@@ -217,13 +217,23 @@ impl Concatemer {
 
     pub fn sort(&mut self) {
         // self.records.sort_by(| a, b | a.partial_cmp(&b).unwrap());
-        self.records.sort_unstable_by_key(|x| (x.target.clone(), x.target_start));
+        // self.records.sort_unstable_by_key(|x| (x.target, x.target_start));
+        self.records.sort_unstable_by(|a, b| {
+            match a.target.cmp(&b.target) {
+                std::cmp::Ordering::Equal => a.target_start.cmp(&b.target_start),
+                other => other,
+            }
+        });
+
     }
 
-    pub fn decompose(&mut self) -> Combinations<std::vec::IntoIter<PoreCRecord>> {
-        let r = self.records.clone();
-        r.into_iter().combinations(2)
+    // pub fn decompose(&mut self) -> Combinations<std::vec::IntoIter<PoreCRecord>> {
+    //     let r = self.records.clone();
+    //     r.into_iter().combinations(2)
         
+    // }
+    pub fn decompose(&self) -> Combinations<std::slice::Iter<'_, PoreCRecord>> {
+        self.records.iter().combinations(2)
     }
 
 }
@@ -249,12 +259,10 @@ impl ConcatemerSummary {
         let mut vec = self.summary.iter().collect::<Vec<_>>();
         vec.sort_by_key(|(key, _)| *key);
 
-        let string = vec.iter()
-                        .map(|(key, value)| format!("{}\t{}", key, value))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-        string
+        vec.iter()
+            .map(|(key, value)| format!("{}\t{}", key, value))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub fn save(&self, output: &String) {
@@ -339,6 +347,7 @@ impl PoreCTable {
         let mut flag: bool = false; 
         let mut read_id: u64 = 0;
         
+        let mut first_iteration = true;
         for (i, line) in rdr.deserialize().enumerate() {
             let record: PoreCRecord = match line {
                 Ok(v) => v,
@@ -347,9 +356,9 @@ impl PoreCTable {
                     continue
                 },
             };
-            if record.read_idx != old_read_idx && flag == true {
+            if !first_iteration && record.read_idx != old_read_idx {
                 let order = concatemer.count();
-                if (order < max_order) & (order >= min_order) {
+                if (order < max_order) && (order >= min_order) {
                     concatemer.sort();
                     concatemer_summary.count(&concatemer);
                     for pair in concatemer.decompose() {
@@ -362,7 +371,7 @@ impl PoreCTable {
                 
                 concatemer.clear();
             }
-            flag = true;
+            first_iteration = false;
             old_read_idx = record.read_idx;
             if record.mapq < min_quality {
                 continue
@@ -430,7 +439,31 @@ impl PoreCTable {
 
         }
         
-       
+        // let wtr = Arc::new(Mutex::new(wtr));
+        // let interval_hash = Arc::new(interval_hash);
+
+        // self.parse().unwrap().records().par_bridge().for_each(|line| {
+           
+        //     let record = match line {
+        //         Ok(v) => v,
+        //         Err(_) => {
+        //             log::warn!("Could not parse line");
+        //             return; =
+        //         },
+        //     };
+
+        //     let target_start = record[6].parse::<usize>().unwrap();
+        //     let target_end = record[7].parse::<usize>().unwrap();
+
+        //     let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval| {
+        //         interval.count(target_start, target_end) > 0
+        //     });
+
+        //     if is_in_regions ^ invert {
+        //         let mut wtr = wtr.lock().unwrap(); // 锁定写入器
+        //         wtr.write_record(&record).expect("Failed to write record");
+        //     }
+        // });
 
         // let output = output.to_string();
         // let input = common_reader(&self.file);

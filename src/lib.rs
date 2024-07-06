@@ -4,6 +4,7 @@ pub mod alleles;
 pub mod bam;
 pub mod bed;
 pub mod cli;
+pub mod clm;
 pub mod contacts;
 pub mod core;
 pub mod count_re;

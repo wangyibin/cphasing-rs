@@ -1,5 +1,6 @@
 #[warn(unused_assignments)]
 use anyhow::Result as anyResult;
+use lazy_static::lazy_static;
 use std::any::type_name;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -11,10 +12,16 @@ use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rust_lapper::{Interval, Lapper};
 
-use crate::bed::Bed3;
+use crate::bed::Bed3; 
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 use crate::porec::PoreCRecordPlus as PoreCRecord;
+
+
+const PASS_STR : &str = "pass";
+const SINGLETON_STR : &str = "singleton";
+const LOW_MQ_STR : &str = "low_mq";
+const COMPLEX_STR : &str = "complex";
 
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -133,20 +140,20 @@ impl Concatemer {
     }
 
     pub fn is_singleton(&self) -> bool {
-        let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
-        if pass_count == 1 {
-            true
-        } else {
-            false
-        }
+        self.filter_reasons.iter().filter(|&x| *x == "pass").count() == 1
     }
 
     pub fn parse_singleton(&mut self) {
-        for (i, record) in self.records.iter_mut().enumerate() {
-            if record.filter_reason == "pass" {
-                record.filter_reason = String::from("singleton");
-                self.filter_reasons[i] = String::from("singleton");
-            }
+        // for (i, record) in self.records.iter_mut().enumerate() {
+        //     if record.filter_reason == "pass" {
+        //         record.filter_reason = String::from("singleton");
+        //         self.filter_reasons[i] = String::from("singleton");
+        //     }
+        // }
+
+        if let Some(i) = self.records.iter().position(|r| r.filter_reason == "pass") {
+            self.records[i].filter_reason = String::from("singleton");
+            self.filter_reasons[i] = String::from("singleton");
         }
     }
 
@@ -198,12 +205,13 @@ impl Concatemer {
         }
     }
 
-    pub fn stat(&self) -> HashMap<String, u32> {
+    pub fn stat(&self) -> HashMap<&str, u32> {
         let mut pass_count: u32 = 0;
         let mut singleton_count: u32 = 0;
         let mut low_mq_count: u32 = 0;
         let mut complex_count: u32 = 0;
-        let mut stat_info: HashMap<String, u32> = HashMap::new();
+        let mut stat_info: HashMap<&str, u32> = HashMap::new();
+
 
         for filter_reason in self.filter_reasons.iter() {
             if filter_reason == &String::from("pass") {
@@ -218,10 +226,10 @@ impl Concatemer {
                 panic!("Unknown filter reason.");
             }
             
-            stat_info.insert("pass".to_string(), pass_count);
-            stat_info.insert("singleton".to_string(), singleton_count);
-            stat_info.insert("low_mq".to_string(), low_mq_count);
-            stat_info.insert("complex".to_string(), complex_count);
+            stat_info.insert(&PASS_STR, pass_count);
+            stat_info.insert(&SINGLETON_STR, singleton_count);
+            stat_info.insert(&LOW_MQ_STR, low_mq_count);
+            stat_info.insert(&COMPLEX_STR, complex_count);
 
         }
         stat_info
@@ -230,11 +238,11 @@ impl Concatemer {
     pub fn info(&self) -> &str {
         let stat_info = self.stat();
 
-        if stat_info["pass"] >= 2 {
+        if *stat_info.get("pass").unwrap_or(&0) >= 2 {
             return "pass";
-        } else if stat_info["low_mq"] >=1 && self.records.len() > 1  {
+        } else if *stat_info.get("low_mq").unwrap_or(&0) >=1 && self.records.len() > 1  {
             return "low_mq";
-        } else if stat_info["complex"] >= 1 && self.records.len() > 1 {
+        } else if *stat_info.get("complex").unwrap_or(&0) >= 1 && self.records.len() > 1 {
             return "complex";
         } else {
            return "singleton";

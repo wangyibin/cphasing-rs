@@ -1,4 +1,5 @@
 use anyhow::Result as anyResult;
+// use rdst::RadixSort;
 use std::borrow::Cow;
 use std::collections::{ HashMap, HashSet };
 use std::error::Error;
@@ -9,9 +10,15 @@ use serde::{ Deserialize, Serialize};
 use petgraph::prelude::*;
 use petgraph::visit::NodeIndexable;
 use rayon::prelude::*;
+use itertools::Itertools;
+use seq_io::prelude::*;
+use seq_io::fastq;
+use seq_io::fastx::Reader as FastxReader;
+use seq_io::parallel::{ read_process_fastx_records, read_process_recordsets };
 
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair, ContigPair2 };
+use crate::sketch::{ sketch, MinimizerInfo, MinimizerData };
 
 // maximal cliques 
 pub fn bron_kerbosch(
@@ -514,7 +521,7 @@ impl AlleleTable {
 
     pub fn to_contig_db(&self, method: &str,  whitehash: &HashSet<&String>) -> HashMap<&String, Vec<&AlleleRecord>> {
         let mut data: HashMap<&String, Vec<&AlleleRecord>> = HashMap::new();
-        'outer: for record in &self.allele_records {
+        for record in &self.allele_records {
            
             'inner: for contig in &record.data {
                 if whitehash.len() > 0 {
@@ -548,7 +555,7 @@ impl AlleleTable {
     pub fn get_allelic_contig_pairs(&self, whitehash: &HashSet<&String>) -> HashSet<ContigPair2> {
         let mut contig_pairs: HashSet<ContigPair2> = HashSet::new();
         
-        'outer: for record in &self.allele_records {
+        for record in &self.allele_records {
             for i in 0..record.data.len() - 1 {
                 'inner: for j in (i+1)..record.data.len() {
                     let contig1 = &record.data[i];
@@ -572,6 +579,132 @@ impl AlleleTable {
    
 
 
+}
+
+
+
+// https://github.com/lh3/partig
+
+pub struct Uinfo {
+    pub cnt1: u32,
+    pub cnt2: u32,
+}
+
+pub struct AllelesFasta {
+    pub file: String,
+    pub contigs: Vec<String>,
+    pub contig_lengths: HashMap<String, u64>,
+}
+
+impl BaseTable for AllelesFasta {
+    fn new(name: &String) -> AllelesFasta {
+        AllelesFasta { file: name.clone(), contigs: Vec::new(),
+                        contig_lengths: HashMap::new()}
+    }
+
+    fn file_name(&self) -> Cow<'_, str> {
+        let path = Path::new(&self.file);
+        path.file_name().expect("REASON").to_string_lossy()
+    }  
+
+    fn prefix(&self) -> String {
+        let binding = self.file_name().to_string();
+        let file_path = Path::new(&binding);
+        let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
+
+        (*file_prefix).to_string()
+    }  
+}
+
+impl AllelesFasta {
+    pub fn seqs(&mut self) -> anyResult<Vec<String>> {
+        let reader = common_reader(&self.file);
+        let reader = FastxReader::new(reader);
+        let mut seqs: HashMap<String, String> = HashMap::new();
+
+        read_process_fastx_records(reader, 4, 2,
+            |record, seq| { // runs in worker
+                *seq = record.seq_lines()
+                                .fold(String::new(), |s, seq| s +  &String::from_utf8(seq.to_vec()).unwrap());
+            },
+            |record, seq| { // runs in main thread
+                seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
+                None::<()>
+            }).unwrap();
+        
+        // sort
+        self.contigs = seqs.keys().map(|x| x.to_string()).sorted().collect();
+        self.contig_lengths = seqs.iter().map(|(k, v)| (k.clone(), v.len() as u64)).collect();
+        let seqs = self.contigs.par_iter().map(|x| seqs.get(x).unwrap().to_string()).collect::<Vec<String>>();
+        Ok(seqs)
+    }
+
+    fn collect_minimizers(&mut self, k: usize, w: usize) -> anyResult<Vec<MinimizerData>> {
+        let seqs = self.seqs().unwrap();
+
+        
+        let mut minimizers: Vec<MinimizerData> = seqs.par_iter().enumerate().flat_map(|(i, seq)| {
+
+            let rid: u64 = i as u64;
+            sketch(seq, rid, k, w)
+        }).collect();
+        // par sort 
+        minimizers.par_sort();
+        Ok(minimizers)
+    }
+
+    fn collect_anchors(&mut self, k: usize, w: usize, minimizers: &Vec<MinimizerData>) {
+        let mut anchor: Vec<Vec<u64>> = Vec::new();
+        let mz_num = minimizers.len();
+        let mut uinfo: HashMap<u64, Uinfo> = HashMap::new();
+        let max_occ = 100;
+    
+        let mut st = 0;
+        for j in 1..=mz_num {
+            
+            if (j == mz_num) ||  minimizers[j].minimizer != minimizers[st].minimizer {
+                if j - st == 1 {
+                    uinfo.entry(minimizers[st].info.rid).or_insert(Uinfo { cnt1: 0, cnt2: 0 });
+                    uinfo.get_mut(&minimizers[st].info.rid).unwrap().cnt1 += 1;
+                } 
+                if ( j - st == 1) || (j - st > max_occ) {
+                    st = j;
+                    continue;
+                }
+                println!("--------------");
+                println!("{}, {}", st, j);
+                println!("{}, {}", minimizers[st].minimizer, minimizers[j-1].minimizer);
+                for k in st..j {
+                    uinfo.entry(minimizers[k].info.rid).or_insert(Uinfo { cnt1: 0, cnt2: 0 });
+                    uinfo.get_mut(&minimizers[k].info.rid).unwrap().cnt2 += 1;
+                    for l in (k+1)..j {
+                        
+                        let rev = minimizers[k].info.rev ^ minimizers[l].info.rev;
+                        let lk = self.contig_lengths.get(&self.contigs[minimizers[k].info.rid as usize]);
+                        let ll = self.contig_lengths.get(&self.contigs[minimizers[l].info.rid as usize]);
+                        // println!("{}, {}", minimizers[k].minimizer, minimizers[l].minimizer);
+
+                    }
+                }
+            }
+            
+        }
+     
+    }
+
+    fn lis(&self) {
+        
+    }
+
+    fn calculate_simularity(&mut self) {
+
+    }
+
+
+    pub fn run(&mut self, k: usize, w: usize) {
+        let minimizers = self.collect_minimizers(k, w).unwrap();
+        self.collect_anchors(k, w, &minimizers);
+    }
 }
 
 

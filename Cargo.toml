@@ -28,7 +28,8 @@ gzp = { version = "0.11.3"}
 hashbrown = { version = "0.14.3", features=[ "rayon" ]}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
-jemallocator = { version = "*" }
+# indicatif = { version = "0.17.8", }
+jemallocator = { version = "0.5.4 " }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
@@ -42,6 +43,8 @@ pathfinding = { version = "4.3.2" }
 petgraph = { version = "0.6" }
 rand = { version = "0.8.5"}
 rayon = { version = "1.8.0" }
+rdxsort = { version = "0.3.0" }
+# rdst = { version = "0.20.14" }
 regex = { version = "1.9" }
 rust-lapper = { version = "1.1.0"}
 rust-htslib = { version = "0.44.1", default-features = false }
@@ -49,7 +52,7 @@ rust-htslib = { version = "0.44.1", default-features = false }
 serde = { version = "1.0", features = ["derive"]}
 seq_io = { version = "0.4.0-alpha.0" }
 tempfile = { version = "3.8.0" }
-# tokio = { features = ["fs", "io-util"] }
+# tokio = { version = "1", features = ["full"] }
 [profile.release]
 opt-level = 'z'
 lto = true

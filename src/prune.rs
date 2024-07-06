@@ -72,7 +72,7 @@ impl Pruner {
         }
     }
 
-    pub fn prune(&mut self, whitehash: &HashSet<&String>, mut writer: &mut Box<dyn Write> ) {
+    pub fn prune(&mut self, whitehash: &HashSet<&String>, mut writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
         let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method);
 
@@ -269,7 +269,7 @@ impl Pruner {
     }
 
 
-    pub fn kprune(&mut self, whitehash: &HashSet<&String>, method: &str, writer: &mut Box<dyn Write> ) {
+    pub fn kprune(&mut self, whitehash: &HashSet<&String>, method: &str, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
         let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method);
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs(whitehash);
