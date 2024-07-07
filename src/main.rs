@@ -1,5 +1,6 @@
 #[macro_use] extern crate scan_fmt;
 use indexmap::IndexMap;
+use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
 use cphasing::bam::{ split_bam, bam2pairs, slide2raw};
 use cphasing::cli::cli;
@@ -83,6 +84,27 @@ fn main() {
             }
 
         }
+        Some(("alleles", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
+            use rayon::prelude::*;
+
+            let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let kmer_size = sub_matches.get_one::<usize>("K").expect("error");
+            let window_size = sub_matches.get_one::<usize>("W").expect("error");
+            let minimum_similarity = sub_matches.get_one::<f64>("M").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
+            let mut alleles = AllelesFasta::new(&fasta);
+            alleles.run(*kmer_size, *window_size, *minimum_similarity, output);
+
+        }
+
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
             use rayon::prelude::*;

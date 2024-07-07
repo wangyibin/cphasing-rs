@@ -52,6 +52,6 @@ mod tests {
         let fasta = String::from("/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-2.2/2m/ploidy-2.2.2m.fasta");
         let mut alleles = AllelesFasta::new(&fasta);
         let mut allele = alleles.seqs();
-        alleles.run(19, 19);
+        alleles.run(19, 19, 0.85 , &String::from("output.allele.table"));
     }
 }

@@ -406,7 +406,7 @@ impl Contacts2 {
 
         let mut data: HashMap<ContigPair2, f64> = self.records.par_iter(
             ).map(|record| {
-                let mut contig_pair = match record.chrom1 > record.chrom2 {
+                let contig_pair = match record.chrom1 > record.chrom2 {
                     true => ContigPair2::new(&record.chrom2, &record.chrom1),
                     false => ContigPair2::new(&record.chrom1, &record.chrom2)
                 };

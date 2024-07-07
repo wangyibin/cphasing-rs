@@ -210,7 +210,7 @@ impl Fastx {
         let step = step as usize;
         let min_length = min_length as usize;
         let step = if step == 0 { window } else { step };
-        let mut total_reads = 0;
+        let total_reads = 0;
         let file_type = match filetype {
             "fasta" => FileType::Fasta,
             "fastq" => FileType::Fastq,

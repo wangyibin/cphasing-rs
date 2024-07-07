@@ -15,6 +15,7 @@ pub fn cli() -> Command {
         .allow_external_subcommands(true)
         .subcommand(
             Command::new("aligner")
+                .hide(true)
                 .about("align methylation reads")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(arg!(<BAM> "align bam from `dorado`"))
@@ -40,6 +41,7 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         ).subcommand(
             Command::new("realign")
+                .hide(true)
                 .about("rescue secondary alignment by high-quality alignments")
                 .arg(arg!(<PAF> "paf from minimap2 with secondary"))
                 .arg(
@@ -65,6 +67,43 @@ pub fn cli() -> Command {
                         .help("output file, default is stdout"))
                 .arg_required_else_help(true),
 
+        )
+        .subcommand(
+            Command::new("alleles")
+                .alias("allele")
+                .about("Identify the allelic contig pairs by self comparison (unstable and slowly)")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(
+                    Arg::new("K")
+                        .long("kmer-size")
+                        .short('k')
+                        .value_parser(value_parser!(usize))
+                        .default_value("19"))
+                .arg(
+                    Arg::new("W")
+                        .long("window-size")
+                        .short('w')
+                        .value_parser(value_parser!(usize))
+                        .default_value("19"))
+                .arg(
+                    Arg::new("M")
+                        .long("minimum-similarity")
+                        .short('m')
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.85"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("kprune")
@@ -998,6 +1037,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("optimize")
+            .hide(true)
             .about("optimize contigs (developing)")
             .arg(arg!(<SCORE> "score"))
             .arg(

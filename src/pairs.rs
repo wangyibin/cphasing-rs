@@ -821,8 +821,9 @@ impl Pairs {
         let mut contact_hash: HashMap<(SplitIdx, SplitIdx), u32>  = HashMap::new();
         let filter_mapq = min_quality > 0;
         let mut data: HashMap<(&u32, &u32), Vec<Vec<u32>>> = HashMap::new();
+        
         // let records: Vec<Result<StringRecord, csv::Error>> = rdr.records().collect();
-
+        
         rdr.records().enumerate().for_each(|(idx, record_result)| {
             match record_result {
                 Ok(record) => {

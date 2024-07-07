@@ -1,6 +1,7 @@
 use anyhow::Result as anyResult;
 // use rdst::RadixSort;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{ HashMap, HashSet };
 use std::error::Error;
 use std::path::Path;
@@ -10,6 +11,7 @@ use serde::{ Deserialize, Serialize};
 use petgraph::prelude::*;
 use petgraph::visit::NodeIndexable;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use itertools::Itertools;
 use seq_io::prelude::*;
 use seq_io::fastq;
@@ -590,10 +592,71 @@ pub struct Uinfo {
     pub cnt2: u32,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Anchor {
+    rid1: u32,
+    pos1: u32,
+    rid2: u32,
+    pos2: u32,
+    rev: u8,
+}
+
+impl Anchor {
+    fn swap(&mut self) {
+        std::mem::swap(&mut self.rid1, &mut self.rid2);
+        std::mem::swap(&mut self.pos1, &mut self.pos2);
+    }
+}
+
+impl Ord for Anchor {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rid1.cmp(&other.rid1).then(self.rid2.cmp(&other.rid2)).then(self.rev.cmp(&other.rev))    
+    }
+}
+
+impl PartialOrd for Anchor {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchRecord {
+    pub rid1: u32,
+    pub rid2: u32,
+    pub rev: u8,
+    pub mz1: u32,
+    pub mz2: u32,
+    pub mz_shared: u32,
+    pub similarity: f64,
+}
+
+impl PartialEq for MatchRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.rid1 == other.rid1 && self.rid2 == other.rid2 && self.rev == other.rev
+    }
+}
+
+impl Eq for MatchRecord {}
+
+impl Ord for MatchRecord {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rid1.cmp(&other.rid1).then(self.rid2.cmp(&other.rid2)).then(self.rev.cmp(&other.rev))
+    
+    }
+}
+
+impl PartialOrd for MatchRecord {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+
 pub struct AllelesFasta {
     pub file: String,
     pub contigs: Vec<String>,
-    pub contig_lengths: HashMap<String, u64>,
+    pub contig_lengths: HashMap<String, u32>,
 }
 
 impl BaseTable for AllelesFasta {
@@ -617,15 +680,16 @@ impl BaseTable for AllelesFasta {
 }
 
 impl AllelesFasta {
-    pub fn seqs(&mut self) -> anyResult<Vec<String>> {
+    pub fn seqs(&mut self) -> anyResult<Vec<Vec<u8>>> {
         let reader = common_reader(&self.file);
         let reader = FastxReader::new(reader);
-        let mut seqs: HashMap<String, String> = HashMap::new();
+        let mut seqs: HashMap<String, Vec<u8>> = HashMap::new();
 
         read_process_fastx_records(reader, 4, 2,
             |record, seq| { // runs in worker
                 *seq = record.seq_lines()
-                                .fold(String::new(), |s, seq| s +  &String::from_utf8(seq.to_vec()).unwrap());
+                            .fold(Vec::new(), |mut s, seq| {s.extend_from_slice(seq); s});
+                                // .fold(Vec::new(), |s, seq| s +  &String::from_utf8(seq.to_vec()).unwrap());
             },
             |record, seq| { // runs in main thread
                 seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
@@ -633,77 +697,271 @@ impl AllelesFasta {
             }).unwrap();
         
         // sort
+
         self.contigs = seqs.keys().map(|x| x.to_string()).sorted().collect();
-        self.contig_lengths = seqs.iter().map(|(k, v)| (k.clone(), v.len() as u64)).collect();
-        let seqs = self.contigs.par_iter().map(|x| seqs.get(x).unwrap().to_string()).collect::<Vec<String>>();
+        self.contig_lengths = seqs.iter().map(|(k, v)| (k.clone(), v.len() as u32)).collect();
+        let seqs = self.contigs.par_iter().map(|x| seqs.get(x).unwrap().clone()).collect::<Vec<Vec<u8>>>();
         Ok(seqs)
     }
 
     fn collect_minimizers(&mut self, k: usize, w: usize) -> anyResult<Vec<MinimizerData>> {
         let seqs = self.seqs().unwrap();
-
-        
+        log::info!("Load `{}` sequences.", seqs.len());
         let mut minimizers: Vec<MinimizerData> = seqs.par_iter().enumerate().flat_map(|(i, seq)| {
-
-            let rid: u64 = i as u64;
+            let rid: u32 = i as u32;
             sketch(seq, rid, k, w)
         }).collect();
-        // par sort 
+
+        log::info!("Collected {} minimizers.", minimizers.len());
+
         minimizers.par_sort();
         Ok(minimizers)
     }
 
-    fn collect_anchors(&mut self, k: usize, w: usize, minimizers: &Vec<MinimizerData>) {
+    fn collect_anchors<'a>(&'a self, k: usize, w: usize, minimizers: &'a Vec<MinimizerData>
+                            ) -> anyResult<(Vec<Anchor>, HashMap<&u32, usize>, HashMap<&u32, usize>)> {
+
         let mut anchor: Vec<Vec<u64>> = Vec::new();
         let mz_num = minimizers.len();
-        let mut uinfo: HashMap<u64, Uinfo> = HashMap::new();
         let max_occ = 100;
-    
-        let mut st = 0;
-        for j in 1..=mz_num {
-            
-            if (j == mz_num) ||  minimizers[j].minimizer != minimizers[st].minimizer {
-                if j - st == 1 {
-                    uinfo.entry(minimizers[st].info.rid).or_insert(Uinfo { cnt1: 0, cnt2: 0 });
-                    uinfo.get_mut(&minimizers[st].info.rid).unwrap().cnt1 += 1;
-                } 
-                if ( j - st == 1) || (j - st > max_occ) {
-                    st = j;
-                    continue;
-                }
-                println!("--------------");
-                println!("{}, {}", st, j);
-                println!("{}, {}", minimizers[st].minimizer, minimizers[j-1].minimizer);
-                for k in st..j {
-                    uinfo.entry(minimizers[k].info.rid).or_insert(Uinfo { cnt1: 0, cnt2: 0 });
-                    uinfo.get_mut(&minimizers[k].info.rid).unwrap().cnt2 += 1;
-                    for l in (k+1)..j {
-                        
-                        let rev = minimizers[k].info.rev ^ minimizers[l].info.rev;
-                        let lk = self.contig_lengths.get(&self.contigs[minimizers[k].info.rid as usize]);
-                        let ll = self.contig_lengths.get(&self.contigs[minimizers[l].info.rid as usize]);
-                        // println!("{}, {}", minimizers[k].minimizer, minimizers[l].minimizer);
+        let max_minimizer_count = 1000;
+        let mut unique_minimizer_count_db = HashMap::new();
+        let mut contig_minimizer_count_db = HashMap::new();
 
-                    }
+        let groups = minimizers.iter().group_by(|x| x.minimizer)
+                    .into_iter()
+                    .filter_map(|(minimizer, group)| {
+                        let group: Vec<&MinimizerData> = group.collect();
+                        let group_length = group.len();
+                        
+                        group.iter().for_each(|x| {
+                            *contig_minimizer_count_db.entry(&x.info.rid).or_insert(0) += 1;
+                        });
+                        
+                        if group_length == 1 {
+                            *unique_minimizer_count_db.entry(&group[0].info.rid).or_insert(0) += 1;
+                            return None;
+                        }
+                        
+                        if group_length > max_minimizer_count{
+                            return None;
+                        }
+                        Some( if group_length > max_occ {
+                            group.into_iter().take(max_occ).collect()
+                        } else {
+                            group
+                        })
+
+                    }).collect::<Vec<Vec<&MinimizerData>>>();
+        
+        let mut anchor = groups.par_iter()
+                            .flat_map(|group| {
+                                let group_length = group.len();
+                                let mut pairs = Vec::new();
+                                for i in 0..group_length {
+                                    for j in (i+1)..group_length {
+                                        if group[i].info.rid == group[j].info.rid {
+                                            continue;
+                                        }
+
+                                        let rev_xor = group[i].info.rev ^ group[j].info.rev;
+                                        let anchor1 = Anchor { rid1: group[i].info.rid, 
+                                                                    pos1: group[i].info.pos,
+                                                                    rid2: group[j].info.rid,
+                                                                    pos2: group[j].info.pos, 
+                                                                    rev: rev_xor };
+                                        pairs.push(anchor1);
+
+                                        let anchor2 = Anchor { rid1: group[j].info.rid, 
+                                                                pos1: group[j].info.pos,
+                                                                rid2: group[i].info.rid,
+                                                                pos2: group[i].info.pos, 
+                                                                rev: rev_xor };
+                                        pairs.push(anchor2);
+
+                                    }
+                                }
+                                pairs.into_par_iter()
+                                
+                            }).collect::<Vec<_>>();
+
+        anchor.par_sort();
+        log::info!("Collected {} anchors.", anchor.len());
+        Ok((anchor, unique_minimizer_count_db, contig_minimizer_count_db))
+                        
+    }
+
+
+    // longest increasing sequences 
+    pub fn lis<'a>(&'a self, anchor: &'a Vec<&Anchor>) -> usize {
+        let n = anchor.len();
+        let mut dp: Vec<usize> = vec![1; n];
+        for i in 0..n {
+            for j in 0..i {
+                if anchor[i].pos2 > anchor[j].pos2 {
+                    dp[i] = dp[i].max(dp[j] + 1);
                 }
             }
-            
         }
-     
+
+        dp.into_iter().max().unwrap()
+
     }
 
-    fn lis(&self) {
+    // https://rosettacode.org/wiki/Longest_increasing_subsequence
+    pub fn lis_optimized(&self, anchors: &Vec<&Anchor>) -> usize {
+       
+        let x: Vec<_> = anchors.iter().map(|x| x.pos2).collect();
+        let n = x.len();
+        let mut m = vec![usize::MAX; n + 1];
+        let mut p = vec![usize::MAX; n];
+        let mut l = 0;
+
+        for i in 0..n {
+            let mut lo = 1;
+            let mut hi = l;
+
+            while lo <= hi {
+                let mid = (lo + hi) / 2;
+
+                let mid_index = m[mid];
+                if mid_index != usize::MAX {
+                    let mid_value = x[mid_index];
+                    if mid_value < x[i] {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid - 1;
+                    }
+                } else {
+                    break; 
+                }
+            }
+
+            let new_l = lo;
+            p[i] = m.get(new_l - 1).copied().unwrap_or(usize::MAX);
+            m[new_l] = i;
+
+            if new_l > l {
+                l = new_l;
+            }
+        }
+
+        l
+    }
+
+    fn calculate_simularity<'a>(&'a self, anchor: &'a Vec<Anchor>, 
+                                contig_minimizer_count_db: &HashMap<&u32, usize>,
+                                k: usize, min_sim: f64) -> Vec<MatchRecord> {
+        let min_cnt = 5;
         
+        let mut anchors = anchor.iter().group_by(|x| (x.rid1, x.rid2, x.rev))
+                    .into_iter()
+                    .filter_map(|(rid, group)|{
+                        let mut group: Vec<_> = group.collect();
+                        let rev = group[0].rev;
+                        if rev == 1 {
+                            group.sort_unstable_by_key(|x| std::cmp::Reverse(x.pos1));
+                        } else {
+                            group.sort_unstable_by_key(|x| x.pos1);
+                        }
+                        
+                        if group.len() < min_cnt {
+                            return None;
+                        }
+                        Some(group)
+                    } ).collect::<Vec<Vec<&Anchor>>>();
+       
+        let res = anchors.par_iter().filter_map(|group| {
+            let m = self.lis_optimized(group);
+            if m < min_cnt {
+                return None;
+            }
+
+          
+            let n1 = contig_minimizer_count_db.get(&group[0].rid1).unwrap();
+            let n2 = contig_minimizer_count_db.get(&group[0].rid2).unwrap();
+
+            let similarity = (2.0 * (m as f64 / (n1 + n2) as f64)).powf(1.0 / k as f64);
+            if similarity >= min_sim {
+                
+                Some(MatchRecord { rid1: group[0].rid1, rid2: group[0].rid2, rev: group[0].rev, 
+                            mz1: *n1 as u32, mz2: *n2 as u32, 
+                            mz_shared: m as u32, similarity: similarity })
+            } else {
+                return None;
+            }
+            
+            }).collect::<Vec<MatchRecord>>();
+        
+        log::info!("{} matches found.", res.len());
+
+        res 
     }
 
-    fn calculate_simularity(&mut self) {
 
+    pub fn symmetric_and_filter(&self, matches: &mut Vec<MatchRecord>) -> Vec<MatchRecord>  {
+        
+        let mut filtered_matches: HashMap::<(u32, u32), &MatchRecord> = HashMap::new();
+        for record in matches.iter() {
+            let rid1 = record.rid1;
+            let rid2 = record.rid2;
+            let rev = record.rev;
+            let similarity = record.similarity;
+            let key = (rid1, rid2);
+            if filtered_matches.contains_key(&key) {
+                let prev = filtered_matches.get(&key).unwrap();
+                if prev.similarity < similarity {
+                    filtered_matches.insert(key, record);
+                }
+            } else {
+                filtered_matches.insert(key, record);
+            }
+        }
+
+        let mut res = Vec::new();
+        for (_, record) in filtered_matches.iter() {
+            res.push(record.clone().clone());
+            let record2 = MatchRecord { rid1: record.rid2, rid2: record.rid1, rev: record.rev, 
+                                        mz1: record.mz2, mz2: record.mz1, mz_shared: record.mz_shared, 
+                                        similarity: record.similarity };
+            res.push(record2);
+
+        }
+
+
+        res 
+    
     }
 
-
-    pub fn run(&mut self, k: usize, w: usize) {
+    pub fn run(&mut self, k: usize, w: usize,
+                m: f64, output: &String) {
+        // get time 
+        let start = std::time::Instant::now();
         let minimizers = self.collect_minimizers(k, w).unwrap();
-        self.collect_anchors(k, w, &minimizers);
+        
+        let (anchor, unique_minimizer_count_db, contig_minimizer_count_db) = self.collect_anchors(k, w, &minimizers).unwrap();
+        
+        let mut matches = self.calculate_simularity(&anchor, &contig_minimizer_count_db, k, m);
+       
+        let matches = self.symmetric_and_filter(&mut matches);
+
+        let mut writer = common_writer(output);
+        
+        for (i, record) in matches.iter().enumerate() {
+            let contig1 = self.contigs.get(record.rid1 as usize).unwrap();
+            let contig2 = self.contigs.get(record.rid2 as usize).unwrap();
+            let strand = if record.rev == 1 { "-1" } else { "1" };
+            writer.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+                                i, i, 
+                                contig1, contig2,  
+                                record.mz1, record.mz2, 
+                                record.mz_shared,
+                                record.similarity, strand).as_bytes()).unwrap();
+        }
+        writer.flush().unwrap();
+        
+      
+
     }
 }
 
