@@ -11,11 +11,13 @@ path = "src/main.rs"
 opt-level = 1
 overflow-checks = false
 
+
 [dependencies]
 # minimap2 = { path = "../minimap2-rs", features = ["default"]}
 anyhow = "1.0.70"
 bio = { version = "1.5.0" }
 block-aligner = { version = "0.5.0", features = ["simd_avx2"] }
+bytecount = "0.6.2"
 clap = { version = "4.4.10" }
 chrono = { version = "0.4.24" }
 crossbeam = "0.8.2"

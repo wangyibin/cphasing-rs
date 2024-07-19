@@ -1,12 +1,15 @@
+#![allow(unused)]
 use anyhow::Result as anyResult;
+use bytecount;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use csv::StringRecord;
 use log::LevelFilter;
+use rand::prelude::*;
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
     record::Cigar, record::CigarString,
-    Read, Reader, Record, HeaderView, 
+    Reader, Record, HeaderView, 
     Header, header::HeaderRecord,
     Writer};
 use std::borrow::Cow;
@@ -16,8 +19,8 @@ use std::fs::File;
 use std::hash::{ Hash, Hasher };
 use std::path::Path;
 use std::thread;
-use std::sync::{ Arc, Mutex };
-use std::io::{ Write, BufReader, BufRead };
+use std::sync::{ Arc, Mutex , mpsc};
+use std::io::{ Write, BufReader, BufRead, Read };
 use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
@@ -1105,30 +1108,56 @@ impl Pairs {
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
         let mut reader = common_reader(&self.file_name());
-        
-        let mut line = String::new();
-        while reader.read_line(&mut line).unwrap() > 0 {
+        let mut buffer = Vec::with_capacity(8192*2);     
+        for line in reader.lines().filter_map(|line| line.ok()) {
             if line.starts_with('#') {
-                line.clear();
                 continue;
             }
-            let record = line.trim_end_matches('\n').split("\t").collect::<Vec<&str>>();
-            let mapq_result = record[7].parse::<u8>();
-            match mapq_result {
-                Ok(mapq) => {
-                    if mapq >= min_quality {
-                        wtr.write_all(line.as_bytes()).unwrap();
+
+            let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
+            if let Ok(mapq) = record[7].parse::<u8>() {
+                if mapq >= min_quality {
+                    buffer.push(line);
+                    if buffer.len() >= 1000 {
+                        wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
+                        wtr.write_all(b"\n").unwrap();
+                        buffer.clear();
                     }
-                },
-                Err(_) => {
-                    eprintln!("Warning: could not parse mapq value: {}", record[7]);
                 }
+            } else {
+                eprintln!("Warning: could not parse mapq value: {}", record[7]);
             }
+        }
+        
+        if !buffer.is_empty() {
+            wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
+            wtr.write_all(b"\n").unwrap();
+        }
+
+           
+        // let mut line = String::new();
+        // while reader.read_line(&mut line).unwrap() > 0 {
+        //     if line.starts_with('#') {
+        //         line.clear();
+        //         continue;
+        //     }
+        //     let record = line.trim_end_matches('\n').split("\t").collect::<Vec<&str>>();
+        //     let mapq_result = record[7].parse::<u8>();
+        //     match mapq_result {
+        //         Ok(mapq) => {
+        //             if mapq >= min_quality {
+        //                 wtr.write_all(line.as_bytes()).unwrap();
+        //             }
+        //         },
+        //         Err(_) => {
+        //             eprintln!("Warning: could not parse mapq value: {}", record[7]);
+        //         }
+        //     }
     
         
-            line.clear();
+        //     line.clear();
 
-        }
+        // }
         // for line in reader.lines() {
         //     let line = line.unwrap();
         //     if line.starts_with('#') {
@@ -1159,6 +1188,7 @@ impl Pairs {
                         .has_headers(false)
                         .delimiter(b'\t')
                         .from_writer(writer);
+        
 
         for (idx, record) in self.parse().unwrap().records().enumerate() {
             let record = record.unwrap();
@@ -1177,11 +1207,37 @@ impl Pairs {
                     interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
                 })
             });
+
             if is_in_regions ^ invert {
                 wtr.write_record(&record);
             }
               
         }
+        // // too slow with lock
+        // let wtr = Arc::new(Mutex::new(wtr));
+        // self.parse().unwrap().records().par_bridge().for_each(|record| {
+        //     let record = record.unwrap();
+    
+        //     let mapq = record.get(7).unwrap_or("60").parse::<u8>().unwrap_or(60);
+        //     if mapq < min_quality {
+        //         return;
+        //     }
+        //     let chrom1 = &record[1];
+        //     let pos1 = record[2].parse::<usize>().unwrap();
+        //     let chrom2 = &record[3];
+        //     let pos2 = record[4].parse::<usize>().unwrap();
+    
+           
+        //     let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
+        //         interval_hash.get(chrom2).map_or(false, |interval2| {
+        //             interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
+        //         })
+        //     });
+        //     if is_in_regions ^ invert {
+        //         let mut wtr = wtr.lock().unwrap();
+        //         wtr.write_record(&record);
+        //     }
+        // });
 
         log::info!("Successful output new pairs file into `{}`", output);
     }
@@ -1316,23 +1372,29 @@ impl Pairs {
                 }
             }
 
+            let contig1 = &record[1];
+            let contig2 = &record[3];
             let pos1 = record[2].parse::<u32>().unwrap();
             let pos2 = record[4].parse::<u32>().unwrap();
 
             if !depth.contains_key(&record[1]) {
-                let size1 = contigsizes_data.get(&record[1]).unwrap_or(&0);
-                if size1 != &0 {
-                    let mut bins1 = vec![0; (*size1 / binsize as u64 + 1) as usize];
+                let size1 = *contigsizes_data.get(&record[1]).unwrap_or(&0);
+                if size1 != 0 {
+                    // let mut bins1 = vec![0; (*size1 / binsize as u64 + 1) as usize];
 
-                    depth.insert(record[1].to_string(), bins1);
+                    // depth.insert(record[1].to_string(), bins1);
+                    let bins1 = depth.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
+                    bins1[pos1 as usize / binsize as usize] += 1;
                 }
         
             } 
             if !depth.contains_key(&record[3]) {
-                let size2 = contigsizes_data.get(&record[3]).unwrap_or(&0);
-                if size2 != &0 {
-                    let mut bins2 = vec![0; (*size2 / binsize as u64 + 1) as usize];
-                    depth.insert(record[3].to_string(), bins2);
+                let size2 = *contigsizes_data.get(&record[3]).unwrap_or(&0);
+                if size2 != 0 {
+                    // let mut bins2 = vec![0; (*size2 / binsize as u64 + 1) as usize];
+                    // depth.insert(record[3].to_string(), bins2);
+                    let bins2 = depth.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
+                    bins2[pos2 as usize / binsize as usize] += 1;
                 }
                
             }
@@ -1349,20 +1411,37 @@ impl Pairs {
 
         let depth: BTreeMap<_, _> = depth.into_iter().collect();
         let mut wtr = common_writer(output);
-        
-        for (contig, bins) in depth {
-            let size = contigsizes_data.get(&contig).unwrap_or(&0);
-            for (bin, count) in bins.iter().enumerate() {
-                let bin_start = bin * binsize as usize;
-                let mut bin_end = bin_start + binsize as usize;
+        let wtr = Arc::new(Mutex::new(wtr));
+        // for (contig, bins) in depth {
+        //     let size = contigsizes_data.get(&contig).unwrap_or(&0);
+        //     for (bin, count) in bins.iter().enumerate() {
+        //         let bin_start = bin * binsize as usize;
+        //         let mut bin_end = bin_start + binsize as usize;
 
-                if bin_end > (*size).try_into().unwrap() {
-                    bin_end = *size as usize;
-                }
-                write!(wtr, "{}\t{}\t{}\t{}\n", 
-                            contig, bin_start, bin_end, count).unwrap();
+        //         if bin_end > (*size).try_into().unwrap() {
+        //             bin_end = *size as usize;
+        //         }
+        //         write!(wtr, "{}\t{}\t{}\t{}\n", 
+        //                     contig, bin_start, bin_end, count).unwrap();
+        //     }
+        // }
+
+        depth.par_iter().for_each(|(contig, bins)| {
+            let size = contigsizes_data.get(contig).unwrap_or(&0);
+            let mut buffer = Vec::with_capacity(128);
+            for (bin, count) in bins.iter().enumerate() {
+                        let bin_start = bin * binsize as usize;
+                        let mut bin_end = bin_start + binsize as usize;
+        
+                        if bin_end > (*size).try_into().unwrap() {
+                            bin_end = *size as usize;
+                        }
+                        
+                        buffer.extend_from_slice(format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes());
             }
-        }
+            let mut wtr = wtr.lock().unwrap();
+            wtr.write_all(&buffer).unwrap();
+        });
 
         log::info!("Successful output depth file into `{}`", output);
         // let depth = Arc::new(Mutex::new(DashMap::new()));
@@ -1524,7 +1603,110 @@ impl Pairs {
         log::info!("Successful output new pairs file into `{}`", output);
     }
 
+    pub fn downsample(&mut self, n: usize, p: f64, seed: usize, output: &String) {
+
+        let seed_bytes = seed.to_ne_bytes();
+        let mut seed_array = [0u8; 32];
+        for (i, byte) in seed_bytes.iter().enumerate() {
+            seed_array[i] = *byte;
+        }
+        
+        
+        let percent = if p > 0.0 {
+            p
+        } else {
+            let reader = common_reader(&self.file_name());
+            let mut total_count = 0;
+            let mut skip_count = 0;
+            for chunk in reader.bytes() {
+                let bytes = chunk.unwrap();
+                total_count += bytecount::count(&[bytes], b'\n');
+                skip_count += bytecount::count(&[bytes], b'#');
+            }
+            let record_counts = total_count - skip_count;
+            log::info!("Total records: {}", record_counts);
+            n as f64 / record_counts as f64
+
+        };
+        
+        let reader = common_reader(&self.file_name());
+
+        let mut wtr = common_writer(output);
+       
+        let mut output_counts = 0;
+        let mut rng = StdRng::from_seed(seed_array);
+        for (idx, record) in reader.lines().enumerate() {
+            let record = record.unwrap();
+            if record.starts_with("#") {
+                writeln!(wtr, "{}", record);
+                continue;
+            }
+            let random_number: f64 = rng.gen();
+            if random_number < percent {
+                output_counts += 1;
+                if ((output_counts > n) && (p == 0.0)) {
+                    break;
+                }
+                writeln!(wtr, "{}", record);
+            }
+        }
+        
+        // let (tx, rx) = mpsc::channel();
+        // let num_threads = 10;
+        // reader.lines().enumerate().par_bridge()
+        //     .for_each_with(tx.clone(), |s, (idx, record)| {
+        //         let record = record.unwrap();
+        //         if record.starts_with("#") {
+        //             tx.send(record).unwrap();
+
+        //         } else {
+        //             let mut rng = StdRng::from_seed(seed_array);
+        //             let random_number: f64 = rng.gen();
+        //             if random_number < percent {
+        //                 tx.send(record).unwrap();
+        //             }
+        //         }
+        //     });
+        
+        // let mut output_counts = 0;
+        // for record in rx {
+        //     if output_counts > n && p == 0.0 {
+        //         break;
+        //     }
+
+        //     writeln!(wtr, "{}", record);
+        //     output_counts += 1
+        // }
+
+
+
+
+        log::info!("Successful output new pairs file into `{}`", output);
+        
+    }
 }
 
+
+pub fn merge_pairs(input: Vec<&String>, output: &String) {
+    let mut wtr = common_writer(output);
+
+    for (i, file) in input.iter().enumerate() {
+        let mut reader = common_reader(file);
+        for line in reader.lines() {
+            let line = line.unwrap();
+            if line.starts_with("#") {
+                if i == 0  {
+                    writeln!(wtr, "{}", line);
+                }  else {
+                    continue
+                }
+            } else {
+                writeln!(wtr, "{}", line);
+            }
+
+        }
+    }
+    wtr.flush().unwrap()
+}
 
 

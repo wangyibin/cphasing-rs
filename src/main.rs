@@ -17,13 +17,14 @@ use cphasing::methy::{ modbam2fastq, modify_fasta };
 use cphasing::optimize::ContigScoreTable;
 use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
-use cphasing::pairs::Pairs;
+use cphasing::pairs::{ Pairs, merge_pairs };
 use cphasing::porec::{
         PoreCTable, merge_porec_tables };
 use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::prune::{ Pruner };
 use cphasing::simulation::{ 
-        simulation_from_split_read, simulate_porec };
+        simulation_from_split_read, simulate_porec,
+        simulate_hic };
 use std::collections::{ HashMap, HashSet };
 use std::io::Write; 
 use chrono::Local;
@@ -424,6 +425,16 @@ fn main() {
 
                     simulate_porec(&fasta, &vcf, &bed, &output);
                 }
+                Some(("hic", sub_sub_matches)) => {
+                    let fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
+                    let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
+                    let bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
+                    let min_mapq = sub_sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+                    let threads = sub_sub_matches.get_one::<usize>("THREADS").expect("error");
+                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+                    simulate_hic(&fasta, &vcf, &bam, *min_mapq, *threads, &output);
+                }
                 _ => {
                     eprintln!("No such subcommand.");
                 }
@@ -600,6 +611,32 @@ fn main() {
             let prt = PoreCTable::new(&table_output);
             prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
 
+        }
+        Some(("pairs-downsample", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let percent = sub_matches.get_one::<f64>("PERCENT").expect("error");
+            let number = sub_matches.get_one::<usize>("NUMBER").expect("error");
+            let seed = sub_matches.get_one::<usize>("SEED").expect("error");  
+
+            match (percent, number) {
+                (0.0, 0) => {
+                    eprintln!("Either percent or number must be greater than 0.");
+                    std::process::exit(1);
+                }
+                (0.0, _) => {
+                    Pairs::new(&pairs).downsample(*number, *percent, *seed, &output);
+                }
+                (_, _) => {
+                    Pairs::new(&pairs).downsample(*number, *percent, *seed, &output);
+                }
+            }
+        }
+        Some(("pairs-merge", sub_matches)) => {
+            let files: Vec<_> = sub_matches.get_many::<String>("FILES").expect("required").collect();
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            merge_pairs(files, output)
         }
         Some(("pairs-break", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

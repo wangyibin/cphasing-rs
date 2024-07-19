@@ -345,6 +345,35 @@ pub fn cli() -> Command {
                         .help("output file, default is stdout"))
                         .arg_required_else_help(true),
                         )   
+                    .subcommand(
+                        Command::new("hic")
+                            .about("simulate hic reads")
+                            .arg(arg!(<FASTA> "fasta"))
+                            .arg(arg!(<VCF> "vcf"))
+                            .arg(arg!(<BAM> "bam"))
+                            .arg(
+                                Arg::new("MIN_MAPQ")
+                                    .long("--min-mapq")
+                                    .short('q')
+                                    .value_parser(value_parser!(u8))
+                                    .default_value("1")
+                            )
+                            .arg(
+                                Arg::new("THREADS")
+                                    .long("threads")
+                                    .short('t')
+                                    .value_parser(value_parser!(usize))
+                                    .default_value("4")
+                            )
+                            .arg(
+                                Arg::new("OUTPUT")
+                                    .long("output")
+                                    .short('o')
+                                    .value_parser(value_parser!(String))
+                                    .default_value("-")
+                            .help("output file, default is stdout"))
+                            .arg_required_else_help(true),
+                            )
         )
         .subcommand(
             Command::new("kmer")
@@ -710,6 +739,60 @@ pub fn cli() -> Command {
                         .default_value("50")
                         .help("max order of the concatemers")
                     )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout")
+                )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs-downsample")
+                .alias("down-pairs")
+                .alias("downsample-pairs")
+                .alias("downpairs")
+                .about("downsample pairs")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("NUMBER")
+                        .long("number")
+                        .short('n')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000"))
+            
+                .arg(
+                    Arg::new("PERCENT")
+                        .long("percent")
+                        .short('p')
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.0"))
+                .arg(
+                    Arg::new("SEED")
+                        .long("seed")
+                        .short('s')
+                        .value_parser(value_parser!(usize))
+                        .default_value("42"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("pairs-merge")
+                .alias("pairsmerge")
+                .alias("merge-pairs")
+                .about("merge multiple pairs to one")
+                .arg(
+                    Arg::new("FILES")
+                        .action(ArgAction::Set)
+                        .num_args(0..)
+                )
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

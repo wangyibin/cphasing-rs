@@ -592,7 +592,7 @@ pub struct Uinfo {
     pub cnt2: u32,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Anchor {
     rid1: u32,
     pos1: u32,
@@ -602,10 +602,21 @@ pub struct Anchor {
 }
 
 impl Anchor {
-    fn swap(&mut self) {
+    fn swap_mut(&mut self) {
         std::mem::swap(&mut self.rid1, &mut self.rid2);
         std::mem::swap(&mut self.pos1, &mut self.pos2);
     }
+
+    fn swap(&self) -> Self {
+        Anchor {
+            rid1: self.rid2,
+            pos1: self.pos2,
+            rid2: self.rid1,
+            pos2: self.pos1,
+            rev: self.rev
+        }
+    }
+    
 }
 
 impl Ord for Anchor {
@@ -620,7 +631,7 @@ impl PartialOrd for Anchor {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct MatchRecord {
     pub rid1: u32,
     pub rid2: u32,
@@ -718,8 +729,8 @@ impl AllelesFasta {
         Ok(minimizers)
     }
 
-    fn collect_anchors<'a>(&'a self, k: usize, w: usize, minimizers: &'a Vec<MinimizerData>
-                            ) -> anyResult<(Vec<Anchor>, HashMap<&u32, usize>, HashMap<&u32, usize>)> {
+    fn collect_anchors<'a>(&'a self, k: usize, w: usize, mut minimizers: Vec<MinimizerData>
+                            ) -> anyResult<(Vec<Anchor>, HashMap<u32, usize>, HashMap<u32, usize>)> {
 
         let mut anchor: Vec<Vec<u64>> = Vec::new();
         let mz_num = minimizers.len();
@@ -728,36 +739,43 @@ impl AllelesFasta {
         let mut unique_minimizer_count_db = HashMap::new();
         let mut contig_minimizer_count_db = HashMap::new();
 
-        let groups = minimizers.iter().group_by(|x| x.minimizer)
+        let groups = minimizers.iter_mut().group_by(move |x| x.minimizer)
                     .into_iter()
                     .filter_map(|(minimizer, group)| {
-                        let group: Vec<&MinimizerData> = group.collect();
+                        let group: Vec<&mut MinimizerData> = group.collect();
                         let group_length = group.len();
                         
-                        group.iter().for_each(|x| {
-                            *contig_minimizer_count_db.entry(&x.info.rid).or_insert(0) += 1;
+                        let contig_counts = group.iter().fold(HashMap::new(), |mut acc, x| {
+                            *acc.entry(x.info.rid).or_insert(0) += 1;
+                            acc
                         });
-                        
-                        if group_length == 1 {
-                            *unique_minimizer_count_db.entry(&group[0].info.rid).or_insert(0) += 1;
+
+                        for (rid, count) in contig_counts {
+                            *contig_minimizer_count_db.entry(rid).or_insert(0) += count;
+                            if count == 1 {
+                                *unique_minimizer_count_db.entry(rid).or_insert(0) += 1;
+                            }
+                        }
+
+                        if group_length == 1 || group_length > max_minimizer_count {
                             return None;
                         }
-                        
-                        if group_length > max_minimizer_count{
-                            return None;
-                        }
+
+                      
                         Some( if group_length > max_occ {
                             group.into_iter().take(max_occ).collect()
                         } else {
                             group
                         })
 
-                    }).collect::<Vec<Vec<&MinimizerData>>>();
-        
+                    }).collect::<Vec<Vec<&mut MinimizerData>>>();
+        log::info!("Collected {} groups.", groups.len());
         let mut anchor = groups.par_iter()
                             .flat_map(|group| {
                                 let group_length = group.len();
-                                let mut pairs = Vec::new();
+                                let mut pairs = Vec::with_capacity(group_length * (group_length - 1));
+                            
+
                                 for i in 0..group_length {
                                     for j in (i+1)..group_length {
                                         if group[i].info.rid == group[j].info.rid {
@@ -772,18 +790,17 @@ impl AllelesFasta {
                                                                     rev: rev_xor };
                                         pairs.push(anchor1);
 
-                                        let anchor2 = Anchor { rid1: group[j].info.rid, 
-                                                                pos1: group[j].info.pos,
-                                                                rid2: group[i].info.rid,
-                                                                pos2: group[i].info.pos, 
-                                                                rev: rev_xor };
-                                        pairs.push(anchor2);
-
                                     }
                                 }
                                 pairs.into_par_iter()
                                 
                             }).collect::<Vec<_>>();
+        drop(minimizers);                 
+
+        let anchor2 = anchor.par_iter().map(|group| {
+            group.swap()
+        }).collect::<Vec<_>>();
+        anchor.extend(anchor2);
 
         anchor.par_sort();
         log::info!("Collected {} anchors.", anchor.len());
@@ -850,7 +867,7 @@ impl AllelesFasta {
     }
 
     fn calculate_simularity<'a>(&'a self, anchor: &'a Vec<Anchor>, 
-                                contig_minimizer_count_db: &HashMap<&u32, usize>,
+                                contig_minimizer_count_db: &HashMap<u32, usize>,
                                 k: usize, min_sim: f64) -> Vec<MatchRecord> {
         let min_cnt = 5;
         
@@ -858,16 +875,15 @@ impl AllelesFasta {
                     .into_iter()
                     .filter_map(|(rid, group)|{
                         let mut group: Vec<_> = group.collect();
-                        let rev = group[0].rev;
-                        if rev == 1 {
-                            group.sort_unstable_by_key(|x| std::cmp::Reverse(x.pos1));
-                        } else {
-                            group.sort_unstable_by_key(|x| x.pos1);
-                        }
-                        
                         if group.len() < min_cnt {
                             return None;
                         }
+
+                        match group[0].rev {
+                            1 => group.sort_unstable_by_key(|x| std::cmp::Reverse(x.pos1)),
+                            _ => group.sort_unstable_by_key(|x| x.pos1),
+                        }
+                        
                         Some(group)
                     } ).collect::<Vec<Vec<&Anchor>>>();
        
@@ -877,14 +893,16 @@ impl AllelesFasta {
                 return None;
             }
 
-          
-            let n1 = contig_minimizer_count_db.get(&group[0].rid1).unwrap();
-            let n2 = contig_minimizer_count_db.get(&group[0].rid2).unwrap();
+            let rid1 = group[0].rid1;
+            let rid2 = group[0].rid2;
+
+            let n1 = contig_minimizer_count_db.get(&rid1).unwrap();
+            let n2 = contig_minimizer_count_db.get(&rid2).unwrap();
 
             let similarity = (2.0 * (m as f64 / (n1 + n2) as f64)).powf(1.0 / k as f64);
             if similarity >= min_sim {
                 
-                Some(MatchRecord { rid1: group[0].rid1, rid2: group[0].rid2, rev: group[0].rev, 
+                Some(MatchRecord { rid1: rid1, rid2: rid2, rev: group[0].rev, 
                             mz1: *n1 as u32, mz2: *n2 as u32, 
                             mz_shared: m as u32, similarity: similarity })
             } else {
@@ -893,7 +911,7 @@ impl AllelesFasta {
             
             }).collect::<Vec<MatchRecord>>();
         
-        log::info!("{} matches found.", res.len());
+        log::info!("Collected {} matches.", res.len());
 
         res 
     }
@@ -902,25 +920,19 @@ impl AllelesFasta {
     pub fn symmetric_and_filter(&self, matches: &mut Vec<MatchRecord>) -> Vec<MatchRecord>  {
         
         let mut filtered_matches: HashMap::<(u32, u32), &MatchRecord> = HashMap::new();
+
         for record in matches.iter() {
-            let rid1 = record.rid1;
-            let rid2 = record.rid2;
-            let rev = record.rev;
-            let similarity = record.similarity;
-            let key = (rid1, rid2);
-            if filtered_matches.contains_key(&key) {
-                let prev = filtered_matches.get(&key).unwrap();
-                if prev.similarity < similarity {
-                    filtered_matches.insert(key, record);
+            let key = (record.rid1, record.rid2);
+            filtered_matches.entry(key).and_modify(|e| {
+                if e.similarity < record.similarity {
+                    *e = record;
                 }
-            } else {
-                filtered_matches.insert(key, record);
-            }
+            }).or_insert(record);
         }
 
-        let mut res = Vec::new();
-        for (_, record) in filtered_matches.iter() {
-            res.push(record.clone().clone());
+        let mut res = Vec::with_capacity(filtered_matches.len() * 2);
+        for record in filtered_matches.values() {
+            res.push(**record);
             let record2 = MatchRecord { rid1: record.rid2, rid2: record.rid1, rev: record.rev, 
                                         mz1: record.mz2, mz2: record.mz1, mz_shared: record.mz_shared, 
                                         similarity: record.similarity };
@@ -928,9 +940,7 @@ impl AllelesFasta {
 
         }
 
-
         res 
-    
     }
 
     pub fn run(&mut self, k: usize, w: usize,
@@ -939,10 +949,10 @@ impl AllelesFasta {
         let start = std::time::Instant::now();
         let minimizers = self.collect_minimizers(k, w).unwrap();
         
-        let (anchor, unique_minimizer_count_db, contig_minimizer_count_db) = self.collect_anchors(k, w, &minimizers).unwrap();
-        
+        let (anchor, unique_minimizer_count_db, contig_minimizer_count_db) = self.collect_anchors(k, w, minimizers).unwrap();
+    
         let mut matches = self.calculate_simularity(&anchor, &contig_minimizer_count_db, k, m);
-       
+        drop(anchor);
         let matches = self.symmetric_and_filter(&mut matches);
 
         let mut writer = common_writer(output);
@@ -959,9 +969,8 @@ impl AllelesFasta {
                                 record.similarity, strand).as_bytes()).unwrap();
         }
         writer.flush().unwrap();
+        log::info!("Successful output allele table to `{}`.", output);
         
-      
-
     }
 }
 

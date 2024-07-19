@@ -30,23 +30,20 @@ const RC_LOOKUP: [u64; 256] = {
     lookup
 };
 
-#[inline(always)]
+// #[inline(always)]
 fn h(c: u8) -> u64 {
-    let val = H_LOOKUP[c as usize];
-    if val == 1 {
-        panic!("Non-ACGTN nucleotide encountered! {}", c as char)
+    unsafe {
+        *H_LOOKUP.get_unchecked(c as usize)
     }
-    val
 }
 
-#[inline(always)]
+// #[inline(always)]
 fn rc(nt: u8) -> u64 {
-    let val = RC_LOOKUP[nt as usize];
-    if val == 1 {
-        panic!("Non-ACGTN nucleotide encountered! {}", nt as char)
+    unsafe {
+        *RC_LOOKUP.get_unchecked(nt as usize)
     }
-    val
 }
+
 
 pub struct NtHashIterator<'a> {
     seq: &'a [u8],
@@ -56,7 +53,6 @@ pub struct NtHashIterator<'a> {
     current_idx: usize,
     max_idx: usize,
 }
-
 
 impl<'a> NtHashIterator<'a> {
     /// Creates a new NtHashIterator with internal state properly initialized.
@@ -68,13 +64,12 @@ impl<'a> NtHashIterator<'a> {
      
         assert!(k <= MAXIMUM_K_SIZE, "k must be less than or equal to {}", MAXIMUM_K_SIZE);
         let mut fh = 0;
-        for (i, v) in seq[0..k].iter().enumerate() {
-            fh ^= h(*v).rotate_left((k - i - 1) as u32);
-        }
-
         let mut rh = 0;
-        for (i, v) in seq[0..k].iter().rev().enumerate() {
-            rh ^= rc(*v).rotate_left((k - i - 1) as u32);
+
+        for ((i, &v), &rv) in seq[0..k].iter().enumerate().zip(seq[0..k].iter().rev()) {
+            let shift = (k - i - 1) as u32;
+            fh ^= h(v).rotate_left(shift);
+            rh ^= rc(rv).rotate_left(shift);
         }
 
         Ok(NtHashIterator {
@@ -175,7 +170,6 @@ pub fn complement(seq: &[u8]) -> Vec<u8> {
 pub fn hash (seq: &str, k: usize) -> u64 {
     let mut h = 0;
     for i in 0..k {
-        
         h = h << 2;
         h += match seq.chars().nth(i).unwrap() {
             'A' => 0,
@@ -229,34 +223,22 @@ fn minimizer (seq: &str, rid: &u32, start: u32, k: usize) -> MinimizerData {
     m 
 }
 
-pub fn minimizer_nthash(seq: &[u8], rid: &u32, start: u32, k: usize) -> MinimizerData {
-    let seq_len =  seq.len();
-    // let mut h = ntc64(seq, 0, k);
-    let mut h = 0;
-    let mut m = u64::MAX;
-    let mut pos = 0;
-    let mut rev: u8 = 0;
-
+pub fn minimizer_nthash(seq: &[u8], rid: &u32, start: u32, k: usize) -> AnyResult<MinimizerData> {
     let hash_iter = NtHashIterator::new(seq, k).unwrap();
-    hash_iter.collect::<Vec<_>>().iter().enumerate().min_by_key(|&(_, x)| x).map(|(i, &x)| {
-        m = x.0;
-        rev = x.1;
-        pos = i as u32;
 
-    });
-    
-
-    let pos = start + pos;
-    let m = MinimizerData {
-        minimizer: m,
-        info: MinimizerInfo {
-            rid: *rid,
-            pos: pos,
-            rev: rev,
-            // span: span,
-        }
+    if let Some((i, (m, rev))) = hash_iter.enumerate().min_by_key(|&(_, x)| x.0) {
+        return Ok(MinimizerData {
+            minimizer: m,
+            info: MinimizerInfo {
+                rid: *rid,
+                pos: start + i as u32,
+                rev,
+            },
+        })
+    } else {
+        return Err(anyhow::anyhow!("No minimizer found!"));
     };
-    m 
+
 }
 
 pub fn sketch (seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData> {
@@ -269,7 +251,7 @@ pub fn sketch (seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData
     let seq_len = seq.len();
 
     let mut i: usize = 0;
-    let seq_len_i32: i32 = seq_len.try_into().unwrap(); // 提前进行类型转换
+    let seq_len_i32: i32 = seq_len.try_into().unwrap(); 
     let end_cond = seq_len_i32 - k as i32;
 
     let mut exists_pos = HashSet::new();
@@ -278,7 +260,7 @@ pub fn sketch (seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData
     while i < end_cond as usize {
 
         let end_index = std::cmp::min(i + k + w - 1, seq_len);
-        let m: MinimizerData = minimizer_nthash(&seq[i..end_index], &rid, i as u32, k);
+        let m: MinimizerData = minimizer_nthash(&seq[i..end_index], &rid, i as u32, k).unwrap();
 
         if exists_pos.insert(m.info.pos) {
             sketch.push(m);

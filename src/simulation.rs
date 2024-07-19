@@ -10,14 +10,16 @@ use rust_htslib::bam::{
     Read, Reader, Record,
     Writer, 
 };
-
+use hashbrown::{ HashSet, HashMap };
 use rand::distributions::{Distribution, Uniform};
 use rand::{ Rng, SeedableRng };
 use rand::rngs::StdRng;
-
+use rayon::prelude::*;
 use std::path::Path;
 
-use crate::core::{ BaseTable, common_writer };
+use crate::core::{ BaseTable, common_writer,
+                     ChromSizeRecord,
+                    };
 use crate::fastx::Fastx;
 
 
@@ -339,7 +341,8 @@ pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &Strin
         .delimiter(b'\t')
         .has_headers(false)
         .from_path(bed).unwrap();
-
+    let mut vcf_reader = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
+    let vcf_header = vcf_reader.read_header().unwrap();
     let mut prev_read_idx = String::new();
     let mut read = Vec::new();
     for record in bed_reader.records() {
@@ -351,8 +354,6 @@ pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &Strin
         let read_idx = record.get(3).unwrap();
         let region = format!("{}:{}-{}", chrom, start + 1, end);
         let region = region.parse().unwrap();
-        let mut vcf_reader = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
-        let vcf_header = vcf_reader.read_header().unwrap();
         
         let vcf_records = vcf_reader.query(&vcf_header, &region).unwrap();
         let seq = seq.chars();
@@ -446,3 +447,306 @@ pub fn simulate_porec(fasta: &String, vcf: &String, bed: &String, output: &Strin
 
 
 }
+
+pub fn simulate_hic(fasta: &String, vcf: &String, bam: &String, min_mapq: u8, 
+                        threads: usize, output: &String,) {
+
+    let fa = Fastx::new(fasta);
+    let vcf_path = Path::new(vcf);
+    let vcf_prefix = vcf_path.file_stem().unwrap_or_default().to_str().unwrap_or_default();
+    let vcf_prefix = vcf_prefix.split(".").collect::<Vec<&str>>()[0];
+    let seqs = fa.get_chrom_seqs().unwrap();
+    let mut writer1 = common_writer(&format!("{}_R1.fasta.gz", output));
+    let mut writer2 = common_writer(&format!("{}_R2.fasta.gz", output));
+
+
+    let mut bam = if bam == &String::from("-") {
+        Reader::from_stdin().expect("Failed to read from stdin")
+    } else {
+        Reader::from_path(bam).expect("Failed to read from the provided path")
+    };
+
+    let header = Header::from_template(bam.header());
+    let header = HeaderView::from_header(&header);
+    let mut chromsizes = Vec::new();
+    
+    for tid in 0..header.target_count() {
+        let name = header.tid2name(tid);
+        let len = header.target_len(tid).unwrap();
+        let csr: ChromSizeRecord = ChromSizeRecord {
+            chrom: std::str::from_utf8(name).unwrap().to_string(), 
+            size: len
+        };
+        chromsizes.push(csr);
+    }
+
+    bam.set_threads(threads);
+    let mut idx = 0;
+    let mut vcf_reader1 = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
+    let mut vcf_reader2 = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
+    let vcf_header = vcf_reader1.read_header().unwrap();
+    while let Some(r) = bam.records().next() {
+        let record = r.unwrap();
+        
+        if !record.is_paired() {
+            continue
+        }
+        let Some(r2) = bam.records().next() else {
+            continue
+        };
+        let record2 = r2.unwrap();
+
+        if record.is_unmapped() || record2.is_unmapped(){
+            continue 
+        }
+
+        if record.mapq() < min_mapq || record2.mapq() < min_mapq {
+            continue
+        }
+
+        if record.tid() != record2.tid() {
+            continue
+        }
+
+        idx += 1;
+        
+        let mut chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+        let mut chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap())).unwrap().to_string();
+
+        let mut pos1 = record.pos() + 1;
+        let mut pos2 = record2.pos() + 1;
+        
+        let mut seq1 = record.seq().as_bytes().to_vec();
+        let mut seq2 = record2.seq().as_bytes().to_vec();
+        let start1 = pos1 - 1;
+        let end1 = start1 + seq1.len() as i64;
+        let start2 = pos2 - 1;
+        let end2 = start2 + seq2.len() as i64;
+
+
+        let region1 = format!("{}:{}-{}", chrom1, start1 + 1, end1);
+        let region1 = region1.parse().unwrap();
+        let region2 = format!("{}:{}-{}", chrom2, start2 + 1, end2);
+        let region2 = region2.parse().unwrap();
+        
+        let vcf_records1 = vcf_reader1.query(&vcf_header, &region1).unwrap();
+        let vcf_records2 = vcf_reader2.query(&vcf_header, &region2).unwrap();
+        
+        let mut seq_vec1 = seq1.iter().map(|x| *x as char).collect::<Vec<char>>();
+        let mut seq_vec2 = seq2.iter().map(|x| *x as char).collect::<Vec<char>>();
+        
+        let mut pos_vec1 = Vec::new();
+        let mut ref_vec1 = Vec::new();
+        let mut alt_vec1 = Vec::new();
+        let mut read1 = Vec::new();
+        'inner: for result in vcf_records1 {
+            let r = result.unwrap();
+            let pos = usize::from(r.position()) as i64 - start1 as i64 - 1;
+            if pos < 0 {
+                continue 'inner;
+            }
+            let ref_len = r.reference_bases().len();
+            // let alt_len = r.alternate_bases().len();
+            // let ref_seq = r.reference_bases().to_vec();
+            let alt_base = r.alternate_bases().to_string();
+            
+            pos_vec1.push(pos);
+            ref_vec1.push(ref_len);
+            alt_vec1.push(alt_base.chars().collect::<Vec<char>>());
+     
+        }
+      
+
+        let mut pos_vec2 = Vec::new();
+        let mut ref_vec2 = Vec::new();
+        let mut alt_vec2 = Vec::new();
+        let mut read2 = Vec::new();
+        'inner: for result in vcf_records2 {
+            let r = result.unwrap();
+            let pos = usize::from(r.position()) as i64 - start2 as i64 - 1;
+            if pos < 0 {
+                continue 'inner;
+            }
+            let ref_len = r.reference_bases().len();
+            // let alt_len = r.alternate_bases().len();
+            // let ref_seq = r.reference_bases().to_vec();
+            // let alt_seq = r.alternate_bases().to_string().chars().collect::<Vec<char>>();
+            let alt_bases = r.alternate_bases().to_string();
+            
+            pos_vec2.push(pos);
+            ref_vec2.push(ref_len);
+            // alt_vec2.push(alt_seq);
+            alt_vec2.push(alt_bases.chars().collect::<Vec<char>>());
+     
+        }
+
+        let pos_hash1: HashMap<usize, usize> = pos_vec1.iter().enumerate().map(|(i, &x)| (x as usize, i)).collect();
+
+        if pos_hash1.len() == 0 {
+            read1.push(seq_vec1.iter().collect::<String>());
+        } else {
+            let mut new_seq_vec1 = Vec::new();
+
+            let mut skip = 0;
+            for (i, c) in seq_vec1.iter().enumerate() {
+                if skip != 0 {
+                    skip -= 1;
+                    continue;
+                }
+                if let Some(&idx) = pos_hash1.get(&i) {
+                
+                    let ref_len = ref_vec1[idx];
+                    let alt_slice = &alt_vec1[idx];
+                    if ref_len > 1 {
+                        skip = ref_len - 1;
+                    }
+                    new_seq_vec1.extend_from_slice(alt_slice);
+                } else {
+                    new_seq_vec1.push(*c);
+                }
+            }
+
+            // let mut flag = 0;
+            // 'inner: for (i, c) in seq_vec1.iter().enumerate() {
+            //     while flag != 0 {
+            //         flag -= 1;
+            //         continue 'inner;
+            //     }
+            //     if pos_vec1.contains(&(i as i64)) {
+            //         let idx = pos_vec1.iter().position(|&x| x == i as i64).unwrap();
+            //         let ref_len = ref_vec1[idx];
+            //         let alt_len = alt_vec1[idx].len();
+            //         if ref_len == 1 {
+            //             if alt_len == 1 {
+            //                 new_seq_vec1.push(alt_vec1[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec1[idx].iter() {
+            //                     new_seq_vec1.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //         } else if ref_len > 1 {
+            //             if alt_len == 1 {
+            //                 new_seq_vec1.push(alt_vec1[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec1[idx].iter() {
+            //                     new_seq_vec1.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //             flag = ref_len - 1
+            //         } else {
+            //             if alt_len == 1 {
+            //                 new_seq_vec1.push(alt_vec1[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec1[idx].iter() {
+            //                     new_seq_vec1.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //         }
+            //     } else {
+            //         new_seq_vec1.push(*c);
+            //     }
+            // }
+            read1.push(new_seq_vec1.iter().collect::<String>());
+        
+        }
+
+        // let pos_set2: HashSet<i64> = pos_vec2.into_iter().collect();
+        // // convert i64 to usize
+        // let pos_set2: HashSet<usize> = pos_set2.iter().map(|x| *x as usize).collect();
+        let pos_hash2: HashMap<usize, usize> = pos_vec2.iter().enumerate().map(|(i, &x)| (x as usize, i)).collect();
+
+        if pos_hash2.len() == 0 {
+            read2.push(seq_vec2.iter().collect::<String>());
+        } else {
+            let mut new_seq_vec2 = Vec::new();
+            let mut skip = 0;
+
+            for (i, c) in seq_vec2.iter().enumerate() {
+                if skip != 0 {
+                    skip -= 1;
+                    continue;
+                }
+                if let Some(&idx) = pos_hash2.get(&i) {
+                
+                    let ref_len = ref_vec2[idx];
+                    let alt_slice = &alt_vec2[idx];
+                    if ref_len > 1 {
+                        skip = ref_len - 1;
+                    }
+                    new_seq_vec2.extend_from_slice(alt_slice);
+                } else {
+                    new_seq_vec2.push(*c);
+                }
+            }
+
+            // let mut flag = 0;
+            // 'inner: for (i, c) in seq_vec2.iter().enumerate() {
+            //     while flag != 0 {
+            //         flag -= 1;
+            //         continue 'inner;
+            //     }
+            //     if pos_vec2.contains(&(i as i64)) {
+            //         let idx = pos_vec2.iter().position(|&x| x == i as i64).unwrap();
+            //         let ref_len = ref_vec2[idx];
+            //         let alt_len = alt_vec2[idx].len();
+            //         if ref_len == 1 {
+            //             if alt_len == 1 {
+            //                 new_seq_vec2.push(alt_vec2[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec2[idx].iter() {
+            //                     new_seq_vec2.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //         } else if ref_len > 1 {
+            //             if alt_len == 1 {
+            //                 new_seq_vec2.push(alt_vec2[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec2[idx].iter() {
+            //                     new_seq_vec2.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //             flag = ref_len - 1
+            //         } else {
+            //             if alt_len == 1 {
+            //                 new_seq_vec2.push(alt_vec2[idx][0]);
+
+            //             } else if alt_len > 1 {
+            //                 for s in alt_vec2[idx].iter() {
+            //                     new_seq_vec2.push(*s);
+            //                 }
+            //             } else {
+            //                 continue 'inner;
+            //             }
+            //         }
+            //     } else {
+            //         new_seq_vec2.push(*c);
+            //     }
+            // }
+            read2.push(new_seq_vec2.iter().collect::<String>());
+        
+        }
+
+        writer1.write_all(format!(">{}_{}\n{}\n", idx, vcf_prefix, read1.join("")).as_bytes()).unwrap();
+        writer2.write_all(format!(">{}_{}\n{}\n", idx, vcf_prefix, read2.join("")).as_bytes()).unwrap();
+
+        
+    }
+
+    
+
+}   
