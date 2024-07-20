@@ -825,7 +825,47 @@ impl Pairs {
             
         }
 
-      
+        let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
+        let mut writer = Arc::new(Mutex::new(writer));
+        
+        data.par_iter().for_each(|(cp, vec) | {
+            if vec.len() < min_contacts as usize {
+                return;
+            }
+            let length1 = idx_sizes.get(&cp.0).unwrap();
+            let length2 = idx_sizes.get(&cp.1).unwrap();
+            let contig1 = idx_contig.get(&cp.0).unwrap();
+            let contig2 = idx_contig.get(&cp.1).unwrap();
+            let res = vec.iter().map(
+                |x| {
+                    let pos1 = x[0];
+                    let pos2 = x[1];
+                    let split_index1 = (pos1 / (length1 / 2)) as u8;
+                    let split_index2 = (pos2 / (length2 / 2)) as u8;
+                  
+                    (split_index1, split_index2)
+                }
+            ).collect::<Vec<_>>();
+
+            let mut contact_hash = HashMap::with_capacity(4);
+            res.iter().for_each(|(split_idx1, split_idx2)| {
+                *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
+            });
+            
+            let mut buffer = Vec::with_capacity(4);
+            contact_hash.iter().for_each(|(cp, count)| {
+                if count >= &min_contacts {
+                    buffer.push(format!("{}_{}\t{}_{}\t{}\n", contig1, cp.0, contig2, cp.1, count));
+                }
+                
+            });
+            let buffer = buffer.join("");
+            let mut writer = writer.lock().unwrap();
+            writer.write_all(buffer.as_bytes()).unwrap();
+
+        });
+
+
         log::info!("Calculating the distance between contigs");
         
         
