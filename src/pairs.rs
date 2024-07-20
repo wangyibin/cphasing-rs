@@ -604,16 +604,6 @@ impl Pairs {
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                //    let record =  PairRecord {
-                //         readID: idx as u64,
-                //         chrom1: record[1].to_string(),
-                //         pos1: record[2].parse::<u64>().unwrap(),
-                //         chrom2: record[3].to_string(),
-                //         pos2: record[4].parse::<u64>().unwrap(),
-                //         strand1: record[5].parse::<char>().unwrap(),
-                //         strand2: record[6].parse::<char>().unwrap(),
-                //     };
-                    // let mut cp = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
                     
                     if filter_mapq {
                         if record.len() >= 8 {
@@ -752,39 +742,19 @@ impl Pairs {
                         }
                     }
 
-                    let contig1_str = &record[1];
-                    let contig2_str = &record[3];
                     let pos1 = record[2].parse::<u32>().unwrap_or_default();
                     let pos2 = record[4].parse::<u32>().unwrap_or_default();
 
-                    let (contig1, contig2, pos1, pos2) = if contig1_str > contig2_str {
-                        (contig2_str, contig1_str, pos2, pos1)
+                    let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
+                        (&record[3], &record[1],  pos2, pos1)
                     } else {
-                        (contig1_str, contig2_str, pos1, pos2)
+                        (&record[1], &record[3], pos1, pos2)
                     };
 
-                    if let (Some(idx1), Some(idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
-                        if output_split_contacts {
-                            if let (Some(split_size1), Some(split_size2)) = (split_contigsizes.get(idx1), split_contigsizes.get(idx2)) {
-                                let split_index1: u8 = (pos1 / split_size1) as u8;
-                                let split_index2: u8 = (pos2 / split_size2) as u8;
-
-                                let split_idx1 = SplitIdx {contig_idx: *idx1, split_idx: split_index1};
-                                let split_idx2 = SplitIdx {contig_idx: *idx2, split_idx: split_index2};
-
-                                
-                                // *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
-                                contact_hash.entry((split_idx1, split_idx2)).and_modify(|e| *e += 1).or_insert(1);
-                            }
-                        }
-
-                        
-                        // data.entry((idx1, idx2))
-                        //     .or_insert_with(Vec::new)
-                        //     .push(vec![pos1, pos2]);
-                        data.entry((*idx1, *idx2))
+                    if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
+                        data.entry((idx1, idx2))
                             .and_modify(|e| e.push(smallvec![pos1, pos2]))
-                          .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+                            .or_insert_with(|| vec![smallvec![pos1, pos2]]);
                     }
                 },
                 Err(e) => {
@@ -793,78 +763,53 @@ impl Pairs {
             }
         });
 
-
-        if output_split_contacts {
-            let mut contact_records: Vec<_> = contact_hash.into_par_iter(
-                ).filter_map(|(cp, count)| {
-
-                    if count < min_contacts{
-                        return None;
-                    } 
-                    let contig1 = idx_contig.get(&cp.0.contig_idx).map(|c| format!("{}_{}", c, cp.0.split_idx));
-                    let contig2 = idx_contig.get(&cp.1.contig_idx).map(|c| format!("{}_{}", c, cp.1.split_idx));
-                    match (contig1, contig2) {
-                        (Some(contig1), Some(contig2)) => Some(ContactRecord {
-                            chrom1: contig1,
-                            chrom2: contig2,
-                            count: count as f64,
-                        }),
-                        _ => None,
-                    }
-                        
-            }).collect();
         
-            contact_records.retain(|x| x.is_some());
-            contacts.records = contact_records;
+        if output_split_contacts{
 
-            contacts.write(&format!("{}.split.contacts", output_prefix.to_string()));
+            let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
+            let mut writer = Arc::new(Mutex::new(writer));
+            data.par_iter().for_each(|(cp, vec) | {
+                if vec.len() < min_contacts as usize {
+                    return;
+                }
+                let length1 = idx_sizes.get(&cp.0).unwrap();
+                let length2 = idx_sizes.get(&cp.1).unwrap();
+                let contig1 = idx_contig.get(&cp.0).unwrap();
+                let contig2 = idx_contig.get(&cp.1).unwrap();
+                let res = vec.iter().map(
+                    |x| {
+                        let pos1 = x[0];
+                        let pos2 = x[1];
+                        let split_index1 = (pos1 / (length1 / 2)) as u8;
+                        let split_index2 = (pos2 / (length2 / 2)) as u8;
+                    
+                        (split_index1, split_index2)
+                    }
+                ).collect::<Vec<_>>();
+
+                let mut contact_hash = HashMap::with_capacity(4);
+                res.iter().for_each(|(split_idx1, split_idx2)| {
+                    *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
+                });
+                
+                let mut buffer = Vec::with_capacity(4);
+                contact_hash.iter().for_each(|(cp, count)| {
+                    if count >= &min_contacts {
+                        buffer.push(format!("{}_{}\t{}_{}\t{}\n", contig1, cp.0, contig2, cp.1, count));
+                    }
+                    
+                });
+                let buffer = buffer.join("");
+                let mut writer = writer.lock().unwrap();
+                writer.write_all(buffer.as_bytes()).unwrap();
+
+            });
+
             log::info!("Successful output split contacts file `{}`", 
-                            &format!("{}.split.contacts", output_prefix.to_string()));
+                                &format!("{}.split.contacts", output_prefix.to_string()));
 
             drop(split_contigsizes);
-            
         }
-
-        let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
-        let mut writer = Arc::new(Mutex::new(writer));
-        
-        data.par_iter().for_each(|(cp, vec) | {
-            if vec.len() < min_contacts as usize {
-                return;
-            }
-            let length1 = idx_sizes.get(&cp.0).unwrap();
-            let length2 = idx_sizes.get(&cp.1).unwrap();
-            let contig1 = idx_contig.get(&cp.0).unwrap();
-            let contig2 = idx_contig.get(&cp.1).unwrap();
-            let res = vec.iter().map(
-                |x| {
-                    let pos1 = x[0];
-                    let pos2 = x[1];
-                    let split_index1 = (pos1 / (length1 / 2)) as u8;
-                    let split_index2 = (pos2 / (length2 / 2)) as u8;
-                  
-                    (split_index1, split_index2)
-                }
-            ).collect::<Vec<_>>();
-
-            let mut contact_hash = HashMap::with_capacity(4);
-            res.iter().for_each(|(split_idx1, split_idx2)| {
-                *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
-            });
-            
-            let mut buffer = Vec::with_capacity(4);
-            contact_hash.iter().for_each(|(cp, count)| {
-                if count >= &min_contacts {
-                    buffer.push(format!("{}_{}\t{}_{}\t{}\n", contig1, cp.0, contig2, cp.1, count));
-                }
-                
-            });
-            let buffer = buffer.join("");
-            let mut writer = writer.lock().unwrap();
-            writer.write_all(buffer.as_bytes()).unwrap();
-
-        });
-
 
         log::info!("Calculating the distance between contigs");
         
@@ -873,7 +818,6 @@ impl Pairs {
             true => {
                 let mut wtr = common_writer(output);
                 let wtr = Arc::new(Mutex::new(wtr));
-                // for (cp, vec) in data.iter() {
                 data.par_iter().for_each(|(cp, vec)| {
                     if vec.len() < min_contacts as usize {
                         return;
@@ -924,7 +868,6 @@ impl Pairs {
                         let mut wtr = wtr.lock().unwrap();
                         wtr.write_all(&buffer).unwrap();
                     }
-                    
 
                 });
             },
@@ -964,85 +907,52 @@ impl Pairs {
                         
                     }).collect::<HashMap<_, Vec<Vec<u32>>>>();
             
-                // drop(data);
-                log::info!("Starting to output clm.");
-                // for (cp_idx, res) in result {
-                //     let count = res[0].len();
-                    
-                //     if count < min_contacts as usize {
-                //         continue
-                //     } 
-                //     let contig1 = idx_contig.get(cp_idx.0).unwrap();
-                //     let contig2 = idx_contig.get(cp_idx.1).unwrap();
-                //     let cp = ContigPair2{Contig1: contig1, Contig2: contig2};
 
-                //     let mut buffer = Vec::with_capacity(128);
-                //     for (i, res1) in res.iter().enumerate() {
-                //         let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                //         let line = match i {
-                //             0 => format!("{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                //             1 => format!("{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                //             2 => format!("{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                //             3 => format!("{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                //             _ => panic!("Error: Invalidindex"),
-                //         };
+                    log::info!("Starting to output clm.");
                     
-                //         buffer.extend_from_slice(line.as_bytes());
-                //     }
-                //     // let mut wtr = File::create("output.txt").await.unwrap();
-                //     wtr.write_all(&buffer).unwrap();
-                //     // let task = tokio::task::spawn(async move {
-                //     //     let mut wtr = File::create(output).await.unwrap();
-                //     //    
-                //     // });    
-                //     // wtr.write_all(&buffer).await.unwrap();
-                //     // let _ = task.await.unwrap();
-                // }
+                    let wtr = Mutex::new(common_writer(output));
+
+                    result.par_iter()
+                        .filter(|(_, res)| res[0].len() >= min_contacts as usize)
+                        .for_each(|(cp_idx, res)| {
+                            let contig1 = idx_contig.get(&cp_idx.0).unwrap();
+                            let contig2 = idx_contig.get(&cp_idx.1).unwrap();
+                            let cp = ContigPair2 { Contig1: contig1, Contig2: contig2 };
+                            let res_len = res[0].len();
+                            let mut buffer = String::new();
+                            for (i, res1) in res.iter().enumerate() {
+                                let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                                // let line = match i {
+                                //     0 => format!("{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
+                                //     1 => format!("{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
+                                //     2 => format!("{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
+                                //     3 => format!("{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
+                                //     _ => panic!("Error: Invalid index"),
+                                // };
+
+                                // buffer.push_str(&line);
+
+                                use std::fmt::Write;
+                                write!(
+                                    buffer,
+                                    "{}\t{}\t{}\n",
+                                        match i {
+                                            0 => format!("{}+ {}+", cp.Contig1, cp.Contig2),
+                                            1 => format!("{}+ {}-", cp.Contig1, cp.Contig2),
+                                            2 => format!("{}- {}+", cp.Contig1, cp.Contig2),
+                                            3 => format!("{}- {}-", cp.Contig1, cp.Contig2),
+                                            _ => panic!("Error: Invalid index"),
+                                        },
+                                        res_len,
+                                        res1 
+                            
+                                ).unwrap();
+                            }
+
+                            let mut wtr = wtr.lock().unwrap();
+                            wtr.write_all(buffer.as_bytes()).unwrap();
+                    });
                 
-                let wtr = Mutex::new(common_writer(output));
-
-                result.par_iter()
-                    .filter(|(_, res)| res[0].len() >= min_contacts as usize)
-                    .for_each(|(cp_idx, res)| {
-                        let contig1 = idx_contig.get(&cp_idx.0).unwrap();
-                        let contig2 = idx_contig.get(&cp_idx.1).unwrap();
-                        let cp = ContigPair2 { Contig1: contig1, Contig2: contig2 };
-                        let res_len = res[0].len();
-                        let mut buffer = String::new();
-                        for (i, res1) in res.iter().enumerate() {
-                            let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                            // let line = match i {
-                            //     0 => format!("{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                            //     1 => format!("{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                            //     2 => format!("{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                            //     3 => format!("{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                            //     _ => panic!("Error: Invalid index"),
-                            // };
-
-                            // buffer.push_str(&line);
-
-                            use std::fmt::Write;
-                            write!(
-                                buffer,
-                                "{}\t{}\t{}\n",
-                                    match i {
-                                        0 => format!("{}+ {}+", cp.Contig1, cp.Contig2),
-                                        1 => format!("{}+ {}-", cp.Contig1, cp.Contig2),
-                                        2 => format!("{}- {}+", cp.Contig1, cp.Contig2),
-                                        3 => format!("{}- {}-", cp.Contig1, cp.Contig2),
-                                        _ => panic!("Error: Invalid index"),
-                                    },
-                                    res_len,
-                                    res1 
-                        
-                            ).unwrap();
-                        }
-
-                        let mut wtr = wtr.lock().unwrap();
-                        wtr.write_all(buffer.as_bytes()).unwrap();
-                });
-             
-              
             }
         }
         log::info!("Successful output clm file `{}`", output);
