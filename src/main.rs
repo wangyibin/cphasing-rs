@@ -693,7 +693,7 @@ fn main() {
                 false => true
             };
 
-            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, true);
+            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, *threads, true);
             // let contacts = Contacts::from_clm(&output);
             // contacts.write(&contacts.file);
         }

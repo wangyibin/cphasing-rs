@@ -1,7 +1,7 @@
 #![allow(unused)]
 use anyhow::Result as anyResult;
 use bytecount;
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use csv::StringRecord;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -673,7 +673,9 @@ impl Pairs {
     pub fn to_clm(&mut self, min_contacts: u32, 
                 // binsize: u32,
                 min_quality: u8,  output: &String,
-                output_split_contacts: bool, low_memory: bool) {
+                output_split_contacts: bool, 
+                threads: usize,
+                low_memory: bool) {
         use hashbrown::HashMap;
         let parse_result = self.parse();
 
@@ -694,7 +696,6 @@ impl Pairs {
 
         let pair_header = self.header.clone();
         let chromsizes: &Vec<ChromSizeRecord> = &pair_header.chromsizes;
-        // to hashmap
         let chromsizes: HashMap<String, u32> = chromsizes
             .iter()
             .map(|x| (x.chrom.clone(), x.size.try_into().unwrap()))
@@ -729,39 +730,118 @@ impl Pairs {
         log::info!("Parsing pairs file ...");
         let mut contact_hash: HashMap<(SplitIdx, SplitIdx), u32>  = HashMap::new();
         let filter_mapq = min_quality > 0;
-        let mut data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
+        let mut data: Arc<Mutex<HashMap<(u32, u32), Vec<SmallIntVec>>>> = Arc::new(Mutex::new(HashMap::new()));
         
-        
-        rdr.records().enumerate().for_each(|(idx, record_result)| {
-            match record_result {
+        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+
+        let mut handles = vec![];
+        for _ in 0..threads {
+            let receiver: Receiver<_> = receiver.clone();
+            
+            let data = Arc::clone(&data);
+            let contig_idx = contig_idx.clone();
+
+            handles.push(thread::spawn(move || {
+                while let Ok((records)) = receiver.recv() {
+
+                    let mut updates: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::with_capacity(1000);
+                    for (idx, record) in records {
+                        
+                        let pos1 = record[2].parse::<u32>().unwrap_or_default();
+                        let pos2 = record[4].parse::<u32>().unwrap_or_default();
+                        
+                        let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
+                            (&record[3], &record[1],  pos2, pos1)
+                        } else {
+                            (&record[1], &record[3], pos1, pos2)
+                        };
+                        if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
+                            updates.entry((idx1, idx2))
+                                .and_modify(|e| e.push(smallvec![pos1, pos2]))
+                                .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+                        }
+                    }
+                    {
+                        let mut data = data.lock().unwrap();
+                        for (key, mut local_values) in updates {
+                            data.entry(key).or_insert_with(Vec::new).append(&mut local_values);
+                        }
+                    }
+                    
+
+                }
+              
+            }));
+        }
+
+        let mut batch = Vec::with_capacity(1000);
+        for (idx, record) in rdr.records().enumerate() {
+            match record {
                 Ok(record) => {
                     if filter_mapq && record.len() >= 8 {
                         let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
                         if mapq <= min_quality {
-                            return; 
+                            continue; 
                         }
                     }
-
-                    let pos1 = record[2].parse::<u32>().unwrap_or_default();
-                    let pos2 = record[4].parse::<u32>().unwrap_or_default();
-
-                    let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
-                        (&record[3], &record[1],  pos2, pos1)
-                    } else {
-                        (&record[1], &record[3], pos1, pos2)
-                    };
-
-                    if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
-                        data.entry((idx1, idx2))
-                            .and_modify(|e| e.push(smallvec![pos1, pos2]))
-                            .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+                    batch.push((idx, record));
+                    if batch.len() >= 1000 {
+                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                       
                     }
+              
                 },
                 Err(e) => {
                     eprintln!("{:?}", e);
+                    continue
                 }
             }
-        });
+            
+
+        }
+
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
+
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+           
+        }
+
+        let mut data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+
+        // rdr.records().enumerate().for_each(|(idx, record_result)| {
+        //     match record_result {
+        //         Ok(record) => {
+        //             if filter_mapq && record.len() >= 8 {
+        //                 let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+        //                 if mapq <= min_quality {
+        //                     return; 
+        //                 }
+        //             }
+
+        //             let pos1 = record[2].parse::<u32>().unwrap_or_default();
+        //             let pos2 = record[4].parse::<u32>().unwrap_or_default();
+
+        //             let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
+        //                 (&record[3], &record[1],  pos2, pos1)
+        //             } else {
+        //                 (&record[1], &record[3], pos1, pos2)
+        //             };
+
+        //             if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
+        //                 data.entry((idx1, idx2))
+        //                     .and_modify(|e| e.push(smallvec![pos1, pos2]))
+        //                     .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+        //             }
+        //         },
+        //         Err(e) => {
+        //             eprintln!("{:?}", e);
+        //         }
+        //     }
+        // });
 
         
         if output_split_contacts{
