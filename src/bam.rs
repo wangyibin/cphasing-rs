@@ -24,6 +24,7 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
+    bam.set_threads(8);
     let header = Header::from_template(bam.header());
     let mut i = 0;
     let mut j = 0;

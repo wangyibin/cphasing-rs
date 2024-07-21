@@ -112,6 +112,7 @@ fn main() {
             use std::io::BufReader;
             use std::io::BufRead;
             use std::sync::{Arc, Mutex};
+            
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");

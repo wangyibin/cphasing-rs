@@ -124,7 +124,6 @@ impl Contacts {
         // let re_density = total_re_count as f64 / total_length as f64;
         // let longest_re = re_count.values().max().unwrap();
         // let longest_re_square = (longest_re * longest_re) as f64;
-
         let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
             ).map(|record| {
                 let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());

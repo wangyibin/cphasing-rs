@@ -221,6 +221,7 @@ impl KPruner {
     pub fn prune(&mut self, method: &str, 
                 whitehash: &HashSet<&String>,
                 mut writer: &mut Box<dyn Write + Send> ) {
+
         log::info!("Starting allelic identification ...");
         log::set_max_level(log::LevelFilter::Off);
         let unique_min = self.alleletable.header.to_unique_minimizer_density();
@@ -269,7 +270,6 @@ impl KPruner {
         
         // filter contig pairs that contig1 == contig2 
         contig_pairs.retain(|x| x.Contig1 != x.Contig2);
-        // println!("{}", contig_pairs.len());
         let cross_allelic: Vec<&&ContigPair2> =  contig_pairs
                                                     .par_iter()
                                                     .filter_map(|contig_pair| {
@@ -286,28 +286,21 @@ impl KPruner {
                     let mut group2_length = init_group2.len();
                     
                     if group1_length <= 1 && group2_length <= 1 {
-                        // is_weak = true;
                         break 'outer;
                     }
-                    let contig1 = match group1_length > group2_length {
-                        true => &contig_pair.Contig2, 
-                        false => &contig_pair.Contig1,
-                    };
-                    
-                    let contig2 = match group1_length > group2_length {
-                        true => &contig_pair.Contig1, 
-                        false => &contig_pair.Contig2,
-                    };
 
-                    let group1 = match group1_length > group2_length {
-                        true => &init_group2,
-                        false => &init_group1,
+                    let longer_group1 = group1_length > group2_length;
+                    let (contig1, contig2) = if longer_group1 {
+                        (&contig_pair.Contig2, &contig_pair.Contig1)
+                    } else {
+                        (&contig_pair.Contig1, &contig_pair.Contig2)
                     };
-                    let group2 = match group1_length > group2_length {
-                        true => &init_group1,
-                        false => &init_group2,
+    
+                    let (group1, group2) = if longer_group1 {
+                        (&init_group2, &init_group1)
+                    } else {
+                        (&init_group1, &init_group2)
                     };
-                    // printsln!("{} {}", group1.len(), group2.len());
                    
                     // index of contig1 in group1 
                     let idx1 = match group1.iter().position(|x| x == contig1) {
@@ -322,14 +315,9 @@ impl KPruner {
                     };
 
                     if group1_length > group2_length {
-                        // std::mem::swap(&mut group1, &mut group2);
-                        // std::mem::swap(&mut idx1, &mut idx2);
                         std::mem::swap(&mut group1_length, &mut group2_length)
                     }
-                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
-                    //     dbg!("{:?}", &group1);
-                    //     dbg!("{:?}", &group2);
-                    // }
+                  
 
                     let mut matrix = Matrix::new(group1_length, group2_length, OrderedFloat(0.0));
                     matrix.iter_mut().enumerate().for_each(|(index, element) | {
@@ -342,25 +330,14 @@ impl KPruner {
                         if let Some(value) = contacts_data.get(&tmp_contig_pair) {
                             *element = OrderedFloat(*value);
                         }
-                        
                     });
 
-                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
-                    //     dbg!("{:?}", &matrix);
-                    // }
                     let assignments = maximum_bipartite_matching(matrix);
-                    // if contig1 == &&String::from("3E.ctg7") && contig2 == &&String::from("3E.ctg9") {
-                    //     dbg!("{:?}", &assignments);
-                    // }
+                
                     if assignments[idx1] != idx2 {
                         is_weak = true;
-                    } else {
-                        is_weak = false;
-                    }
-                    
-                    if is_weak {
-                        break 'outer; 
-                    }
+                        break 'outer;
+                    } 
                 
                 }
             } 

@@ -242,6 +242,7 @@ pub fn minimizer_nthash(seq: &[u8], rid: &u32, start: u32, k: usize) -> AnyResul
 }
 
 pub fn sketch (seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData> {
+    use hashbrown::HashSet;
     let mut sketch = Vec::new();
     
     let seq = seq.iter()

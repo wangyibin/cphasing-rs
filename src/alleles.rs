@@ -303,23 +303,24 @@ impl AlleleTable2 {
 
         data
     }
+    
     pub fn get_allelic_contigs_precise(&self, whitehash: &HashSet<&String>) -> HashMap<&String, Vec<Vec<&String>>> {
         let mut data: HashMap<&String, Vec<Vec<&String>>> = HashMap::new();
         let records = &self.allele_records;
+        let check_whitehash = !whitehash.is_empty();
+
         for record in records {
             
-            if whitehash.len() > 0 {
-                if !whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2) {
-                    continue;
-                }
+            if check_whitehash && (!whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2)) {
+                continue;
             }
+
             if !data.contains_key(&record.contig1) {
                 data.insert(&record.contig1, Vec::new());
                 data.get_mut(&record.contig1).unwrap().push(vec![&record.contig1, &record.contig2]);
             } else {
                 data.get_mut(&record.contig1).unwrap()[0].push(&record.contig2);
             }
-            
         }
 
         data

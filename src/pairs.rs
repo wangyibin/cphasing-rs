@@ -281,89 +281,143 @@ impl Pairs {
             Ok(r) => r,
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
         };
-
-        let wtr = common_writer(output);
-        let mut wtr = csv::WriterBuilder::new()
-                .has_headers(false)
-                .delimiter(b' ')
-                .from_writer(wtr);
         let filter_mapq = min_quality > 0;
+        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(100);
+        let wtr = Arc::new(Mutex::new(common_writer(output)));
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let receiver: Receiver<_> = receiver.clone();
+            let mut wtr = Arc::clone(&wtr);
+            handles.push(thread::spawn(move || {
+                
+                while let Ok(records) = receiver.recv() {
+                    let mut data = vec![];
+                    for (idx, record) in records {
+                        if filter_mapq && record.len() >= 8 {
+                            let mapq = record.get(7).unwrap_or(&"60".to_string()).parse::<u8>().unwrap_or(60);
+                            if mapq < min_quality {
+                                continue;
+                            }
+                        }
+                        
+                        let strand1 = match record[5].parse::<char>() {
+                            Ok('+') => 0,
+                            _ => -1,
+                        };
+                        let strand2 = match record[6].parse::<char>() {
+                            Ok('+') => 0,
+                            _ => -1,
+                        };
+    
+                        let pos1 = record[2].parse::<u64>().unwrap_or_default();
+                        let pos2 = record[4].parse::<u64>().unwrap_or_default();
+                        
+                        let line = format!("{} {} {} {} \
+                                            {} {} {} {} \
+                                            {} {} {} {} \
+                                            {} {} {} {}", 
+                                            strand1, record[1].to_string(), pos1, mnd_defualt.frag1,
+                                            strand2, record[3].to_string(), pos2, mnd_defualt.frag2,
+                                            mnd_defualt.mapq1, mnd_defualt.cigar1, mnd_defualt.sequence1,
+                                            mnd_defualt.mapq2, mnd_defualt.cigar2, mnd_defualt.sequence2,
+                                            mnd_defualt.readname1, mnd_defualt.readname2);
+
+                        data.push(line);
+                    }
+
+                    let mut wtr = wtr.lock().unwrap();
+                    for line in data.drain(..) {
+                        writeln!(wtr, "{}", line).unwrap();
+                    }
+                    
+                }
+
+               
+            }));
+        }
+
+        let mut batch = Vec::with_capacity(1000);
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                    
-                    // let record = PairRecord {
-                    //     readID: idx as u64,
-                    //     chrom1: record[1].to_string(),
-                    //     pos1: record[2].parse::<u64>().unwrap(),
-                    //     chrom2: record[3].to_string(),
-                    //     pos2: record[4].parse::<u64>().unwrap(),
-                    //     strand1: record[5].parse::<char>().unwrap(),
-                    //     strand2: record[6].parse::<char>().unwrap(),
-                    //     mapq: record[7].parse::<u8>().unwrap(),
-                    // };
-                    if  filter_mapq {
-                        if record.len() >= 8{
-
-                            let mapq = match record.get(7).unwrap_or("60").parse::<u8>() {
-                                Ok(mapq) => mapq,
-                                Err(_) => 60,
-                            };
-                            if mapq < min_quality {
-                                continue
-                            }
-                        }
-
+                    batch.push((idx, record));
+                    if batch.len() >= 1000 {
+                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
                     }
-                    
-                    // let strand1 = record[5].parse::<char>().unwrap_or();
-                    // let strand2 = record[6].parse::<char>().unwrap();
-                    
-                    // let strand1 = if strand1 == '+' { 0 } else { -1 };
-                    // let strand2 = if strand2 == '+' { 0 } else { -1 };
-
-                    let strand1 = match record[5].parse::<char>() {
-                        Ok('+') => 0,
-                        _ => -1,
-                    };
-                    let strand2 = match record[6].parse::<char>() {
-                        Ok('+') => 0,
-                        _ => -1,
-                    };
-
-                    let pos1 = record[2].parse::<u64>().unwrap_or_default();
-                    let pos2 = record[4].parse::<u64>().unwrap_or_default();
-
-                    let mnd_record = MndRecord {
-                        strand1: strand1,
-                        chrom1: record[1].to_string(),
-                        pos1: pos1,
-                        frag1: mnd_defualt.frag1,
-                        strand2: strand2,
-                        chrom2: record[3].to_string(),
-                        pos2: pos2,
-                        frag2: mnd_defualt.frag2,
-                        mapq1: mnd_defualt.mapq1,
-                        cigar1: mnd_defualt.cigar1,
-                        sequence1: mnd_defualt.sequence1,
-                        mapq2: mnd_defualt.mapq2,
-                        cigar2: mnd_defualt.cigar2,
-                        sequence2: mnd_defualt.sequence2,
-                        readname1: mnd_defualt.readname1,
-                        readname2: mnd_defualt.readname2,
-                    };
-                    wtr.serialize(mnd_record)?;
-                }
+                },
                 Err(e) => {
                     eprintln!("{:?}", e);
                     continue
+                }
             }
         }
 
-            // wtr.serialize(mnd_record)?;
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
         }
 
-        wtr.flush()?;
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+
+
+        // let mut wtr = common_writer(output);
+        
+        // for (idx, record) in rdr.records().enumerate() {
+        //     match record {
+        //         Ok(record) => {
+                   
+        //             if  filter_mapq {
+        //                 if record.len() >= 8{
+
+        //                     let mapq = match record.get(7).unwrap_or("60").parse::<u8>() {
+        //                         Ok(mapq) => mapq,
+        //                         Err(_) => 60,
+        //                     };
+        //                     if mapq < min_quality {
+        //                         continue
+        //                     }
+        //                 }
+
+        //             }
+                    
+        //             let strand1 = match record[5].parse::<char>() {
+        //                 Ok('+') => 0,
+        //                 _ => -1,
+        //             };
+        //             let strand2 = match record[6].parse::<char>() {
+        //                 Ok('+') => 0,
+        //                 _ => -1,
+        //             };
+
+        //             let pos1 = record[2].parse::<u64>().unwrap_or_default();
+        //             let pos2 = record[4].parse::<u64>().unwrap_or_default();
+                    
+        //             let line = format!("{} {} {} {} \
+        //                                 {} {} {} {} \
+        //                                 {} {} {} {} \
+        //                                 {} {} {} {}", 
+        //                                 strand1, record[1].to_string(), pos1, mnd_defualt.frag1,
+        //                                 strand2, record[3].to_string(), pos2, mnd_defualt.frag2,
+        //                                 mnd_defualt.mapq1, mnd_defualt.cigar1, mnd_defualt.sequence1,
+        //                                 mnd_defualt.mapq2, mnd_defualt.cigar2, mnd_defualt.sequence2,
+        //                                 mnd_defualt.readname1, mnd_defualt.readname2);
+                    
+        //             writeln!(wtr, "{}\n", line)?;
+                                    
+        //         }
+        //         Err(e) => {
+        //             eprintln!("{:?}", e);
+        //             continue
+        //     }
+        // }
+        //     wtr.flush()?;
+
+        // }
+
+        // wtr.flush()?;
 
         log::info!("Successful output mnd file `{}`", output);
         
@@ -686,13 +740,10 @@ impl Pairs {
 
         // get output prefix
         let output_prefix =  if output.ends_with(".gz") {
-           
             Path::new(output.trim_end_matches(".gz")).file_stem().unwrap().to_str().unwrap()
-        
         } else {
             Path::new(&output).file_stem().unwrap().to_str().unwrap()
         };
-       
 
         let pair_header = self.header.clone();
         let chromsizes: &Vec<ChromSizeRecord> = &pair_header.chromsizes;
@@ -700,7 +751,6 @@ impl Pairs {
             .iter()
             .map(|x| (x.chrom.clone(), x.size.try_into().unwrap()))
             .collect();
-
 
         let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = chromsizes.keys()
             .enumerate()
@@ -714,8 +764,6 @@ impl Pairs {
         let idx_contig: HashMap<u32, &String, BuildHasherDefault<XxHash64>> = contig_idx.par_iter()
             .map(|(key, index)| (*index, key))
             .collect();
-        
-    
 
         if chromsizes.is_empty(){
             log::warn!("chromsizes is empty !!!, please check it.");
@@ -730,8 +778,9 @@ impl Pairs {
         log::info!("Parsing pairs file ...");
         let mut contact_hash: HashMap<(SplitIdx, SplitIdx), u32>  = HashMap::new();
         let filter_mapq = min_quality > 0;
-        let mut data: Arc<Mutex<HashMap<(u32, u32), Vec<SmallIntVec>>>> = Arc::new(Mutex::new(HashMap::new()));
+    
         
+        let mut data: Arc<Mutex<HashMap<(u32, u32), Vec<SmallIntVec>>>> = Arc::new(Mutex::new(HashMap::new()));
         let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
 
         let mut handles = vec![];
@@ -768,7 +817,6 @@ impl Pairs {
                         }
                     }
                     
-
                 }
               
             }));
@@ -786,10 +834,8 @@ impl Pairs {
                     }
                     batch.push((idx, record));
                     if batch.len() >= 1000 {
-                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
-                       
+                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();  
                     }
-              
                 },
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -797,7 +843,6 @@ impl Pairs {
                 }
             }
             
-
         }
 
         if !batch.is_empty() {
@@ -806,12 +851,13 @@ impl Pairs {
 
         drop(sender);
         for handle in handles {
-            handle.join().unwrap();
-           
+            handle.join().unwrap();  
         }
-
+        
         let mut data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+        log::info!("Collected data from pairs file.");
 
+        // let mut data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
         // rdr.records().enumerate().for_each(|(idx, record_result)| {
         //     match record_result {
         //         Ok(record) => {
@@ -845,7 +891,6 @@ impl Pairs {
 
         
         if output_split_contacts{
-
             let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
             let mut writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
@@ -905,7 +950,6 @@ impl Pairs {
                     let length1 = idx_sizes.get(&cp.0).unwrap();
                     let length2 = idx_sizes.get(&cp.1).unwrap();
                 
-
                     let res = vec.iter().map(
                         |x| {
                             let pos1 = x[0];
@@ -929,16 +973,15 @@ impl Pairs {
                     }
                     let contig1 = idx_contig.get(&cp.0).unwrap();
                     let contig2 = idx_contig.get(&cp.1).unwrap();
-                    let cp = ContigPair2{Contig1: contig1, Contig2: contig2};
 
-                    let mut buffer = Vec::with_capacity(128);
+                    let mut buffer = Vec::with_capacity(4);
                     for (i, res1) in zipped.iter().enumerate() {
-                        let res1 = res1.par_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+                        let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
                         let line = match i {
-                            0 => format!("{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                            1 => format!("{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                            2 => format!("{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
-                            3 => format!("{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, count, res1),
+                            0 => format!("{}+ {}+\t{}\t{}\n", contig1, contig2, count, res1),
+                            1 => format!("{}+ {}-\t{}\t{}\n", contig1, contig2, count, res1),
+                            2 => format!("{}- {}+\t{}\t{}\n", contig1, contig2, count, res1),
+                            3 => format!("{}- {}-\t{}\t{}\n", contig1, contig2, count, res1),
                             _ => panic!("Error: Invalidindex"),
                         };
                     
@@ -1002,15 +1045,6 @@ impl Pairs {
                             let mut buffer = String::new();
                             for (i, res1) in res.iter().enumerate() {
                                 let res1 = res1.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
-                                // let line = match i {
-                                //     0 => format!("{}+ {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                                //     1 => format!("{}+ {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                                //     2 => format!("{}- {}+\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                                //     3 => format!("{}- {}-\t{}\t{}\n", cp.Contig1, cp.Contig2, res_len, res1),
-                                //     _ => panic!("Error: Invalid index"),
-                                // };
-
-                                // buffer.push_str(&line);
 
                                 use std::fmt::Write;
                                 write!(
@@ -1052,6 +1086,15 @@ impl Pairs {
             }
 
             let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
+            if record.len() < 8 {
+                buffer.push(line);
+                if buffer.len() >= 1000 {
+                    wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
+                    wtr.write_all(b"\n").unwrap();
+                    buffer.clear();
+                }
+                continue
+            }
             if let Ok(mapq) = record[7].parse::<u8>() {
                 if mapq >= min_quality {
                     buffer.push(line);
@@ -1293,11 +1336,104 @@ impl Pairs {
         let pair_header = &self.header;
         let contigsizes_data = &pair_header.chromsizes;
         let contigsizes_data: BrownHashMap<String, u64> = contigsizes_data.iter().map(|x| (x.chrom.clone(), x.size)).collect();
-
-        let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
-        // let bins_db = binify(&contigsizes_data, binsize.try_into().unwrap()).unwrap();
+        
         let filter_mapq = min_quality > 0;
 
+        // let mut depth: Arc<Mutex<BrownHashMap<String, Vec<u32>>>> = Arc::new(Mutex::new(BrownHashMap::new()));
+        // let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        // let mut handles = vec![];
+        // for _ in 0..4 {
+        //     let receiver = receiver.clone();
+        //     let depth = Arc::clone(&depth);
+        //     let contigsizes_data = contigsizes_data.clone();
+        //     handles.push(thread::spawn(move || {
+
+        //         while let Ok((records)) = receiver.recv() {
+
+        //             let mut updates: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
+        //             for (idx, record) in records {
+
+        //                 let contig1 = &record[1];
+        //                 let contig2 = &record[3];
+        //                 let pos1 = record[2].parse::<u32>().unwrap();
+        //                 let pos2 = record[4].parse::<u32>().unwrap();
+                
+
+        //                 if !updates.contains_key(&record[1]) {
+        //                     let size1 = *contigsizes_data.get(&record[1]).unwrap_or(&0);
+        //                     if size1 != 0 {
+        //                         let bins1 = updates.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
+        //                         bins1[pos1 as usize / binsize as usize] += 1;
+        //                     }
+                    
+        //                 } 
+        //                 if !updates.contains_key(&record[3]) {
+        //                     let size2 = *contigsizes_data.get(&record[3]).unwrap_or(&0);
+        //                     if size2 != 0 {
+        //                         let bins2 = updates.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
+        //                         bins2[pos2 as usize / binsize as usize] += 1;
+        //                     }
+                        
+        //                 }
+            
+        //                 if let Some(bins1) = updates.get_mut(&record[1]) {
+        //                     bins1[pos1 as usize / binsize as usize] += 1;
+        //                 }
+                        
+        //                 if let Some(bins2) = updates.get_mut(&record[3]) {
+        //                     bins2[pos2 as usize / binsize as usize] += 1;
+        //                 }
+        //             }
+
+        //             {
+        //                 let mut depth = depth.lock().unwrap();
+        //                 for (key, mut local_values) in updates {
+        //                     if let Some(depth_values) = depth.get_mut(&key) {
+        //                         depth_values.extend(local_values.iter().cloned());
+        //                     } else {
+        //                         depth.insert(key.clone(), local_values.clone());
+        //                     }
+        //                 }
+        //             }
+        //         }
+
+                
+
+        //     }));
+        // }
+
+
+        // let mut batch = Vec::with_capacity(1000);
+        // for (idx, record) in rdr.records().enumerate() {
+        //     let record = record.unwrap();
+        //     if filter_mapq {
+        //         if record.len() >= 8 {
+        //             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+        //             if mapq <= min_quality {
+        //                 continue
+        //             }
+        //         }
+        //     }
+        //     batch.push((idx, record));
+        //     if batch.len() >= 1000 {
+        //         sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+
+        //     }
+
+        // }
+
+        // if !batch.is_empty() {
+        //     sender.send(batch).unwrap();
+        // }
+
+        // drop(sender);
+        // for handle in handles {
+        //     handle.join().unwrap();
+        // }
+
+        // let mut depth =  Arc::try_unwrap(depth).unwrap().into_inner().unwrap();
+
+        let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
         for (i, record) in rdr.records().enumerate() {
             let record = record.unwrap();
             if filter_mapq {
@@ -1317,9 +1453,6 @@ impl Pairs {
             if !depth.contains_key(&record[1]) {
                 let size1 = *contigsizes_data.get(&record[1]).unwrap_or(&0);
                 if size1 != 0 {
-                    // let mut bins1 = vec![0; (*size1 / binsize as u64 + 1) as usize];
-
-                    // depth.insert(record[1].to_string(), bins1);
                     let bins1 = depth.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
                     bins1[pos1 as usize / binsize as usize] += 1;
                 }
@@ -1328,8 +1461,6 @@ impl Pairs {
             if !depth.contains_key(&record[3]) {
                 let size2 = *contigsizes_data.get(&record[3]).unwrap_or(&0);
                 if size2 != 0 {
-                    // let mut bins2 = vec![0; (*size2 / binsize as u64 + 1) as usize];
-                    // depth.insert(record[3].to_string(), bins2);
                     let bins2 = depth.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
                     bins2[pos2 as usize / binsize as usize] += 1;
                 }
@@ -1349,19 +1480,6 @@ impl Pairs {
         let depth: BTreeMap<_, _> = depth.into_iter().collect();
         let mut wtr = common_writer(output);
         let wtr = Arc::new(Mutex::new(wtr));
-        // for (contig, bins) in depth {
-        //     let size = contigsizes_data.get(&contig).unwrap_or(&0);
-        //     for (bin, count) in bins.iter().enumerate() {
-        //         let bin_start = bin * binsize as usize;
-        //         let mut bin_end = bin_start + binsize as usize;
-
-        //         if bin_end > (*size).try_into().unwrap() {
-        //             bin_end = *size as usize;
-        //         }
-        //         write!(wtr, "{}\t{}\t{}\t{}\n", 
-        //                     contig, bin_start, bin_end, count).unwrap();
-        //     }
-        // }
 
         depth.par_iter().for_each(|(contig, bins)| {
             let size = contigsizes_data.get(contig).unwrap_or(&0);
@@ -1381,41 +1499,6 @@ impl Pairs {
         });
 
         log::info!("Successful output depth file into `{}`", output);
-        // let depth = Arc::new(Mutex::new(DashMap::new()));
-        // self.parse().unwrap().records().enumerate().par_bridge().for_each(|(i, record)| {
-        //     let record = record.unwrap();
-        //     if filter_mapq {
-        //         if record.len() >= 8 {
-        //             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-        //             if mapq <= min_quality {
-        //                 return;
-        //             }
-        //         }
-        //     }
-
-        //     let pos1 = record[2].parse::<u64>().unwrap();
-        //     let pos2 = record[4].parse::<u64>().unwrap();
-
-        //     let mut depth = depth.lock().unwrap();
-        //     depth.entry(record[1].to_string()).or_insert(BTreeMap::<u64, u64>::new()).entry((pos1 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
-        //     depth.entry(record[3].to_string()).or_insert(BTreeMap::<u64, u64>::new()).entry((pos2 / binsize).try_into().unwrap()).and_modify(|e| *e += 1).or_insert(1);
-        // });
-
-        // let depth: BTreeMap<_, _> = Arc::try_unwrap(depth).unwrap().into_inner().unwrap().into_iter().collect();
-        // let mut wtr = common_writer(output);
-
-        // for (chrom, bins) in depth {
-        //     for (bin, count) in bins{
-        //         let bin_start = bin * binsize;
-        //         let mut bin_end = bin_start + binsize;
-        //         let size = contigsizes_data.get(&chrom).unwrap();
-        //         if bin_end > *size {
-        //             bin_end = *size;
-        //         }
-        //         wtr.write_all(format!("{}\t{}\t{}\t{}\n", 
-        //                                 chrom, bin_start, bin_end, count).as_bytes()).unwrap();
-        //     }
-        // }
         
     }
 
@@ -1457,13 +1540,11 @@ impl Pairs {
         self.header.from_chromsizes(new_contigsizes);
         writer.write_all(self.header.to_string().as_bytes()).unwrap();
         
-    
         let mut wtr = csv::WriterBuilder::new()
                         .has_headers(false)
                         .delimiter(b'\t')
                         .from_writer(writer);
 
-     
         for (idx, record) in rdr.records().enumerate() {
             let record = record.unwrap();
             let chrom1 = &record[1];
@@ -1482,7 +1563,6 @@ impl Pairs {
                         let mut res = interval.find(pos1, pos1+1).collect::<Vec<_>>();
                         if res.len() > 0 {
                             let new_pos = pos1 - res[0].start + 1;
-                            // let new_chrom1 = format!("{}:{}-{}", chrom1, res[0].start, res[0].stop);
                             let new_chrom1 = &res[0].val;
                             (new_chrom1, new_pos )
                         } else {

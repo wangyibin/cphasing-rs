@@ -71,6 +71,7 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("alleles")
                 .alias("allele")
+                .hide(true)
                 .about("Identify the allelic contig pairs by self comparison (unstable and slowly)")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
