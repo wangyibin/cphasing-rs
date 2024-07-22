@@ -292,13 +292,20 @@ impl Pairs {
                 
                 while let Ok(records) = receiver.recv() {
                     let mut data = vec![];
-                    for (idx, record) in records {
-                        if filter_mapq && record.len() >= 8 {
-                            let mapq = record.get(7).unwrap_or(&"60".to_string()).parse::<u8>().unwrap_or(60);
-                            if mapq < min_quality {
-                                continue;
-                            }
-                        }
+                    let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
+
+                    for (idx, record) in records.iter().filter(|(idx, record)| {
+                        !filter_needed || record.get(7)
+                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                            .map_or(true, |mapq| mapq > min_quality)
+                    }) {
+                    // for (idx, record) in records {
+                    //     if filter_mapq && record.len() >= 8 {
+                    //         let mapq = record.get(7).unwrap_or(&"60".to_string()).parse::<u8>().unwrap_or(60);
+                    //         if mapq < min_quality {
+                    //             continue;
+                    //         }
+                    //     }
                         
                         let strand1 = match record[5].parse::<char>() {
                             Ok('+') => 0,
@@ -794,8 +801,20 @@ impl Pairs {
                 while let Ok((records)) = receiver.recv() {
 
                     let mut updates: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::with_capacity(1000);
-                    for (idx, record) in records {
-                        
+                    let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
+
+                    for (idx, record) in records.iter().filter(|(idx, record)| {
+                        !filter_needed || record.get(7)
+                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                            .map_or(true, |mapq| mapq > min_quality)
+                    }) {
+                    // for (idx, record) in records {
+                    //     if filter_mapq && record.len() >= 8 {
+                    //         let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+                    //         if mapq <= min_quality {
+                    //             continue; 
+                    //         }
+                    //     }
                         let pos1 = record[2].parse::<u32>().unwrap_or_default();
                         let pos2 = record[4].parse::<u32>().unwrap_or_default();
                         
@@ -826,12 +845,6 @@ impl Pairs {
         for (idx, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                    if filter_mapq && record.len() >= 8 {
-                        let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                        if mapq <= min_quality {
-                            continue; 
-                        }
-                    }
                     batch.push((idx, record));
                     if batch.len() >= 1000 {
                         sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();  
@@ -1339,72 +1352,82 @@ impl Pairs {
         
         let filter_mapq = min_quality > 0;
 
-        // let mut depth: Arc<Mutex<BrownHashMap<String, Vec<u32>>>> = Arc::new(Mutex::new(BrownHashMap::new()));
-        // let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
-        // let mut handles = vec![];
-        // for _ in 0..4 {
-        //     let receiver = receiver.clone();
-        //     let depth = Arc::clone(&depth);
-        //     let contigsizes_data = contigsizes_data.clone();
-        //     handles.push(thread::spawn(move || {
+        let mut depth: Arc<Mutex<BrownHashMap<String, Vec<u32>>>> = Arc::new(Mutex::new(BrownHashMap::new()));
+        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let receiver = receiver.clone();
+            let depth = Arc::clone(&depth);
+            let contigsizes_data = contigsizes_data.clone();
+            handles.push(thread::spawn(move || {
 
-        //         while let Ok((records)) = receiver.recv() {
+                while let Ok((records)) = receiver.recv() {
 
-        //             let mut updates: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
-        //             for (idx, record) in records {
+                    let mut updates: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
+                    let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
 
-        //                 let contig1 = &record[1];
-        //                 let contig2 = &record[3];
-        //                 let pos1 = record[2].parse::<u32>().unwrap();
-        //                 let pos2 = record[4].parse::<u32>().unwrap();
-                
+                    for (idx, record) in records.iter().filter(|(idx, record)| {
+                        !filter_needed || record.get(7)
+                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                            .map_or(true, |mapq| mapq > min_quality)
+                    }) {
+                        let contig1 = &record[1];
+                        let contig2 = &record[3];
+                        let pos1 = record[2].parse::<u32>().unwrap();
+                        let pos2 = record[4].parse::<u32>().unwrap();
+                        for contig in [&contig1, &contig2] {
+                            let size = *contigsizes_data.get(*contig).unwrap_or(&0);
+                            if size != 0 {
+                                let bin_index = if contig == &contig1 { pos1 } else { pos2 } as usize / binsize as usize;
+                                updates.entry(contig.to_string())
+                                       .or_insert_with(|| vec![0; (size / binsize as u64 + 1) as usize])
+                                       [bin_index] += 1;
+                            }
+                        }
 
-        //                 if !updates.contains_key(&record[1]) {
-        //                     let size1 = *contigsizes_data.get(&record[1]).unwrap_or(&0);
-        //                     if size1 != 0 {
-        //                         let bins1 = updates.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
-        //                         bins1[pos1 as usize / binsize as usize] += 1;
-        //                     }
-                    
-        //                 } 
-        //                 if !updates.contains_key(&record[3]) {
-        //                     let size2 = *contigsizes_data.get(&record[3]).unwrap_or(&0);
-        //                     if size2 != 0 {
-        //                         let bins2 = updates.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
-        //                         bins2[pos2 as usize / binsize as usize] += 1;
-        //                     }
-                        
-        //                 }
+                    }
+
+                    {
+                        let mut depth = depth.lock().unwrap();
+                        for (key, local_values) in updates {
+                            if let Some(depth_values) = depth.get_mut(&key) {
+                                for (i, value) in local_values.iter().enumerate() {
+                                    depth_values[i] += value;
+                                }
+                            } else {
+                                depth.insert(key, local_values);
+                            }
+                        }
+                    }
+                }
+
+            }));
+        }
+
+        let mut batch = Vec::with_capacity(1000);
+        for (idx, record) in rdr.records().enumerate() {
+            let record = record.unwrap();
             
-        //                 if let Some(bins1) = updates.get_mut(&record[1]) {
-        //                     bins1[pos1 as usize / binsize as usize] += 1;
-        //                 }
-                        
-        //                 if let Some(bins2) = updates.get_mut(&record[3]) {
-        //                     bins2[pos2 as usize / binsize as usize] += 1;
-        //                 }
-        //             }
+            batch.push((idx, record));
+            if batch.len() >= 1000 {
+                sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+            }
 
-        //             {
-        //                 let mut depth = depth.lock().unwrap();
-        //                 for (key, mut local_values) in updates {
-        //                     if let Some(depth_values) = depth.get_mut(&key) {
-        //                         depth_values.extend(local_values.iter().cloned());
-        //                     } else {
-        //                         depth.insert(key.clone(), local_values.clone());
-        //                     }
-        //                 }
-        //             }
-        //         }
+        }
 
-                
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
 
-        //     }));
-        // }
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
 
+        let mut depth =  Arc::try_unwrap(depth).unwrap().into_inner().unwrap();
 
-        // let mut batch = Vec::with_capacity(1000);
-        // for (idx, record) in rdr.records().enumerate() {
+        // let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
+        // for (i, record) in rdr.records().enumerate() {
         //     let record = record.unwrap();
         //     if filter_mapq {
         //         if record.len() >= 8 {
@@ -1414,76 +1437,47 @@ impl Pairs {
         //             }
         //         }
         //     }
-        //     batch.push((idx, record));
-        //     if batch.len() >= 1000 {
-        //         sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
 
+        //     let contig1 = &record[1];
+        //     let contig2 = &record[3];
+        //     let pos1 = record[2].parse::<u32>().unwrap();
+        //     let pos2 = record[4].parse::<u32>().unwrap();
+
+        //     if !depth.contains_key(&record[1]) {
+        //         let size1 = *contigsizes_data.get(contig1).unwrap_or(&0);
+        //         if size1 != 0 {
+        //             let bins1 = depth.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
+        //             bins1[pos1 as usize / binsize as usize] += 1;
+        //         }
+        
+        //     } 
+        //     if !depth.contains_key(&record[3]) {
+        //         let size2 = *contigsizes_data.get(contig2).unwrap_or(&0);
+        //         if size2 != 0 {
+        //             let bins2 = depth.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
+        //             bins2[pos2 as usize / binsize as usize] += 1;
+        //         }
+               
         //     }
 
-        // }
-
-        // if !batch.is_empty() {
-        //     sender.send(batch).unwrap();
-        // }
-
-        // drop(sender);
-        // for handle in handles {
-        //     handle.join().unwrap();
-        // }
-
-        // let mut depth =  Arc::try_unwrap(depth).unwrap().into_inner().unwrap();
-
-        let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
-        for (i, record) in rdr.records().enumerate() {
-            let record = record.unwrap();
-            if filter_mapq {
-                if record.len() >= 8 {
-                    let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                    if mapq <= min_quality {
-                        continue
-                    }
-                }
-            }
-
-            let contig1 = &record[1];
-            let contig2 = &record[3];
-            let pos1 = record[2].parse::<u32>().unwrap();
-            let pos2 = record[4].parse::<u32>().unwrap();
-
-            if !depth.contains_key(&record[1]) {
-                let size1 = *contigsizes_data.get(&record[1]).unwrap_or(&0);
-                if size1 != 0 {
-                    let bins1 = depth.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
-                    bins1[pos1 as usize / binsize as usize] += 1;
-                }
-        
-            } 
-            if !depth.contains_key(&record[3]) {
-                let size2 = *contigsizes_data.get(&record[3]).unwrap_or(&0);
-                if size2 != 0 {
-                    let bins2 = depth.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
-                    bins2[pos2 as usize / binsize as usize] += 1;
-                }
-               
-            }
-
-            if let Some(bins1) = depth.get_mut(&record[1]) {
-                bins1[pos1 as usize / binsize as usize] += 1;
-            }
+        //     if let Some(bins1) = depth.get_mut(&record[1]) {
+        //         bins1[pos1 as usize / binsize as usize] += 1;
+        //     }
             
-            if let Some(bins2) = depth.get_mut(&record[3]) {
-                bins2[pos2 as usize / binsize as usize] += 1;
-            }
+        //     if let Some(bins2) = depth.get_mut(&record[3]) {
+        //         bins2[pos2 as usize / binsize as usize] += 1;
+        //     }
         
-        }
+        // }
 
+        log::info!("Collected data from pairs file.");
         let depth: BTreeMap<_, _> = depth.into_iter().collect();
         let mut wtr = common_writer(output);
         let wtr = Arc::new(Mutex::new(wtr));
 
         depth.par_iter().for_each(|(contig, bins)| {
             let size = contigsizes_data.get(contig).unwrap_or(&0);
-            let mut buffer = Vec::with_capacity(128);
+            let mut buffer = Vec::with_capacity(bins.len() * 50);
             for (bin, count) in bins.iter().enumerate() {
                         let bin_start = bin * binsize as usize;
                         let mut bin_end = bin_start + binsize as usize;
@@ -1494,8 +1488,11 @@ impl Pairs {
                         
                         buffer.extend_from_slice(format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes());
             }
-            let mut wtr = wtr.lock().unwrap();
-            wtr.write_all(&buffer).unwrap();
+            {
+                let mut wtr = wtr.lock().unwrap();
+                wtr.write_all(&buffer).unwrap();
+            }
+            
         });
 
         log::info!("Successful output depth file into `{}`", output);
