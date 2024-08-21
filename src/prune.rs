@@ -249,12 +249,12 @@ impl Pruner {
                             contig_pair.Contig1, contig_pair.Contig2, 
                             allele_strand_record.length1, allele_strand_record.length2,
                             allele_strand_record.matches, allele_strand_record.identity, 
-                            0);
+                            0).unwrap();
                 },
                 None => {
                     writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             contig_pair.Contig1, contig_pair.Contig2, 
-                            0, 0, 0, 0.98, 0);
+                            0, 0, 0, 0.98, 0).unwrap();
                 }
             }
             

@@ -227,19 +227,22 @@ impl KPruner {
         let unique_min = self.alleletable.header.to_unique_minimizer_density();
         log::set_max_level(log::LevelFilter::Info);
         let mut contacts_data = self.contacts.to_data(&unique_min, &self.normalization_method);
-        // let mut contacts_data2: HashMap<&String, HashMap<&String, f64>> = HashMap::new();
-        // for (contig_pair, count) in contacts_data.iter() {
-        //     contacts_data2.entry(contig_pair.Contig1).or_insert_with(HashMap::new).insert(contig_pair.Contig2, *count);
-        //     contacts_data2.entry(contig_pair.Contig2).or_insert_with(HashMap::new).insert(contig_pair.Contig1, *count);
-        // }
+
+        // filter contact data
+        if !whitehash.is_empty() {
+            contacts_data.retain(|x, y| whitehash.contains(x.Contig1) &&  whitehash.contains(x.Contig2));
+        }
+        
         let mut contig_pairs: Vec<&ContigPair2> = contacts_data.keys().collect();
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs();
 
         contig_pairs.retain(|x| !allelic_contig_pairs.contains(x));
 
-        if whitehash.len() > 0 {
+        if !whitehash.is_empty() {
             allelic_contig_pairs.retain(|x| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2));
         }
+
+        
 
         // remove allelic_contig_pairs from self.contacts, which not contain it
         allelic_contig_pairs.retain(|x| contacts_data.contains_key(x));
@@ -260,16 +263,32 @@ impl KPruner {
 
 
 
-        // remove both contig1 and contig2 not in whitehash
-        if whitehash.len() > 0 {
-            contig_pairs.retain(|x| whitehash.contains(&x.Contig1) 
-                                        && whitehash.contains(&x.Contig2));
-            contig_pairs.retain(|x| allelic_contigs.contains_key(x.Contig1) 
-                                        && allelic_contigs.contains_key(x.Contig2));
-        }
+        // // remove both contig1 and contig2 not in whitehash
+        // if whitehash.len() > 0 {
+        //     contig_pairs.retain(|x| whitehash.contains(&x.Contig1) 
+        //                                 && whitehash.contains(&x.Contig2));
+        //     contig_pairs.retain(|x| allelic_contigs.contains_key(x.Contig1) 
+        //                                 && allelic_contigs.contains_key(x.Contig2));
+        // }
         
-        // filter contig pairs that contig1 == contig2 
-        contig_pairs.retain(|x| x.Contig1 != x.Contig2);
+        // // filter contig pairs that contig1 == contig2 
+        // contig_pairs.retain(|x| x.Contig1 != x.Contig2);
+
+        if !whitehash.is_empty() {
+            contig_pairs.retain(|x| 
+                whitehash.contains(&x.Contig1) && 
+                whitehash.contains(&x.Contig2) &&
+                allelic_contigs.contains_key(&x.Contig1) &&
+                allelic_contigs.contains_key(&x.Contig2) &&
+                x.Contig1 != x.Contig2
+            );
+        } else {
+            contig_pairs.retain(|x| 
+                allelic_contigs.contains_key(&x.Contig1) &&
+                allelic_contigs.contains_key(&x.Contig2) &&
+                x.Contig1 != x.Contig2
+            );
+        }
         let cross_allelic: Vec<&&ContigPair2> =  contig_pairs
                                                     .par_iter()
                                                     .filter_map(|contig_pair| {

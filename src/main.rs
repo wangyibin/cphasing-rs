@@ -2,7 +2,8 @@
 use indexmap::IndexMap;
 use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
-use cphasing::bam::{ split_bam, bam2pairs, slide2raw};
+use cphasing::bam::{ split_bam, bam2pairs, 
+                     bam2paf, slide2raw};
 use cphasing::cli::cli;
 use cphasing::clm::Clm;
 use cphasing::core::{ 
@@ -586,7 +587,8 @@ fn main() {
             if *invert {
                 log::info!("Invert the table.");
             }
-            prt.intersect(&bed, *invert, &output);
+            // prt.intersect(&bed, *invert, &output);
+            prt.intersect_multi_threads(&bed, *invert, &output);
         }
         Some(("paf2pairs", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
@@ -634,9 +636,17 @@ fn main() {
             }
         }
         Some(("pairs-merge", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
+            
             let files: Vec<_> = sub_matches.get_many::<String>("FILES").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
             merge_pairs(files, output)
         }
         Some(("pairs-break", sub_matches)) => {
@@ -648,8 +658,15 @@ fn main() {
             pairs.break_contigs(&break_bed, &output);
         }
         Some(("pairs-filter", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
@@ -683,7 +700,7 @@ fn main() {
             // let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut pairs = Pairs::new(&pairs);
-
+            
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -727,6 +744,15 @@ fn main() {
 
             pairs.to_bam(*min_quality, &output, *threads);
         }
+
+        Some(("bam2paf", sub_matches)) => {
+            let bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
+            bam2paf(&bam, &output, *threads);
+        }
+
         Some(("bam2pairs", sub_matches)) => {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
@@ -749,7 +775,8 @@ fn main() {
             if *invert {
                 log::info!("Invert the table.");
             }
-            pairs.intersect(&bed, *invert, *min_quality, &output);
+            // pairs.intersect(&bed, *invert, *min_quality, &output);
+            pairs.intersect_multi_threads(&bed, *invert, *min_quality, &output);
         }
 
         Some(("chromsizes", sub_matches)) => {

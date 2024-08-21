@@ -620,6 +620,7 @@ fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
 
 pub fn read_bam(input_bam: &String, mapq: u8, output: &String) {
     let mut bam = Reader::from_path(input_bam).unwrap();
+    let _ = bam.set_threads(8);
     let bam_header = Header::from_template(bam.header());
     let bam_header = HeaderView::from_header(&bam_header);
 

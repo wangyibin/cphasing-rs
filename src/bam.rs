@@ -24,12 +24,12 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-    bam.set_threads(8);
+    let _ = bam.set_threads(8);
     let header = Header::from_template(bam.header());
     let mut i = 0;
     let mut j = 0;
     let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam).unwrap();
-    log::info!("write {} records to {}", i, format!("{}_{}.bam", output_prefix, j));
+    log::info!("write {} records to {}", record_num, format!("{}_{}.bam", output_prefix, j));
     for r in bam.records() {
         let record = r?;
         wtr.write(&record)?;
@@ -41,8 +41,11 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
             
             i = 0;
         }
-    }
+    } 
+
+    log::info!("write {} records to {}", i, format!("{}_{}.bam", output_prefix, j));
     
+
     Ok(())
 }
 
@@ -52,7 +55,7 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-    bam.set_threads(threads);
+    let _ = bam.set_threads(threads);
 
     let header = Header::from_template(bam.header());
     
@@ -80,6 +83,72 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
 
 }
 
+pub fn bam2paf(input_bam: &String, output: &String, threads: usize) {
+    let mut bam = if input_bam == &String::from("-") {
+        Reader::from_stdin().expect("Failed to read from stdin")
+    } else {
+        Reader::from_path(input_bam).expect("Failed to read from the provided path")
+    };
+   
+    let header = Header::from_template(bam.header());
+    let header = HeaderView::from_header(&header);
+    let mut chromsizes = Vec::new();
+    
+
+    for tid in 0..header.target_count() {
+        let name = header.tid2name(tid);
+        let len = header.target_len(tid).unwrap();
+        let csr: ChromSizeRecord = ChromSizeRecord {
+            chrom: std::str::from_utf8(name).unwrap().to_string(), 
+            size: len
+        };
+        chromsizes.push(csr);
+    }
+
+    let _ = bam.set_threads(threads);
+    let mut idx = 0;
+
+    let mut writer = common_writer(output);
+    
+    while let Some(r) = bam.records().next() {
+        let record = r.unwrap();
+
+        if record.is_unmapped() {
+            continue 
+        }
+
+        let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+        let pos = record.pos() + 1;
+        let strand = if record.is_reverse() { "-" } else { "+" };
+       
+        let match_length: i64 = record.cigar().iter().filter_map(|cigar| {
+            match cigar.char() {
+                'M' | '=' | 'X' | 'D' => Some(cigar.len() as i64),
+                _ => None,
+            }
+        }).sum();
+
+
+        let qname = std::str::from_utf8(record.qname()).unwrap();
+        let qlen = record.seq().len();
+        let qstart = 0;
+        let qend = qlen;
+        
+        let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
+        let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
+        let tstart = pos;
+        let tend = pos + match_length - 1;
+        let mapq = record.mapq();
+        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+                qname, qlen, qstart, qend, strand, 
+                tname, tend, match_length, mapq);
+
+        idx += 1;
+
+
+    }
+}
+
 
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
     
@@ -104,7 +173,7 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
         chromsizes.push(csr);
     }
 
-    bam.set_threads(threads);
+    let _ = bam.set_threads(threads);
 
     let mut ph: PairHeader = PairHeader::new();
     ph.from_chromsizes(chromsizes);

@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 use anyhow::Result as anyResult;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::bounded;
 use std::thread;
 use itertools::{Itertools, Combinations};
 use std::cmp::Ordering;
@@ -331,10 +331,9 @@ impl PoreCTable {
         let mut ph: PairHeader = PairHeader::new();
         ph.from_chromsizes(chromsizes_data);
 
-
         let mut writer = common_writer(output);
         writer.write_all(ph.to_string().as_bytes()).unwrap();
-
+        
         let mut wtr = csv::WriterBuilder::new()
                             .has_headers(false)
                             .delimiter(b'\t')
@@ -397,6 +396,99 @@ impl PoreCTable {
         Ok(())
     }
 
+    // pub fn to_pairs_multi_threads(&self, chromsizes: &String, output: &String, min_quality: u8, 
+    //     min_order: usize, max_order: usize,
+    //     ) -> Result<(), Box<dyn Error>> { 
+        
+    //         let parse_result = self.parse();
+    //     let mut rdr = match parse_result {
+    //         Ok(v) => v,
+    //         Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
+    //     };
+    //     log::info!("Only retain concatemer that order in the range of [{}, {})", min_order, max_order);
+    //     let chromsizes: ChromSize = ChromSize::new(chromsizes);
+    //     let chromsizes_data: Vec<ChromSizeRecord> = chromsizes.to_vec().unwrap();
+
+    //     let mut ph: PairHeader = PairHeader::new();
+    //     ph.from_chromsizes(chromsizes_data);
+    //     let mut writer = common_writer(output);
+    //     writer.write_all(ph.to_string().as_bytes()).unwrap();
+
+    //     let wtr = Arc::new(Mutex::new(writer));
+    //     let (sender, receiver) = bounded::<Vec<PoreCRecord>>(1000);
+    //     let mut handles: Vec<PoreCRecord> = vec![];
+
+
+    //     let mut concatemer: Concatemer = Concatemer::new();  
+    //     let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
+
+    //     let mut old_read_idx: u64 = 0; 
+    //     let mut flag: bool = false; 
+    //     let mut read_id: u64 = 0;
+        
+    //     for _ in 0..8 {
+    //         let receiver = receiver.clone();
+    //         let wtr = Arc::clone(&wtr);
+            
+    //         handles.push(thread::spawn(move || {
+    //             while let Ok(records) = receiver.recv() {
+    //                 let mut concatemer: Concatemer = Concatemer::new();
+    //                 let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
+    //                 for record in records {
+    //                     if !flag && record.read_idx != old_read_idx {
+    //                         let order = concatemer.count();
+    //                         if (order < max_order) && (order >= min_order) {
+    //                             concatemer.sort();
+    //                             concatemer_summary.count(&concatemer);
+    //                             for pair in concatemer.decompose() {
+    //                                 let mut wtr = wtr.lock().unwrap();
+    //                                 wtr.write_all(PairRecord::from_pore_c_pair(pair, read_id).to_string().as_bytes()).unwrap();
+    //                                 read_id += 1;
+    //                             }
+    //                             concatemer.clear();
+    //                         }
+    //                         flag = true;
+    //                     }
+    //                     old_read_idx = record.read_idx;
+    //                     if record.mapq < min_quality {
+    //                         continue
+    //                     }
+    //                     concatemer.push(record);
+    //                 }
+                    
+    //             }
+    //         }));
+    //     }
+
+    //     let mut batch = Vec::with_capacity(1000);
+    //     for (i, line) in rdr.deserialize().enumerate() {
+    //         let record: PoreCRecord = match line {
+    //             Ok(v) => v,
+    //             Err(error) => {
+    //                 log::warn!("Could not parse line {}", i + 1);
+    //                 continue
+    //             },
+    //         };
+    //         batch.push(record);
+    //         if batch.len() == 1000 {
+    //             sender.send(std::mem::take(&mut batch)).unwrap();
+    //         }
+    //     }
+
+    //     if !batch.is_empty() {
+    //         sender.send(std::mem::take(&mut batch)).unwrap();
+    //     }
+
+    //     drop(sender);
+
+    //     for handle in handles {
+    //         handle.join().unwrap();
+    //     }
+
+    //     log::info!("Successful output pairs `{}`", output);
+    //     Ok(())
+    // }
+
     pub fn to_depth(&mut self, contigsizes: &String, binsize:u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap as BrownHashMap;
         let mut parse_result = self.parse().unwrap();
@@ -439,81 +531,78 @@ impl PoreCTable {
 
         }
         
-        // let wtr = Arc::new(Mutex::new(wtr));
-        // let interval_hash = Arc::new(interval_hash);
-
-        // self.parse().unwrap().records().par_bridge().for_each(|line| {
-           
-        //     let record = match line {
-        //         Ok(v) => v,
-        //         Err(_) => {
-        //             log::warn!("Could not parse line");
-        //             return; =
-        //         },
-        //     };
-
-        //     let target_start = record[6].parse::<usize>().unwrap();
-        //     let target_end = record[7].parse::<usize>().unwrap();
-
-        //     let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval| {
-        //         interval.count(target_start, target_end) > 0
-        //     });
-
-        //     if is_in_regions ^ invert {
-        //         let mut wtr = wtr.lock().unwrap(); // 锁定写入器
-        //         wtr.write_record(&record).expect("Failed to write record");
-        //     }
-        // });
-
-        // let output = output.to_string();
-        // let input = common_reader(&self.file);
-        // let mut rdr = csv::ReaderBuilder::new()
-        //                     .flexible(true)
-        //                     .has_headers(false)
-        //                     .comment(Some(b'#'))
-        //                     .delimiter(b'\t')
-        //                     .from_reader(input);
-
-        // let (sender, receiver) = unbounded();
-
-        // let producer = thread::spawn(move || {
-        //     for (i, line) in rdr.records().enumerate() {
-        //         let record = match line {
-        //             Ok(v) => v,
-        //             Err(error) => {
-        //                 log::warn!("Could not parse line {}", i + 1);
-        //                 continue;
-        //             },
-        //     };
-
-        //     let target_start = record[6].parse::<usize>().unwrap();
-        //     let target_end = record[7].parse::<usize>().unwrap();
-
-        //     let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
-        //         interval.count(target_start, target_end) > 0 });
-
-        //     if is_in_regions ^ invert {
-        //         sender.send(record).unwrap();
-        //     }
-        // }
-
-    // });
-
-
-    
-    // let writer = common_writer(&output);
-    // let mut wtr = csv::WriterBuilder::new()
-    //             .has_headers(false)
-    //             .delimiter(b'\t')
-    //             .from_writer(writer);
-
-    // for record in receiver {
-    //     wtr.write_record(&record).unwrap();
-    // }
-
-    // wtr.flush().unwrap();
     
     log::info!("Successful output intersection porec table into `{}`", output);
+
+    }
+
+    pub fn intersect_multi_threads(&mut self, hcr_bed: &String, invert: bool, output: &String) {
+        type IvU8 = Interval<usize, u8>;
+        let bed = Bed3::new(hcr_bed);
+        let interval_hash = bed.to_interval_hash();
+        let wtr = common_writer(output);
+        
+
+        let (sender, receiver) = bounded::<Vec<csv::StringRecord>>(1000);
+
+        let mut handles = vec![];
+        let mut wtr = Arc::new(Mutex::new(wtr));
+        
+        for _ in 0..8 {
+            let interval_hash = interval_hash.clone();
+            let wtr = Arc::clone(&wtr);
+            let receiver = receiver.clone();
+            handles.push(thread::spawn(move || {
+                while let Ok(records) = receiver.recv() {
+                    let mut data = vec![];
+                    for record in records {
+                        let target_start = record[6].parse::<usize>().unwrap();
+                        let target_end = record[7].parse::<usize>().unwrap();
+
+                        let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
+                            interval.count(target_start, target_end) > 0 });
+
+                        if is_in_regions ^ invert {
+                            let record = record.iter().join("\t");
+                            if !record.is_empty() {
+                                data.push(record);
+                            }
+                            
+                        }
+                    }
+
+                    if !data.is_empty() {
+                        let mut wtr = wtr.lock().unwrap();
+                        let data = data.join("\n") + "\n";
+                        wtr.write_all(data.as_bytes()).unwrap();
+                    }
+                }
+            }));
+        }
+
+
+        let mut batch = Vec::with_capacity(1000);
+        for (idx, record) in self.parse().unwrap().records().enumerate() {
+            let record = match record {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Could not parse line {}", idx + 1);
+                    continue
+                },
+            };
+            batch.push(record);
+            if batch.len() == 1000 {
+                sender.send(std::mem::take(&mut batch)).unwrap();
+            }
+        }
+
+        drop(sender);
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        log::info!("Successful output intersection porec table into `{}`", output);
 
     }
 
@@ -567,16 +656,16 @@ impl PoreCTable {
                     new_record.push_field(&record[9]);
                     new_record.push_field(&record[10]);
 
-                    wtr.write_record(&new_record);
+                    let _ = wtr.write_record(&new_record);
                    
 
                 } else {
-                    wtr.write_record(&record);
+                    let _ = wtr.write_record(&record);
                 }
                
                
             } else {
-                wtr.write_record(&record);
+                let _ = wtr.write_record(&record);
             }
 
         }
@@ -588,24 +677,7 @@ pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
     let mut wtr = common_writer(output);
     let mut idx = 0;
 
-
     for file in input {
-        // let mut rdr = PoreCTable::new(file).parse().unwrap();
-        // let mut max_idx: u64 = 0;
-        // 'inner: for (i, line) in rdr.deserialize().enumerate() {
-        //     let line_number = i + 1;
-        //     let mut record: PoreCRecord = match line {
-        //         Ok(v) => v,
-        //         Err(error) => {
-        //             log::warn!("Could not parse line {}", line_number);
-        //             continue 'inner;
-        //         },
-        //     };
-        //     if record.read_idx > max_idx {
-        //         max_idx = record.read_idx.clone();
-        //     }
-        //     record.read_idx += idx ;
-        
         let mut reader = common_reader(file);
         let mut max_idx: u64 = 0;
         for (i, line) in reader.lines().enumerate() {
@@ -623,7 +695,7 @@ pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
             wtr.write_all(record.to_string().as_bytes()).unwrap();
             wtr.write_all(b"\n").unwrap();
         }
-        idx += max_idx;
+        idx += max_idx + 1;
     }
     log::info!("Successful output merge porec tables into `{}`", output);
 }

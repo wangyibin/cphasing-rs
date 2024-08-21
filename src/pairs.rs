@@ -299,13 +299,6 @@ impl Pairs {
                             .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
                             .map_or(true, |mapq| mapq > min_quality)
                     }) {
-                    // for (idx, record) in records {
-                    //     if filter_mapq && record.len() >= 8 {
-                    //         let mapq = record.get(7).unwrap_or(&"60".to_string()).parse::<u8>().unwrap_or(60);
-                    //         if mapq < min_quality {
-                    //             continue;
-                    //         }
-                    //     }
                         
                         let strand1 = match record[5].parse::<char>() {
                             Ok('+') => 0,
@@ -349,7 +342,8 @@ impl Pairs {
                 Ok(record) => {
                     batch.push((idx, record));
                     if batch.len() >= 1000 {
-                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                        // sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                        sender.send(std::mem::take(&mut batch)).unwrap();
                     }
                 },
                 Err(e) => {
@@ -791,7 +785,7 @@ impl Pairs {
         let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
 
         let mut handles = vec![];
-        for _ in 0..threads {
+        for _ in 0..4 {
             let receiver: Receiver<_> = receiver.clone();
             
             let data = Arc::clone(&data);
@@ -808,13 +802,6 @@ impl Pairs {
                             .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
                             .map_or(true, |mapq| mapq > min_quality)
                     }) {
-                    // for (idx, record) in records {
-                    //     if filter_mapq && record.len() >= 8 {
-                    //         let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                    //         if mapq <= min_quality {
-                    //             continue; 
-                    //         }
-                    //     }
                         let pos1 = record[2].parse::<u32>().unwrap_or_default();
                         let pos2 = record[4].parse::<u32>().unwrap_or_default();
                         
@@ -847,7 +834,9 @@ impl Pairs {
                 Ok(record) => {
                     batch.push((idx, record));
                     if batch.len() >= 1000 {
-                        sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();  
+                        // sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();  
+                        sender.send(std::mem::take(&mut batch)).unwrap();
+
                     }
                 },
                 Err(e) => {
@@ -1085,36 +1074,46 @@ impl Pairs {
         log::info!("Successful output clm file `{}`", output);
     }
 
-    pub fn filter_by_mapq(&mut self, min_quality: u8, output: &String) {
+    pub fn filter_by_mapq_single_threads(&mut self, min_quality: u8, output: &String) {
         let mut wtr = common_writer(output);
         self.header = PairHeader::new();
         self.header.from_pairs(&self.file);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
         let mut reader = common_reader(&self.file_name());
-        let mut buffer = Vec::with_capacity(8192*2);     
+        let mut buffer = String::new();
+        let filter_mapq = min_quality > 0;
+    
+        let mut record_len = 0;
+        
         for line in reader.lines().filter_map(|line| line.ok()) {
             if line.starts_with('#') {
                 continue;
             }
 
             let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
-            if record.len() < 8 {
-                buffer.push(line);
-                if buffer.len() >= 1000 {
-                    wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
-                    wtr.write_all(b"\n").unwrap();
-                    buffer.clear();
+            
+            if record_len == 0 {
+                record_len = record.len();
+            }
+
+            if record_len < 8 && filter_mapq {
+                buffer.push_str(&line);
+                buffer.push('\n');
+                if buffer.len() >= 8192 {
+                    wtr.write_all(buffer.as_bytes()).unwrap();
+                    buffer.clear();  
                 }
                 continue
             }
+            
             if let Ok(mapq) = record[7].parse::<u8>() {
                 if mapq >= min_quality {
-                    buffer.push(line);
-                    if buffer.len() >= 1000 {
-                        wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
-                        wtr.write_all(b"\n").unwrap();
-                        buffer.clear();
+                    buffer.push_str(&line);
+                    buffer.push('\n');
+                    if buffer.len() >= 8192 {
+                        wtr.write_all(buffer.as_bytes()).unwrap();
+                        buffer.clear();  
                     }
                 }
             } else {
@@ -1123,50 +1122,97 @@ impl Pairs {
         }
         
         if !buffer.is_empty() {
-            wtr.write_all(buffer.join("\n").as_bytes()).unwrap();
-            wtr.write_all(b"\n").unwrap();
+            wtr.write_all(buffer.as_bytes()).unwrap();
         }
 
            
-        // let mut line = String::new();
-        // while reader.read_line(&mut line).unwrap() > 0 {
-        //     if line.starts_with('#') {
-        //         line.clear();
-        //         continue;
-        //     }
-        //     let record = line.trim_end_matches('\n').split("\t").collect::<Vec<&str>>();
-        //     let mapq_result = record[7].parse::<u8>();
-        //     match mapq_result {
-        //         Ok(mapq) => {
-        //             if mapq >= min_quality {
-        //                 wtr.write_all(line.as_bytes()).unwrap();
-        //             }
-        //         },
-        //         Err(_) => {
-        //             eprintln!("Warning: could not parse mapq value: {}", record[7]);
-        //         }
-        //     }
-    
-        
-        //     line.clear();
+        log::info!("Successful output new pairs file `{}`", output);
+    }
 
-        // }
-        // for line in reader.lines() {
-        //     let line = line.unwrap();
-        //     if line.starts_with('#') {
-        //         continue
-        //     }
+    pub fn filter_by_mapq(&mut self, min_quality: u8, output: &String) {
+        let mut wtr = common_writer(output);
+        self.header = PairHeader::new();
+        self.header.from_pairs(&self.file);
+        wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
-        //     let mut line_list = line.split("\t");
-        //     let record = line_list.collect::<Vec<&str>>();
-        //     let mapq = record[7].parse::<u8>().unwrap();
-            
-        //     if mapq >= min_quality {
-        //         wtr.write_all(format!("{}\n", line).as_bytes()).unwrap();
-        //     }
-        // }
+        let mut reader = common_reader(&self.file_name());
 
+        let (sender, receiver) = bounded::<Vec<String>>(1000);
 
+        let mut handles = vec![];
+        let filter_mapq = min_quality > 0;
+        let mut wtr = Arc::new(Mutex::new(wtr));
+
+        for _ in 0..4 {
+            let receiver = receiver.clone();
+            let wtr = Arc::clone(&wtr);
+            handles.push(thread::spawn(move || {
+                while let Ok((records)) = receiver.recv() {
+                    // let filter_needed = filter_mapq && records.get(0).map_or(false, |record| record.len() >= 8);
+                    let no_filter = !filter_mapq || records.get(0).map_or(false, |record| record.len() < 8);
+                
+                    let mut buffer: Vec<&String> = records.par_iter().filter_map(|line| {
+                        let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
+                        
+                        let record_len = record.len();
+
+                        if no_filter  {
+                            // buffer.push_str(&line);
+                            // buffer.push('\n');
+                            return Some(line);
+                        }
+
+                        if record_len > 7{
+                            if let Ok(mapq) = record[7].parse::<u8>() {
+                                if mapq >= min_quality {
+                                    return Some(line);
+                                    
+                                }
+                            } 
+                        } else {
+                            return Some(line);
+                        }
+                        
+
+                        None
+                    }).collect();
+
+                    {
+                        let mut wtr = wtr.lock().unwrap();
+                        for line in &buffer {
+                            if !line.trim().is_empty(){
+                                wtr.write_all(line.as_bytes()).unwrap();
+                                wtr.write_all(b"\n").unwrap()
+                            }
+                            
+                        }
+                    }
+                }
+            }));
+
+        }
+
+        let mut batch = Vec::with_capacity(1000);
+        for line in reader.lines().filter_map(|line| line.ok()) {
+            if line.starts_with('#') {
+                continue;
+            }
+            batch.push(line);
+            if batch.len() >= 1000 {
+                sender.send(std::mem::take(&mut batch)).unwrap();
+            }
+        }
+
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
+
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        log::info!("Successful output new pairs file `{}`", output);
     }
 
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, min_quality: u8, output: &String) {
@@ -1182,13 +1228,17 @@ impl Pairs {
                         .delimiter(b'\t')
                         .from_writer(writer);
         
-
+        let filter_mapq = min_quality > 0;
         for (idx, record) in self.parse().unwrap().records().enumerate() {
             let record = record.unwrap();
 
-            let mapq = record.get(7).unwrap_or("60").parse::<u8>().unwrap_or(60);
-            if mapq < min_quality {
-                continue;
+            if filter_mapq {
+                if record.len() >= 8 {
+                    let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
+                    if mapq < min_quality {
+                        continue
+                    }
+                }
             }
             let chrom1 = &record[1];
             let pos1 = record[2].parse::<usize>().unwrap();
@@ -1206,135 +1256,96 @@ impl Pairs {
             }
               
         }
-        // // too slow with lock
-        // let wtr = Arc::new(Mutex::new(wtr));
-        // self.parse().unwrap().records().par_bridge().for_each(|record| {
-        //     let record = record.unwrap();
-    
-        //     let mapq = record.get(7).unwrap_or("60").parse::<u8>().unwrap_or(60);
-        //     if mapq < min_quality {
-        //         return;
-        //     }
-        //     let chrom1 = &record[1];
-        //     let pos1 = record[2].parse::<usize>().unwrap();
-        //     let chrom2 = &record[3];
-        //     let pos2 = record[4].parse::<usize>().unwrap();
-    
-           
-        //     let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
-        //         interval_hash.get(chrom2).map_or(false, |interval2| {
-        //             interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
-        //         })
-        //     });
-        //     if is_in_regions ^ invert {
-        //         let mut wtr = wtr.lock().unwrap();
-        //         wtr.write_record(&record);
-        //     }
-        // });
+
 
         log::info!("Successful output new pairs file into `{}`", output);
     }
 
 
-    pub fn intersect_multi_threads(&mut self, hcr_bed: &String, invert: bool, output: &String) {
+    pub fn intersect_multi_threads(&mut self, hcr_bed: &String, invert: bool, 
+                                    min_quality: u8, output: &String) {
+       
         type IvU8 = Interval<usize, u8>;
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
+        
+        let mut parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+
         let mut wtr = common_writer(output);
-        self.header = PairHeader::new();
-        self.header.from_pairs(&self.file);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
         
-        let (sender, receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(100);
-        // let shared_wtr: Arc<Mutex<Option<Box<dyn Write + Send>>> > = Arc::new(Mutex::new(Some(Box::new(wtr))));
-        let num_threads = 10; 
-        let mut handles = Vec::with_capacity(num_threads);
-        for _ in 0..num_threads {
+        log::info!("Parsing pairs file...");
+        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        let mut handles = vec![];
+        let filter_mapq = min_quality > 0;
+        let mut wtr = Arc::new(Mutex::new(wtr));
+        for _ in 0..4 {
             let receiver = receiver.clone();
-            let sender = sender.clone();
             let interval_hash = interval_hash.clone();
-            let invert = invert.clone();
-            // let shared_wtr= Arc::clone(&shared_wtr);
-        
-            let handle = thread::spawn(move || {
-                for record in receiver {
-                    let record = String::from_utf8_lossy(&record);
-                    let fields: Vec<&str> = record.split('\t').collect();
-                    let chrom1 = fields[1].to_string();
-                    let pos1 = fields[2].parse::<usize>().unwrap();
-                    let chrom2 = fields[3].to_string();
-                    let pos2 = fields[4].parse::<usize>().unwrap();
+            let wtr = Arc::clone(&wtr);
+            handles.push(thread::spawn(move || {
+                while let Ok((records)) = receiver.recv() {
+                    let filter_needed = filter_mapq && records.get(0).map_or(false, |(_, record)| record.len() >= 8);
+                    let mut data = vec![];
+                    for (idx, record) in records.iter().filter(|(idx, record)| {
+                        !filter_needed || record.get(7)
+                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                            .map_or(true, |mapq| mapq >= min_quality)
+                    }) {
+                        let chrom1 = &record[1];
+                        let pos1 = record[2].parse::<usize>().unwrap();
+                        let chrom2 = &record[3];
+                        let pos2 = record[4].parse::<usize>().unwrap();
+                        let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
+                            interval_hash.get(chrom2).map_or(false, |interval2| {
+                                interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
+                            })
+                        });
 
-                    let is_in_regions = if let Some(interval1) = interval_hash.get(&chrom1) {
-                        if let Some(interval2) = interval_hash.get(&chrom2) {
-                            interval1.count(pos1, pos1 + 1) > 0 && interval2.count(pos2, pos2 + 1) > 0
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    if invert {
-                        if !is_in_regions {
-                            let line = format!(
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                                fields[0], chrom1, pos1, chrom2, pos2, fields[5], fields[6], fields[7]
-                            );
-                            sender.send(line.into_bytes()).unwrap();
-                            
-                        }
-                    } else {
-                        if is_in_regions {
-                            let line = format!(
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                                fields[0], chrom1, pos1, chrom2, pos2, fields[5], fields[6], fields[7]
-                            );
-                            sender.send(line.into_bytes()).unwrap();
-                            
+                        if is_in_regions ^ invert {
+                            let record = record.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+                            if !record.is_empty() {
+                                data.push(record.join("\t"));
+                            }
                         }
                     }
+                    
+                    if !data.is_empty() {
+                        let data = data.join("\n") + "\n";
+                        let mut wtr = wtr.lock().unwrap();
+                        wtr.write_all(data.as_bytes()).unwrap(); 
+                    }
                 }
-            });
-            handles.push(handle);
+            }));
         }
 
-    // Process records and send them to worker threads
-    
 
-    for (idx, record) in self.parse().unwrap().records().enumerate() {
-        let record = record.unwrap();
+        let mut batch = Vec::with_capacity(1000);
+        for (idx, record) in rdr.records().enumerate() {
+            let record = record.unwrap();
+            batch.push((idx, record));
+            if batch.len() >= 1000 {
+                // sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                sender.send(std::mem::take(&mut batch)).unwrap();
+            }
+        }
+
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
+
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        log::info!("Successful output new pairs file into `{}`", output);
         
-        let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            idx,
-            record[1].to_string(),
-            record[2].parse::<usize>().unwrap(),
-            record[3].to_string(),
-            record[4].parse::<usize>().unwrap(),
-            record[5].parse::<char>().unwrap(),
-            record[6].parse::<char>().unwrap(),
-            record[7].to_string()
-
-        );
-        sender.send(line.into_bytes()).unwrap();
-    }
-
-    // Drop the sender to signal worker threads to finish
-    drop(sender);
-
-    // Wait for worker threads to finish
-    
-    for handle in handles {
-        handle.join().unwrap();
-    }
-
-    while let Ok(record) = receiver.recv() {
-        wtr.write_all(&record).unwrap();
-    }
-
-    log::info!("Successful output new pairs file into `{}`", output);
-    
 
     }
 
@@ -1386,7 +1397,6 @@ impl Pairs {
                         }
 
                     }
-
                     {
                         let mut depth = depth.lock().unwrap();
                         for (key, local_values) in updates {
@@ -1410,7 +1420,8 @@ impl Pairs {
             
             batch.push((idx, record));
             if batch.len() >= 1000 {
-                sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                // sender.send(std::mem::replace(&mut batch, Vec::with_capacity(1000))).unwrap();
+                sender.send(std::mem::take(&mut batch)).unwrap();
             }
 
         }
@@ -1702,25 +1713,66 @@ impl Pairs {
 
 
 pub fn merge_pairs(input: Vec<&String>, output: &String) {
-    let mut wtr = common_writer(output);
+    // let mut wtr = common_writer(output);
 
-    for (i, file) in input.iter().enumerate() {
-        let mut reader = common_reader(file);
+    // for (i, file) in input.iter().enumerate() {
+    //     let mut reader = common_reader(file);
+    //     for line in reader.lines() {
+    //         let line = line.unwrap();
+    //         if line.starts_with("#") {
+    //             if i == 0  {
+    //                 writeln!(wtr, "{}", line);
+    //             }  else {
+    //                 continue
+    //             }
+    //         } else {
+    //             writeln!(wtr, "{}", line);
+    //         }
+
+    //     }
+    // }
+    // wtr.flush().unwrap()
+
+    let mut wtr = common_writer(output);
+    
+    if let Some(first_file) = input.first() {
+        let reader = common_reader(first_file);
         for line in reader.lines() {
             let line = line.unwrap();
             if line.starts_with("#") {
-                if i == 0  {
-                    writeln!(wtr, "{}", line);
-                }  else {
-                    continue
-                }
+                writeln!(wtr, "{}", line).unwrap();
             } else {
-                writeln!(wtr, "{}", line);
+                break; 
             }
-
         }
     }
-    wtr.flush().unwrap()
+
+    let mut wtr = Arc::new(Mutex::new(wtr));
+    input.par_iter().enumerate().for_each(|(i, file)| {
+        let reader = common_reader(file);
+        let mut local_buffer = Vec::new();
+
+        let mut j = 0;
+        for line in reader.lines() {
+            let line = line.unwrap();
+            if line.starts_with("#") {
+                continue
+            }
+
+            local_buffer.push(line);
+            j += 1;
+
+            if j >= 20000 {
+                let mut wtr = wtr.lock().unwrap();
+                for line in local_buffer.drain(..) {
+                    writeln!(wtr, "{}", line).unwrap();
+                }
+                j = 0;
+            }
+        }
+    });
+
+
 }
 
 

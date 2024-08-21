@@ -480,7 +480,7 @@ pub fn simulate_hic(fasta: &String, vcf: &String, bam: &String, min_mapq: u8,
         chromsizes.push(csr);
     }
 
-    bam.set_threads(threads);
+    let _ = bam.set_threads(threads);
     let mut idx = 0;
     let mut vcf_reader1 = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();
     let mut vcf_reader2 = vcf::indexed_reader::Builder::default().build_from_path(vcf).unwrap();

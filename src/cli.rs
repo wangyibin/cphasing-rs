@@ -126,7 +126,7 @@ pub fn cli() -> Command {
                         .short('n')
                         .value_parser(value_parser!(String))
                         .default_value("cis")
-                        .help("normalization method, cis, cis_unique, none")
+                        .help("normalization method: cis, cis_unique, none")
                 )
                 .arg(
                     Arg::new("FIRST_CLUSTER")
@@ -802,6 +802,12 @@ pub fn cli() -> Command {
                         .default_value("-")
                         .help("output file, default is stdout")
                 )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -822,6 +828,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-")
                         .help("output file, default is stdout"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -985,8 +997,27 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("bam2paf")
+            .about("convert dorado align bam to paf")
+            .arg(arg!(<BAM> "bam"))
+            .arg(
+                Arg::new("THREADS")
+                    .long("threads")
+                    .short('t')
+                    .value_parser(value_parser!(usize))
+                    .default_value("4"))
+            .arg(
+                Arg::new("OUTPUT")
+                    .long("output")
+                    .short('o')
+                    .value_parser(value_parser!(String))
+                    .default_value("-")
+                    .help("output file, default is stdout"))
+            .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("bam2pairs")
-                .about("convert bam to pairs")
+                .about("convert paired read align bam to pairs")
                 .arg(arg!(<BAM> "bam"))
                 .arg(
                     Arg::new("MIN_QUALITY")

@@ -84,10 +84,6 @@ impl Clm {
         for line in reader.lines() {
             let line = line?;
             let mut iter = line.split_whitespace();
-            // let mut contig1 = iter.next().unwrap().to_string();
-            // let mut contig2 = iter.next().unwrap().to_string();
-            // contig1.pop();
-            // contig2.pop();
             let contig1 = iter.next().unwrap();
             let contig2 = iter.next().unwrap();
             let contig1 = &contig1[..contig1.len() - 1];

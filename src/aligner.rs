@@ -994,6 +994,7 @@ fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
 pub fn read_bam(input_bam: &String, seqs: &HashMap<String, String>, min_quality: u8,
                 min_prob: f32, output: &String) {
     let mut bam = Reader::from_path(input_bam).unwrap();
+    let _ = bam.set_threads(8);
     let mut total_reads: u64 = 0;
     let mut total_alignments: u64 = 0;
     let mut total_unmapped: u64 = 0;
