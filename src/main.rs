@@ -572,6 +572,16 @@ fn main() {
             prt.break_contigs(&break_bed, &output);
 
         }
+
+        Some(("porec-dup", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut prt = PoreCTable::new(&table);
+            prt.dup(&collapsed_list, 123, &output);
+
+        }
         Some(("porec-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -656,6 +666,14 @@ fn main() {
 
             let mut pairs = Pairs::new(&pairs);
             pairs.break_contigs(&break_bed, &output);
+        }
+        Some(("pairs-dup", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut pairs = Pairs::new(&pairs);
+            pairs.dup(&collapsed_list, 123, &output);
         }
         Some(("pairs-filter", sub_matches)) => {
             use rayon::ThreadPoolBuilder;

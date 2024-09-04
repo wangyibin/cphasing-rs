@@ -212,21 +212,36 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
         pos_list_1.insert(0, 0);
         pos_list_2.push((query_len as usize).try_into().unwrap());
         
-        let mut mm_list = match record.aux(b"MM").unwrap() {
-            Aux::String(v) => {
+        let mut mm_list = match record.aux(b"MM") {
+            Ok(Aux::String(v)) => {
                 v.strip_suffix(";").unwrap().split(",").collect::<Vec<_>>()
             },
-            _ => panic!("MD tag not found"),
+            _ => {
+                match record.aux(b"Mm") {
+                    Ok(Aux::String(v)) => {
+                        v.strip_suffix(";").unwrap().split(",").collect::<Vec<_>>()
+                    },
+                    _ => todo!(),
+                }
+            },
         };
         let mm_cap = mm_list[0];
         mm_list.remove(0);
         let mm_list = mm_list.iter().map(|x| x.parse::<u32>().unwrap()).collect::<Vec<u32>>();
         // println!("{:?} {}", mm_list, mm_list.len());
-        let ml_list = match record.aux(b"ML").unwrap() {
-            Aux::ArrayU8(v) => {
+        let ml_list = match record.aux(b"ML") {
+            Ok(Aux::ArrayU8(v)) => {
                 v.iter().map(|x| x as u16).collect::<Vec<_>>()
             },
-            _ => panic!("ML tag not found"),
+            _ => {
+                match record.aux(b"Ml") {
+                    Ok(Aux::ArrayU8(v)) => {
+                        v.iter().map(|x| x as u16).collect::<Vec<_>>()
+                    },
+                    _ => todo!(),
+                }
+            }
+
         };
 
         let mut mm_boundary: usize = 0;
@@ -253,9 +268,10 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             new_record.remove_aux(b"MD").unwrap();
             new_record.remove_aux(b"AS").unwrap();
             new_record.remove_aux(b"NM").unwrap();
-            new_record.remove_aux(b"XA").unwrap();
-            new_record.remove_aux(b"SA").unwrap();
+            // new_record.remove_aux(b"XA").unwrap();
+            // new_record.remove_aux(b"SA").unwrap();
             new_record.remove_aux(b"tp").unwrap();
+            eprintln!("{}", new_record.seq_len());
 
             let mut new_mm_list = Vec::new();
             let mut new_ml_list: Vec<u8> = Vec::new();
@@ -286,8 +302,20 @@ pub fn simulation_from_split_read(input_bam: &String, output_bam: &String, min_q
             
             if new_mm_list.len() != 0 {
 
-                new_record.remove_aux(b"MM").unwrap();
-                new_record.remove_aux(b"ML").unwrap();
+                match new_record.remove_aux(b"MM") {
+                    Ok(()) => (),
+                    _ => match new_record.remove_aux(b"Mm") {
+                        Ok(()) => (),
+                        _ => (),
+                    }
+                }
+                match new_record.remove_aux(b"ML") {
+                    Ok(()) => (),
+                    _ => match new_record.remove_aux(b"Ml") {
+                        Ok(()) => (),
+                        _ => (),
+                    }
+                }
                 // println!("{:?} {} {}", new_mm_list, new_mm_list.iter().sum::<u32>() + new_mm_list.len() as u32, new_mm_list.len());
                 // push MM tag
                 let mut mm_str = String::new();

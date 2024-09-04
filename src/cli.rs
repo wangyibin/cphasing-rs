@@ -640,6 +640,21 @@ pub fn cli() -> Command {
 
         )
         .subcommand(
+            Command::new("porec-dup")
+                .about("Break contigs at break points.")
+                .arg(arg!(<TABLE> "pore-c table"))
+                .arg(arg!(<COLLAPSED> "collapsed contigs list, two columns with raw contigs and dup contigs."))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+
+        )
+        .subcommand(
             Command::new("porec-merge")
                 .about("Merge multiple pore-c table file into single file")
                 .arg(
@@ -850,6 +865,19 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("pairs-dup")
+                .about("dup collapsed contigs by collapsed rescue")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(arg!(<COLLAPSED> "collapsed contigs with raw contig and duplicated contigs"))
+                .arg(Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("pairs2contacts")
                 .alias("pairs2contact")
                 .about("calculate the contacts between contigs")
@@ -1005,7 +1033,7 @@ pub fn cli() -> Command {
                     .long("threads")
                     .short('t')
                     .value_parser(value_parser!(usize))
-                    .default_value("4"))
+                    .default_value("8"))
             .arg(
                 Arg::new("OUTPUT")
                     .long("output")
@@ -1030,7 +1058,7 @@ pub fn cli() -> Command {
                         .long("threads")
                         .short('t')
                         .value_parser(value_parser!(usize))
-                        .default_value("4"))
+                        .default_value("8"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

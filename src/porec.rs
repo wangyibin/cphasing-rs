@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rayon::prelude::*;
+use rand::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
 use crate::bed::{ Bed3, Bed4 };
@@ -383,10 +384,18 @@ impl PoreCTable {
         // process last concatemer
         if (concatemer.count() < max_order) & (concatemer.count() >= min_order) {
             concatemer.sort();
+
+            let mut batch = Vec::with_capacity(max_order);
             concatemer_summary.count(&concatemer);
             for pair in concatemer.decompose() {
-                wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
+                batch.push(PairRecord::from_pore_c_pair(pair, read_id));
                 read_id += 1;
+            }
+
+            if !batch.is_empty() {
+                for record in batch {
+                    wtr.serialize(record).unwrap();
+                }
             }
         }
 
@@ -396,11 +405,10 @@ impl PoreCTable {
         Ok(())
     }
 
+    
     // pub fn to_pairs_multi_threads(&self, chromsizes: &String, output: &String, min_quality: u8, 
-    //     min_order: usize, max_order: usize,
-    //     ) -> Result<(), Box<dyn Error>> { 
-        
-    //         let parse_result = self.parse();
+    //                 min_order: usize, max_order: usize) -> Result<(), Box<dyn Error>> {
+    //     let parse_result = self.parse();
     //     let mut rdr = match parse_result {
     //         Ok(v) => v,
     //         Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
@@ -408,84 +416,101 @@ impl PoreCTable {
     //     log::info!("Only retain concatemer that order in the range of [{}, {})", min_order, max_order);
     //     let chromsizes: ChromSize = ChromSize::new(chromsizes);
     //     let chromsizes_data: Vec<ChromSizeRecord> = chromsizes.to_vec().unwrap();
-
+    
     //     let mut ph: PairHeader = PairHeader::new();
     //     ph.from_chromsizes(chromsizes_data);
-    //     let mut writer = common_writer(output);
-    //     writer.write_all(ph.to_string().as_bytes()).unwrap();
-
-    //     let wtr = Arc::new(Mutex::new(writer));
-    //     let (sender, receiver) = bounded::<Vec<PoreCRecord>>(1000);
-    //     let mut handles: Vec<PoreCRecord> = vec![];
-
-
-    //     let mut concatemer: Concatemer = Concatemer::new();  
-    //     let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
-
-    //     let mut old_read_idx: u64 = 0; 
-    //     let mut flag: bool = false; 
-    //     let mut read_id: u64 = 0;
-        
+    
+    //     let writer = common_writer(output);
+    //     let writer = Arc::new(Mutex::new(writer));
+    //     writer.lock().unwrap().write_all(ph.to_string().as_bytes()).unwrap();
+    
+    //     let (sender, receiver) = bounded::<Vec<PairRecord>>(1000);
+    
+    //     let mut handles = vec![];
     //     for _ in 0..8 {
+    //         let writer = Arc::clone(&writer);
     //         let receiver = receiver.clone();
-    //         let wtr = Arc::clone(&wtr);
-            
     //         handles.push(thread::spawn(move || {
-    //             while let Ok(records) = receiver.recv() {
-    //                 let mut concatemer: Concatemer = Concatemer::new();
-    //                 let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
-    //                 for record in records {
-    //                     if !flag && record.read_idx != old_read_idx {
-    //                         let order = concatemer.count();
-    //                         if (order < max_order) && (order >= min_order) {
-    //                             concatemer.sort();
-    //                             concatemer_summary.count(&concatemer);
-    //                             for pair in concatemer.decompose() {
-    //                                 let mut wtr = wtr.lock().unwrap();
-    //                                 wtr.write_all(PairRecord::from_pore_c_pair(pair, read_id).to_string().as_bytes()).unwrap();
-    //                                 read_id += 1;
-    //                             }
-    //                             concatemer.clear();
-    //                         }
-    //                         flag = true;
-    //                     }
-    //                     old_read_idx = record.read_idx;
-    //                     if record.mapq < min_quality {
-    //                         continue
-    //                     }
-    //                     concatemer.push(record);
+    //             let mut wtr = csv::WriterBuilder::new()
+    //                 .has_headers(false)
+    //                 .delimiter(b'\t')
+    //                 .from_writer(writer.lock().unwrap());
+    
+    //             while let Ok(pairs) = receiver.recv() {
+    //                 for pair in pairs {
+    //                     wtr.serialize(pair).unwrap();
     //                 }
-                    
     //             }
     //         }));
     //     }
-
+    
+    //     let mut concatemer: Concatemer = Concatemer::new();
+    //     let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
+    
+    //     let mut old_read_idx: u64 = 0;
+    //     let mut read_id: u64 = 0;
+    //     let mut first_iteration = true;
     //     let mut batch = Vec::with_capacity(1000);
+    
     //     for (i, line) in rdr.deserialize().enumerate() {
     //         let record: PoreCRecord = match line {
     //             Ok(v) => v,
     //             Err(error) => {
     //                 log::warn!("Could not parse line {}", i + 1);
-    //                 continue
+    //                 continue;
     //             },
     //         };
-    //         batch.push(record);
-    //         if batch.len() == 1000 {
-    //             sender.send(std::mem::take(&mut batch)).unwrap();
+    
+    //         if !first_iteration && record.read_idx != old_read_idx {
+    //             let order = concatemer.count();
+    //             if (order < max_order) && (order >= min_order) {
+    //                 concatemer.sort();
+    //                 concatemer_summary.count(&concatemer);
+    //                 for pair in concatemer.decompose() {
+    //                     batch.push(PairRecord::from_pore_c_pair(pair, read_id));
+    //                     read_id += 1;
+    //                 }
+    
+    //                 if batch.len() >= 1000 {
+    //                     sender.send(std::mem::take(&mut batch)).unwrap();
+    //                 }
+    //             }
+    
+    //             concatemer.clear();
+    //         }
+    
+    //         first_iteration = false;
+    //         old_read_idx = record.read_idx;
+    //         if record.mapq < min_quality {
+    //             continue;
+    //         }
+    
+    //         concatemer.push(record);
+    //     }
+    
+    //     // process last concatemer
+    //     if (concatemer.count() < max_order) & (concatemer.count() >= min_order) {
+    //         concatemer.sort();
+    //         concatemer_summary.count(&concatemer);
+    //         for pair in concatemer.decompose() {
+    //             batch.push(PairRecord::from_pore_c_pair(pair, read_id));
+    //             read_id += 1;
     //         }
     //     }
-
+    
     //     if !batch.is_empty() {
-    //         sender.send(std::mem::take(&mut batch)).unwrap();
+    //         sender.send(batch).unwrap();
     //     }
-
+    
     //     drop(sender);
-
+    
     //     for handle in handles {
     //         handle.join().unwrap();
     //     }
-
+    
     //     log::info!("Successful output pairs `{}`", output);
+    
+    //     concatemer_summary.save(&format!("{}.concatemer.summary", self.prefix()));
     //     Ok(())
     // }
 
@@ -637,26 +662,31 @@ impl PoreCTable {
                 let mut res = interval.find(target_start, target_end).collect::<Vec<_>>();
                 
                 if res.len() > 0 {
-                    let mut new_record = csv::StringRecord::new();
-                    new_record.push_field(&record[0]);
-                    new_record.push_field(&record[1]);
-                    new_record.push_field(&record[2]);
-                    new_record.push_field(&record[3]);
-                    new_record.push_field(&record[4]);
-                    // let target = record[5].to_string();
-                    // let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
-                    let new_target = &res[0].val;
-                    new_record.push_field(&new_target);
-                    
+                    let break_contig_length = res[0].stop - res[0].start + 1;
                     let new_target_start = target_start - res[0].start + 1;
                     let new_target_end = target_end - res[0].start + 1;
-                    new_record.push_field(&new_target_start.to_string());
-                    new_record.push_field(&new_target_end.to_string());
-                    new_record.push_field(&record[8]);
-                    new_record.push_field(&record[9]);
-                    new_record.push_field(&record[10]);
-
-                    let _ = wtr.write_record(&new_record);
+                    if new_target_end <= break_contig_length {
+                        let mut new_record = csv::StringRecord::new();
+                        new_record.push_field(&record[0]);
+                        new_record.push_field(&record[1]);
+                        new_record.push_field(&record[2]);
+                        new_record.push_field(&record[3]);
+                        new_record.push_field(&record[4]);
+                        // let target = record[5].to_string();
+                        // let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
+                        let new_target = &res[0].val;
+                        new_record.push_field(&new_target);
+                        
+                    
+                        new_record.push_field(&new_target_start.to_string());
+                        new_record.push_field(&new_target_end.to_string());
+                        new_record.push_field(&record[8]);
+                        new_record.push_field(&record[9]);
+                        new_record.push_field(&record[10]);
+                    
+                    
+                        let _ = wtr.write_record(&new_record);
+                    }
                    
 
                 } else {
@@ -670,6 +700,53 @@ impl PoreCTable {
 
         }
         log::info!("Successful output contigs corrected porec table into `{}`", output);
+    }
+
+    pub fn dup(&mut self, collapsed_list: &String, seed: usize, output: &String) {
+        let reader = common_reader(collapsed_list);
+        let mut collapsed_contigs: HashMap<String, Vec<String>> = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let s: Vec<&str> = record.split("\t").collect();
+            if s.len() != 2 {
+                log::warn!("Invalid record: {}", record);
+                continue;
+            }
+            let contig1 = s[0].to_string();
+            let contig2 = s[1].to_string();
+            collapsed_contigs.entry(contig1.clone()).or_insert(vec![contig1]).push(contig2);
+        }
+        
+        let seed_bytes = seed.to_ne_bytes();
+        let mut seed_array = [0u8; 32];
+        for (i, byte) in seed_bytes.iter().enumerate() {
+            seed_array[i] = *byte;
+        }
+
+        let reader = common_reader(&self.file);
+
+        let mut wtr = common_writer(output);
+       
+        let mut output_counts = 0;
+        let mut rng = StdRng::from_seed(seed_array);
+
+        for record in reader.lines() {
+            let record = record.unwrap(); {
+                let mut s: Vec<&str> = record.trim().split("\t").collect();
+                let mut contig = s[5].to_string();
+
+                if collapsed_contigs.contains_key(&contig) {
+                    let idx = rng.gen_range(0..collapsed_contigs.get(&contig).unwrap().len());
+                    contig = collapsed_contigs.get(&contig).unwrap()[idx].clone();
+                }
+
+                s[5] = &contig;
+                writeln!(wtr, "{}", s.join("\t"));
+                
+                
+            }
+        }
+        
     }
 }
 

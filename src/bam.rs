@@ -6,7 +6,8 @@ use rust_htslib::bam::{
     record::Cigar, record::CigarString,
     Read, Reader, Record, HeaderView, 
     Header, header::HeaderRecord,
-    Writer};
+    Writer, ext::BamRecordExtensions};
+
 
     use crate::core::{ 
         ChromSizeRecord,
@@ -83,13 +84,47 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
 
 }
 
+fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
+    let mut query_start = 0;
+    let mut query_end = 0;
+    let mut query_pos = 0;
+    let mut query_length = 0;
+    for cigar in record.cigar().iter() {
+        match cigar.char() {
+            'M' | '=' | 'X' | 'I' => {
+                if query_start == 0 {
+                    query_start = query_pos;
+                }
+                query_pos += cigar.len();
+                query_length += cigar.len();
+                query_end += cigar.len()
+            }
+            'S' | 'H' => {
+                if query_start == 0 {
+                    query_start = query_pos + cigar.len();
+                }
+                query_pos += cigar.len();
+                query_length += cigar.len();
+            }
+            'D' | 'N' | 'P' => {
+
+            }
+            _ => {}
+        }
+    }
+    // query_end = query_pos;
+    query_end = query_start + query_end;
+
+    (query_start, query_end, query_length)
+}
+
 pub fn bam2paf(input_bam: &String, output: &String, threads: usize) {
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-   
+    
     let header = Header::from_template(bam.header());
     let header = HeaderView::from_header(&header);
     let mut chromsizes = Vec::new();
@@ -113,38 +148,71 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize) {
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
 
-        if record.is_unmapped() {
-            continue 
+        if record.is_unmapped() || record.is_secondary() {
+            continue;
         }
 
         let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
-        let pos = record.pos() + 1;
         let strand = if record.is_reverse() { "-" } else { "+" };
-       
-        let match_length: i64 = record.cigar().iter().filter_map(|cigar| {
-            match cigar.char() {
-                'M' | '=' | 'X' | 'D' => Some(cigar.len() as i64),
-                _ => None,
-            }
-        }).sum();
-
-
-        let qname = std::str::from_utf8(record.qname()).unwrap();
-        let qlen = record.seq().len();
-        let qstart = 0;
-        let qend = qlen;
         
+        let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
+
+        for cigar in record.cigar().iter() {
+            let len = cigar.len() as i64;
+            match cigar.char() {
+                'M' | '=' | 'X' => {
+                    match_length += len;
+                    alignment_length += len;
+                    if cigar.char() == 'X' {
+                        mm += len;
+                    }
+                },
+                'D' => {
+                    deletion_length += len;
+                    alignment_length += len;
+                },
+                'I' => {
+                    insertion_length += len;
+                    alignment_length += len;
+                },
+                'N' | 'P' => {
+                    alignment_length += len;
+                },
+                _ => {}
+            }
+        }
+
+
+        let nm: i64 = match record.aux(b"NM") {
+            Ok(value) => {
+                match value {
+                    Aux::U8(v) => v.try_into().unwrap(),
+                    Aux::U16(v) => v.try_into().unwrap(),
+                    Aux::U32(v) => v.try_into().unwrap(),
+                    Aux::I32(v) => v.try_into().unwrap(),
+                    _ => 0, 
+                }
+                
+            },
+            Err(e) => 0
+        };
+
+        match_length = match_length - (nm - (insertion_length + deletion_length));
+
+
+        let (qstart, qend, qlen) = get_query_start_end(&record);
+    
+        let qname = std::str::from_utf8(record.qname()).unwrap();
         let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
         let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
-        let tstart = pos;
-        let tend = pos + match_length - 1;
+        let tstart = record.reference_start();
+        let tend = record.reference_end();
         let mapq = record.mapq();
-        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
                 qname, qlen, qstart, qend, strand, 
-                tname, tend, match_length, mapq);
+                tname, tlen, tstart, tend, match_length, alignment_length, mapq);
 
         idx += 1;
-
 
     }
 }

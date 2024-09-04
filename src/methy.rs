@@ -12,7 +12,9 @@ use crate::bed::{
     BedCpG,
     BedCpGRecord,
     BedMethylSimple, 
-    BedMethylSimpleRecord };
+    BedMethylSimpleRecord,
+    BedIterator,
+};
 use crate::core::BaseTable;
 use crate::core::{ common_reader, common_writer };
 
@@ -137,10 +139,10 @@ pub fn modify_fasta(fasta_path: &String, bed: &String,
     let wtr = common_writer(output);
     let mut writer = fasta::Writer::new(wtr);
     let mut hash = HashMap::<String, Vec<ModRecord>>::new();
-    let bed_iter = if bedcpg == "bedMethyl" {
-        BedMethylSimple::new(bed)
+    let bed_iter: Box<dyn BedIterator> = if bedcpg == "bedMethyl" {
+        Box::new(BedMethylSimple::new(bed))
     } else {
-        BedMethylSimple::new(bed)
+        Box::new(BedMethylSimple::new(bed))
     };
     log::info!("Loading bed file");
     for record in bed_iter {

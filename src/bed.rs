@@ -1,15 +1,23 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{ Write, BufRead };
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use rust_lapper::{Interval, Lapper};
 
+use crate::core::{common_reader, common_writer};
 use crate::methy::ModRecord;
+
 
 type IvU8 = Interval<usize, u8>;
 type IvString = Interval<usize, String>;
+
+
+pub trait BedIterator {
+    fn next(&mut self) -> Option<ModRecord>;
+
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed3Record {
@@ -216,10 +224,9 @@ impl BedCpG {
     
 }
 
-impl Iterator for BedCpG {
-    type Item = ModRecord;
+impl BedIterator for BedCpG {
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Option<ModRecord> {
         let record = self.reader.records().next();
         match record {
             Some(Ok(record)) => {
@@ -253,30 +260,29 @@ pub struct BedMethylSimpleRecord {
 }
 
 pub struct BedMethylSimple {
-    pub file: File,
-    pub reader: csv::Reader<File>,
+    pub file: String,
+    pub reader: csv::Reader<Box<dyn BufRead + Send>>,
 }
 
 impl BedMethylSimple {
     pub fn new(bed: &String) -> Self {
-        let file = File::open(bed).unwrap();
+        let _file = common_reader(&bed);
         let reader = csv::ReaderBuilder::new()
             .flexible(true)
             .delimiter(b'\t')
             .has_headers(false)
-            .from_reader(file.try_clone().unwrap());
+            .from_reader(_file);
         Self {
-            file: file,
+            file: bed.clone(),
             reader: reader,
         }
     }
     
 }
 
-impl Iterator for BedMethylSimple {
-    type Item = ModRecord;
+impl BedIterator for BedMethylSimple {
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Option<ModRecord> {
         let record = self.reader.records().next();
         match record {
             Some(Ok(record)) => {
@@ -286,7 +292,18 @@ impl Iterator for BedMethylSimple {
                 let mod_base = record[3].to_string();
                 let score = record[4].parse::<u32>().unwrap();
                 let strand = record[5].parse::<char>().unwrap();
-                let frac = record[10].parse::<f32>().unwrap();
+                let record_9_str = record[9].to_string();
+                let frac = match record_9_str.parse::<f32>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let other_records: Vec<&str> = record_9_str.split(' ').collect();
+                        match other_records.get(1) {
+                            Some(&value) => value.parse::<f32>().unwrap_or(0.0),
+                            None => 0.0,
+                        }
+                    }
+                };
+                
 
                 Some(ModRecord {
                     chrom: chrom,
@@ -298,5 +315,14 @@ impl Iterator for BedMethylSimple {
             }
             _ => None,
         }
+    }
+}
+
+
+impl Iterator for Box<dyn BedIterator> {
+    type Item = ModRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        (**self).next()
     }
 }

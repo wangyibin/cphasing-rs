@@ -34,12 +34,22 @@ mod tests {
     //     pairs.intersect(&hcr_bed, &String::from("test/test.hcr.pairs"));
     // }
 
+    // #[test]
+    // fn test_split_contacts() {
+    //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
+        
+    //     let _ = pairs.to_split_contacts(3, 2);
+        
+    // }
+
     #[test]
-    fn test_split_contacts() {
-        let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        
-        let _ = pairs.to_split_contacts(3, 2);
-        
+    fn test_collapse() {
+        let mut pairs = Pairs::new(&String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/B9_all_porec_reads.corrected.pairs.gz"));
+        let collapsed_list = String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/tour/asm.collapsed.contig.list");
+
+        println!("{}", pairs.file_name());
+        pairs.dup(&collapsed_list, 123,& String::from("-"));
+
     }
 
 }

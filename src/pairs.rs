@@ -1080,7 +1080,7 @@ impl Pairs {
         self.header.from_pairs(&self.file);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
-        let mut reader = common_reader(&self.file_name());
+        let mut reader = common_reader(&self.file);
         let mut buffer = String::new();
         let filter_mapq = min_quality > 0;
     
@@ -1135,7 +1135,7 @@ impl Pairs {
         self.header.from_pairs(&self.file);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
-        let mut reader = common_reader(&self.file_name());
+        let mut reader = common_reader(&self.file);
 
         let (sender, receiver) = bounded::<Vec<String>>(1000);
 
@@ -1628,6 +1628,74 @@ impl Pairs {
         log::info!("Successful output new pairs file into `{}`", output);
     }
 
+    pub fn dup(&mut self, collapsed_list: &String, seed: usize, output: &String) {
+        // random assign a collapsed contig to duplicated contig by copy number
+
+        let reader = common_reader(collapsed_list);
+        let mut collapsed_contigs: HashMap<String, Vec<String>> = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let s: Vec<&str> = record.split("\t").collect();
+            if s.len() != 2 {
+                log::warn!("Invalid record: {}", record);
+                continue;
+            }
+            let contig1 = s[0].to_string();
+            let contig2 = s[1].to_string();
+            collapsed_contigs.entry(contig1.clone()).or_insert(vec![contig1]).push(contig2);
+        }
+        
+        let seed_bytes = seed.to_ne_bytes();
+        let mut seed_array = [0u8; 32];
+        for (i, byte) in seed_bytes.iter().enumerate() {
+            seed_array[i] = *byte;
+        }
+
+        let reader = common_reader(&self.file);
+
+        let mut wtr = common_writer(output);
+       
+        let mut output_counts = 0;
+        let mut rng = StdRng::from_seed(seed_array);
+        for (idx, record) in reader.lines().enumerate() {
+            let record = record.unwrap();
+            if record.starts_with("#") {
+                if record.starts_with("#chromsize") {
+                    writeln!(wtr, "{}", record);
+                    let s: Vec<&str> = record.trim().split(" ").collect();
+                    let size: u64 = s[2].clone().parse::<u64>().unwrap();
+                    let chrom: String = s[1].to_string();
+                    if collapsed_contigs.contains_key(&chrom) {
+                        let collapsed_contigs = collapsed_contigs.get(&chrom).unwrap();
+                        for contig in collapsed_contigs {
+                            writeln!(wtr, "#chromsize: {} {}", contig, size);
+                        }
+                    }
+                } else {
+                    writeln!(wtr, "{}", record);
+                }
+                    
+                continue;
+            }
+
+            let s = record.trim().split("\t").collect::<Vec<&str>>();
+            let mut contig1 = s[1].to_string();
+            let mut contig2 = s[3].to_string();
+            if collapsed_contigs.contains_key(&contig1) {
+                let idx = rng.gen_range(0..collapsed_contigs.get(&contig1).unwrap().len());
+                contig1 = collapsed_contigs.get(&contig1).unwrap()[idx].clone();
+            }
+            if collapsed_contigs.contains_key(&contig2) {
+                let idx = rng.gen_range(0..collapsed_contigs.get(&contig2).unwrap().len());
+                contig2 = collapsed_contigs.get(&contig2).unwrap()[idx].clone();
+            }
+            let record = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", s[0], contig1, s[2], contig2, s[4], s[5], s[6], s[7]);
+            writeln!(wtr, "{}", record);
+        
+        }
+
+    }
+
     pub fn downsample(&mut self, n: usize, p: f64, seed: usize, output: &String) {
 
         let seed_bytes = seed.to_ne_bytes();
@@ -1636,11 +1704,10 @@ impl Pairs {
             seed_array[i] = *byte;
         }
         
-        
         let percent = if p > 0.0 {
             p
         } else {
-            let reader = common_reader(&self.file_name());
+            let reader = common_reader(&self.file);
             let mut total_count = 0;
             let mut skip_count = 0;
             for chunk in reader.bytes() {
@@ -1654,7 +1721,7 @@ impl Pairs {
 
         };
         
-        let reader = common_reader(&self.file_name());
+        let reader = common_reader(&self.file);
 
         let mut wtr = common_writer(output);
        
