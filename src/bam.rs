@@ -1,6 +1,7 @@
 
 use std::collections::HashMap;
 use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
+use bio::io::fasta::{Reader as FastaReader, Record as FastaRecord, Writer as FastaWriter};
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -240,7 +241,6 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
     }
 }
 
-
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
     
     let mut bam = if input_bam == &String::from("-") {
@@ -337,12 +337,41 @@ pub fn bam2fastq(input_bam: &String, output:&String, threads: usize) {
         let id = String::from_utf8(record.qname().to_vec()).unwrap();
         let seq = record.seq().as_bytes();
         let qual = record.qual();
-        let seq_record = FastqRecord::with_attrs(&id, None, &seq, &qual);
+        
+        let qual_str: Vec<u8> = qual.iter()
+            .map(|q| (q + 33) as u8)
+            .collect();
+
+        let seq_record = FastqRecord::with_attrs(&id, None, &seq, &qual_str);
         wtr.write_record(&seq_record);
 
     }
-    
-
 
 }
 
+pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
+    let mut bam = if input_bam == &String::from("-") {
+        Reader::from_stdin().expect("Failed to read from stdin")
+    } else {
+        Reader::from_path(input_bam).expect("Failed to read from the provided path")
+    };
+    
+    let header = Header::from_template(bam.header());
+    let header = HeaderView::from_header(&header);
+
+    let _ = bam.set_threads(threads);
+
+    let mut writer = common_writer(output);
+    let mut wtr = FastaWriter::new(writer);
+    while let Some(r) = bam.records().next() {
+        let record = r.unwrap();
+        
+        let id = String::from_utf8(record.qname().to_vec()).unwrap();
+        let seq = record.seq().as_bytes();
+        
+        let seq_record = FastaRecord::with_attrs(&id, None, &seq,);
+        wtr.write_record(&seq_record);
+
+    }
+
+}
