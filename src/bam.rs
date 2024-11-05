@@ -1,5 +1,6 @@
 
 use std::collections::HashMap;
+use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -30,18 +31,36 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
     let mut i = 0;
     let mut j = 0;
     let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam).unwrap();
+    let _ = wtr.set_threads(8);
     log::info!("write {} records to {}", record_num, format!("{}_{}.bam", output_prefix, j));
+
+    let mut read_name: Vec<u8> = Vec::new();
+    let mut previous_read_name: Vec<u8> = Vec::new();
+    let mut line_num = 0;
     for r in bam.records() {
         let record = r?;
-        wtr.write(&record)?;
+        read_name.clear();
+        read_name.extend_from_slice(record.qname());
+        
         i += 1;
+        
         if i == record_num {
-            j += 1;
-            wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam)?;
-            log::info!("write {} records to {}", i, format!("{}_{}.bam", output_prefix, j));
-            
-            i = 0;
+            if read_name != previous_read_name {
+
+                j += 1;
+                wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam)?;
+                let _ = wtr.set_threads(8);
+                log::info!("write {} records to {}", line_num, format!("{}_{}.bam", output_prefix, j));
+                
+                i = 0;
+                line_num = 0;
+            } else {
+                i -= 1;
+            }
         }
+        line_num += 1;
+        wtr.write(&record)?;
+        std::mem::swap(&mut read_name, &mut previous_read_name);
     } 
 
     log::info!("write {} records to {}", i, format!("{}_{}.bam", output_prefix, j));
@@ -118,7 +137,7 @@ fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
     (query_start, query_end, query_length)
 }
 
-pub fn bam2paf(input_bam: &String, output: &String, threads: usize) {
+pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary: bool) {
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
@@ -148,8 +167,12 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize) {
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
 
-        if record.is_unmapped() || record.is_secondary() {
+        if record.is_unmapped() { 
             continue;
+        }
+
+        if record.is_secondary() & !is_secondary {
+            continue
         }
 
         let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
@@ -293,4 +316,33 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
     }
     
 } 
+
+pub fn bam2fastq(input_bam: &String, output:&String, threads: usize) {
+    let mut bam = if input_bam == &String::from("-") {
+        Reader::from_stdin().expect("Failed to read from stdin")
+    } else {
+        Reader::from_path(input_bam).expect("Failed to read from the provided path")
+    };
+    
+    let header = Header::from_template(bam.header());
+    let header = HeaderView::from_header(&header);
+
+    let _ = bam.set_threads(threads);
+
+    let mut writer = common_writer(output);
+    let mut wtr = FastqWriter::new(writer);
+    while let Some(r) = bam.records().next() {
+        let record = r.unwrap();
+        
+        let id = String::from_utf8(record.qname().to_vec()).unwrap();
+        let seq = record.seq().as_bytes();
+        let qual = record.qual();
+        let seq_record = FastqRecord::with_attrs(&id, None, &seq, &qual);
+        wtr.write_record(&seq_record);
+
+    }
+    
+
+
+}
 

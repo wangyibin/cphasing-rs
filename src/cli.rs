@@ -1029,6 +1029,14 @@ pub fn cli() -> Command {
             .about("convert dorado align bam to paf")
             .arg(arg!(<BAM> "bam"))
             .arg(
+                Arg::new("SECONDARY")
+                    .long("secondary")
+                    .short('s')
+                    .value_parser(value_parser!(bool))
+                    .default_value("false")
+                    .help("Is output secondary, default is false")
+            )
+            .arg(
                 Arg::new("THREADS")
                     .long("threads")
                     .short('t')
@@ -1044,8 +1052,27 @@ pub fn cli() -> Command {
             .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("bam2fastq")
+                .about("convert bam to fastq file")
+                .arg(arg!(<BAM> "bam"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("bam2pairs")
-                .about("convert paired read align bam to pairs")
+                .about("convert paired read align bam to pairs, only support for paired end reads")
                 .arg(arg!(<BAM> "bam"))
                 .arg(
                     Arg::new("MIN_QUALITY")

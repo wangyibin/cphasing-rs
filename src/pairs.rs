@@ -679,7 +679,7 @@ impl Pairs {
                     };
 
                     if let (Some(idx1), Some(idx2)) = (contig_idx.get(&contig1), contig_idx.get(&contig2)) {
-                        *contact_hash.entry((idx1, idx2)).or_insert(1.0) += 1.0;
+                        *contact_hash.entry((idx1, idx2)).or_insert(0.0) += 1.0;
                     }
 
                     
@@ -1668,6 +1668,9 @@ impl Pairs {
                     if collapsed_contigs.contains_key(&chrom) {
                         let collapsed_contigs = collapsed_contigs.get(&chrom).unwrap();
                         for contig in collapsed_contigs {
+                            if contig == &chrom {
+                                continue;
+                            }
                             writeln!(wtr, "#chromsize: {} {}", contig, size);
                         }
                     }

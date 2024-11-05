@@ -2,7 +2,7 @@
 use indexmap::IndexMap;
 use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
-use cphasing::bam::{ split_bam, bam2pairs, 
+use cphasing::bam::{ split_bam, bam2pairs, bam2fastq,
                      bam2paf, slide2raw};
 use cphasing::cli::cli;
 use cphasing::clm::Clm;
@@ -767,8 +767,17 @@ fn main() {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let is_secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
 
-            bam2paf(&bam, &output, *threads);
+            bam2paf(&bam, &output, *threads, *is_secondary);
+        }
+
+        Some(("bam2fastq", sub_matches)) => {
+            let bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            bam2fastq(&bam, &output, *threads);
         }
 
         Some(("bam2pairs", sub_matches)) => {
@@ -778,7 +787,6 @@ fn main() {
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             bam2pairs(&bam, *min_quality, &output, *threads);
 
-            
         }
         
         Some(("pairs-intersect", sub_matches)) => {
