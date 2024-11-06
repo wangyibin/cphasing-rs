@@ -4,6 +4,7 @@ use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
 use cphasing::bam::{ split_bam, bam2pairs, 
                      bam2fastq, bam2fasta,
+                     bamstat,
                      bam2paf, slide2raw};
 use cphasing::cli::cli;
 use cphasing::clm::Clm;
@@ -790,6 +791,13 @@ fn main() {
             bam2fasta(&bam, &output, *threads);
         }
         
+        Some(("bamstat", sub_matches)) => {
+            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            bamstat(&bam,  &output, *threads);
+        }
 
         Some(("bam2pairs", sub_matches)) => {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");

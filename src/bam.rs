@@ -9,9 +9,9 @@ use rust_htslib::bam::{
     Read, Reader, Record, HeaderView, 
     Header, header::HeaderRecord,
     Writer, ext::BamRecordExtensions};
+use rayon::prelude::*;
 
-
-    use crate::core::{ 
+use crate::core::{ 
         ChromSizeRecord,
         common_writer};
 use crate::pairs::{ Pairs, PairHeader };
@@ -374,4 +374,110 @@ pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
 
     }
 
+}
+
+
+fn calculate_quartiles(data: &Vec<usize>) -> (usize, usize, usize) {
+   
+    let n = data.len();
+    let q1_index = (n as f64 * 0.25).ceil() as usize - 1;
+    let q2_index = (n as f64 * 0.5).ceil() as usize - 1;
+    let q3_index = (n as f64 * 0.75).ceil() as usize - 1;
+
+    let q1 = data[q1_index];
+    let q2 = data[q2_index];
+    let q3 = data[q3_index];
+
+    (q1, q2, q3)
+}
+
+pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
+
+    let mut writer = common_writer(output);
+        
+    writeln!(writer, "file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tQ1\tQ2\tQ3\tN50\tGC(%)");
+    let res = input_bams.par_iter().map(|input_bam| {
+        let mut bam = if *input_bam == &String::from("-") {
+            Reader::from_stdin().expect("Failed to read from stdin")
+        } else {
+            Reader::from_path(input_bam).expect("Failed to read from the provided path")
+        };
+        
+        let header = Header::from_template(bam.header());
+        let header = HeaderView::from_header(&header);
+    
+        let _ = bam.set_threads(threads);
+    
+        let mut seq_len_vec: Vec<usize> = Vec::new();
+        let mut gc_count: u64 = 0;
+        let mut total_qual: u64 = 0;
+        while let Some(r) = bam.records().next() {
+            let record = r.unwrap();
+            
+            let seq_len = record.seq().len();
+            
+            let seq = record.seq();
+            for base in seq.as_bytes() {
+                if base == b'G' || base == b'C' {
+                    gc_count += 1;
+                }
+            }
+    
+            // let qual = record.qual();
+            // for &q in qual {
+            //     total_qual += q as u64;
+            // }
+            
+            seq_len_vec.push(seq_len);
+    
+        } 
+    
+        let total_count = seq_len_vec.len();
+    
+        seq_len_vec.par_sort();
+        let total_len: usize = seq_len_vec.par_iter().sum();
+        let gc_content = if total_len > 0 {
+            (gc_count as f64 / total_len as f64) * 100.0
+        } else {
+            0.0
+        };
+    
+        let mut n50 = 0;
+        let mut n50_len = 0;
+        let mut n50_count = 0;
+        for len in seq_len_vec.iter().rev() {
+            n50_len += len;
+            n50_count += 1;
+            if n50_len >= total_len / 2 {
+                n50 = *len;
+                break;
+            }
+        }
+    
+        // calculate Q1 Q2 Q3 
+        let (q1, q2, q3) = calculate_quartiles(&seq_len_vec);
+    
+        let min_len = seq_len_vec[0].clone();
+        let max_len = seq_len_vec.last().unwrap().clone();
+    
+        let avg_len = total_len as f64 / total_count as f64;
+    
+        
+        (input_bam.clone(), total_count, total_len, min_len, 
+            avg_len, max_len, q1, q2, q3, n50, gc_content)
+        
+    }).collect::<Vec<_>>();
+    
+
+    
+    for r in res {
+        let (input_bam, total_count, total_len, min_len, 
+            avg_len, max_len, q1, q2, q3,
+            n50, gc_content) = r;
+        writeln!(writer, "{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{:.2}%", 
+                    input_bam, total_count, total_len, min_len, 
+                    avg_len, max_len, q1, q2, q3,
+                    n50, gc_content);
+    }
+    
 }

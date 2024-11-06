@@ -52,6 +52,7 @@ rust-lapper = { version = "1.1.0"}
 rust-htslib = { version = "0.44.1", default-features = false }
 # rust-seq2kminmers = { version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"]}
+statrs = "0.17.1"
 seq_io = { version = "0.4.0-alpha.0" }
 smallvec = { version = "1.13.2" }
 # string-interner = { version = "0.17" }
