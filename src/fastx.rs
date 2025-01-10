@@ -5,6 +5,7 @@ use bio::io::fastq::{Reader, Record, Writer};
 //                     Writer as FastaReader}
 use bio::pattern_matching::horspool::Horspool;
 use indexmap::IndexMap;
+use hashbrown::HashMap as hashHashMap;
 use std::collections::{ HashMap, HashSet };
 use std::error::Error;
 use std::borrow::Cow;
@@ -98,7 +99,7 @@ impl Fastx {
         let reader = FastxReader::new(reader);
         let mut chrom_seqs: HashMap<String, String> = HashMap::new();
 
-        read_process_fastx_records(reader, 4, 2,
+        read_process_fastx_records(reader, 8, 4,
             |record, seq| { // runs in worker
                 *seq = record.seq_lines()
                                 .fold(String::new(), |s, seq| s + &String::from_utf8(seq.to_vec()).unwrap());
@@ -111,7 +112,65 @@ impl Fastx {
         Ok(chrom_seqs)
     }
 
-    pub fn count_re(&self, patterns: &String) -> AnyResult<IndexMap<String, u64>> {
+    pub fn count_re(&self, patterns: &String) -> AnyResult<hashHashMap<String, u64>> {
+        use aho_corasick::AhoCorasick;
+        let mut chrom_count: hashHashMap<String, u64> = hashHashMap::new();
+        let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
+        let pattern_vec_uppercase: Vec<String> = pattern_vec.iter().map(|x| x.to_uppercase()).collect();
+        let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
+        let all_patterns: Vec<&str> = pattern_vec_uppercase
+                                        .iter()
+                                        .chain(pattern_vec_lowercase.iter())
+                                        .map(|x| x.as_str())
+                                        .collect();
+        
+
+        let chrom_count_mutex = Mutex::new(hashHashMap::new());
+        
+        for pattern in all_patterns.iter() {
+            
+            let ac = AhoCorasick::new(&vec![pattern]).unwrap();
+
+            log::set_max_level(log::LevelFilter::Off);
+            let reader = common_reader(&self.file);
+            log::set_max_level(log::LevelFilter::Info);
+            let reader = FastxReader::new(reader);
+            
+            read_process_fastx_records(
+                reader,
+                4, // Number of worker threads
+                2, // Number of partitions
+                |record, count| {
+                    // Worker thread: Count matches for all patterns
+                    let sequence = record.seq();
+                    
+                    let mut local_count = 0u64;
+
+                    for mat in ac.find_iter(sequence) {
+                        local_count += 1;
+                    }
+
+                    *count = local_count;
+                },
+                |record, count| {
+                    // Main thread: Aggregate counts
+                    let mut chrom_count = chrom_count_mutex.lock().unwrap();
+                    chrom_count
+                        .entry(record.id().unwrap().to_owned())
+                        .or_insert(0)
+                        .add_assign(*count as u64);
+
+                    None::<()>
+                },
+            )
+            .unwrap();
+        }
+        // Extract the final result
+        let chrom_count = chrom_count_mutex.into_inner().unwrap();
+        Ok(chrom_count)
+    }
+
+    pub fn count_re2(&self, patterns: &String) -> AnyResult<IndexMap<String, u64>> {
         
         let mut chrom_count: IndexMap<String, u64> = IndexMap::new();
         let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
@@ -125,7 +184,7 @@ impl Fastx {
         let pattern_vec_lowercase = pattern_vec.iter().map(|x| x.to_lowercase()).collect::<Vec<String>>();
         // merge two vectors
         let pattern_vec = pattern_vec_uppercase.iter().chain(pattern_vec_lowercase.iter()).collect::<Vec<&String>>();
-        
+
         
 
         for pattern in pattern_vec {
@@ -205,7 +264,8 @@ impl Fastx {
 
     pub fn slide(&self, output: &String, 
                     window: u64, step: u64, 
-                    min_length: u64, filetype: &str) -> AnyResult<()>{
+                    min_length: u64, filetype: &str,
+                    coordinate_suffix: bool) -> AnyResult<()>{
         let window = window as usize;
         let step = step as usize;
         let min_length = min_length as usize;
@@ -257,8 +317,12 @@ impl Fastx {
                     while start < seq_length {
                         let seq_window = &seq[start..end as usize];
                         let qual_window = &qual[start..end as usize];
-                        let record = Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
-                                None, seq_window, qual_window);
+                        let record = match coordinate_suffix {
+                            false => Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
+                                                        None, seq_window, qual_window),
+                            true => Record::with_attrs(format!("{}:{}-{}", record.id(), start, end).as_str(),
+                                        None, seq_window, qual_window)
+                        };
                         match wtr.write_record(&record) {
                             Ok(_) => {},
                             Err(e) => {
@@ -283,7 +347,7 @@ impl Fastx {
                 log::info!("Slide {} reads into {} reads", output_counts, slided_counts);
             },
             FileType::Fasta => {
-                let reader = bio::io::fasta::Reader::with_capacity(100000, reader);
+                let reader = bio::io::fasta::Reader::with_capacity(1024, reader);
                 let mut writer = common_writer(output);
                 let mut wtr = bio::io::fasta::Writer::new(writer);
                 
@@ -317,8 +381,12 @@ impl Fastx {
                     while start < seq_length {
                         let seq_window = &seq[start..end as usize];
                        
-                        let record = bio::io::fasta::Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
-                                None, seq_window);
+                        let record = match coordinate_suffix {
+                            false => bio::io::fasta::Record::with_attrs(format!("{}_{}", record.id(), i).as_str(),
+                                                                        None, seq_window),
+                            true => bio::io::fasta::Record::with_attrs(format!("{}:{}-{}", record.id(), start, end).as_str(),
+                                                                        None, seq_window),
+                        };
                         match wtr.write_record(&record) {
                             Ok(_) => {},
                             Err(e) => {

@@ -5,6 +5,7 @@ use flate2::write::GzEncoder;
 use gzp::deflate::Gzip;
 use gzp::{ZBuilder, Compression};
 use gzp::{par::compress::{ParCompress, ParCompressBuilder}};
+// use gzp::{par::decompress::ParDecompressBuilder};
 use rust_htslib::bam::{
     self, 
     record::Aux, record::Cigar, 

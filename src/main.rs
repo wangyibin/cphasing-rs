@@ -1,4 +1,6 @@
 #[macro_use] extern crate scan_fmt;
+use std::io::BufReader;
+use std::io::BufRead;
 use indexmap::IndexMap;
 use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
@@ -112,8 +114,6 @@ fn main() {
         Some(("kprune", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
             use rayon::prelude::*;
-            use std::io::BufReader;
-            use std::io::BufRead;
             use std::sync::{Arc, Mutex};
             
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
@@ -402,9 +402,9 @@ fn main() {
             let step = sub_matches.get_one::<u64>("STEP").expect("error");
             let min_length = sub_matches.get_one::<u64>("MIN_LENGTH").expect("error");
             let filetype = sub_matches.get_one::<String>("FILETYPE").expect("error").as_str();
-
+            let coordinate_suffix = sub_matches.get_one::<bool>("COORDINATE").expect("error");
             let fa = Fastx::new(&input_fastq);
-            let _ = fa.slide(&output, *window, *step, *min_length, &filetype);
+            let _ = fa.slide(&output, *window, *step, *min_length, &filetype, *coordinate_suffix);
         }
         Some(("slide2raw", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
@@ -680,9 +680,22 @@ fn main() {
         Some(("pairs-filter", sub_matches)) => {
             use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             
+
+            let mut whitehash: HashSet<String> = HashSet::new();
+
+            if whitelist != "none" {
+                let reader = common_reader(&whitelist);
+                let reader = BufReader::new(reader);
+                for line in reader.lines() {
+                    let line = line.unwrap();
+                    whitehash.insert(line);
+                }
+            }
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -690,7 +703,7 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
-            pairs.filter_by_mapq(*min_quality, &output);
+            pairs.filter_by_mapq(*min_quality, &whitehash, &output);
         }
         Some(("pairs2contacts", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");

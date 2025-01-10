@@ -13,6 +13,7 @@ use rust_htslib::bam::{
     Header, header::HeaderRecord,
     Writer};
 use std::borrow::Cow;
+use std::fmt;
 use std::collections::{ BTreeMap, HashMap, HashSet };
 use std::hash::BuildHasherDefault;
 use std::error::Error;
@@ -157,6 +158,23 @@ pub struct PairRecord {
     pub strand1: char,
     pub strand2: char,
     pub mapq: u8,
+}
+
+impl fmt::Display for PairRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f, 
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            self.readID,
+            self.chrom1,
+            self.pos1,
+            self.chrom2,
+            self.pos2,
+            self.strand1,
+            self.strand2,
+            self.mapq
+        )
+    }
 }
 
 impl PairRecord {
@@ -610,6 +628,9 @@ impl Pairs {
         contact_records.retain(|x| x.is_some());
         contacts.records = contact_records;
         Ok(contacts)
+    }
+    pub fn to_cool(&mut self, min_quality: u8) {
+        
     }
 
     pub fn to_contacts(&mut self, min_contacts: u32, min_quality: u8) -> anyResult<Contacts> {
@@ -1128,52 +1149,97 @@ impl Pairs {
            
         log::info!("Successful output new pairs file `{}`", output);
     }
+    
+    pub fn filter_by_mapq(&mut self, min_quality: u8, 
+                            whitehash: &HashSet<String>, 
+                            output: &String) {
 
-    pub fn filter_by_mapq(&mut self, min_quality: u8, output: &String) {
+        use hashbrown::HashMap as BrownHashMap;
+        
+        let mut parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+        let pair_header = &self.header;
+        let contigsizes_data = &pair_header.chromsizes;
+        let contigsizes_data: BrownHashMap<String, u64> = contigsizes_data.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+        
+    
+        let mut new_contigsizes_data: BrownHashMap<String, u64> =  match whitehash.len() {
+            0 => {
+                contigsizes_data
+            },
+            _ => {
+                contigsizes_data.iter().filter(
+                    |(chrom, _size)| whitehash.contains(*chrom)
+                    ).map(|(chrom, size)| (chrom.clone(), *size)).collect()
+                }
+            };
+
+        
         let mut wtr = common_writer(output);
+
+        let mut new_contigsizes: Vec<ChromSizeRecord> = new_contigsizes_data.iter().map(
+            |(chrom, size)| ChromSizeRecord{chrom: chrom.clone(), size: *size}).collect();
+
         self.header = PairHeader::new();
-        self.header.from_pairs(&self.file);
+        self.header.from_chromsizes(new_contigsizes);
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
 
         let mut reader = common_reader(&self.file);
-
+    
         let (sender, receiver) = bounded::<Vec<String>>(1000);
 
         let mut handles = vec![];
         let filter_mapq = min_quality > 0;
         let mut wtr = Arc::new(Mutex::new(wtr));
+        let filter_white_list = !whitehash.is_empty();
 
         for _ in 0..4 {
             let receiver = receiver.clone();
             let wtr = Arc::clone(&wtr);
+            let contigsizes_data = new_contigsizes_data.clone();
             handles.push(thread::spawn(move || {
                 while let Ok((records)) = receiver.recv() {
                     // let filter_needed = filter_mapq && records.get(0).map_or(false, |record| record.len() >= 8);
                     let no_filter = !filter_mapq || records.get(0).map_or(false, |record| record.len() < 8);
-                
+
+                    let no_filter = no_filter & !filter_white_list;
+                    
                     let mut buffer: Vec<&String> = records.par_iter().filter_map(|line| {
                         let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
                         
                         let record_len = record.len();
 
                         if no_filter  {
-                            // buffer.push_str(&line);
-                            // buffer.push('\n');
                             return Some(line);
-                        }
+                        }  
 
-                        if record_len > 7{
+                        if record_len > 7 {
                             if let Ok(mapq) = record[7].parse::<u8>() {
                                 if mapq >= min_quality {
-                                    return Some(line);
-                                    
+                                    if filter_white_list {
+                                        if contigsizes_data.contains_key(&record[1].parse::<String>().unwrap()) &
+                                            contigsizes_data.contains_key(&record[3].parse::<String>().unwrap()) {
+                                            return Some(line);
+                                        }
+                                    } else {
+                                        return Some(line);
+                                    }
                                 }
                             } 
                         } else {
-                            return Some(line);
+                            if filter_white_list {
+                                if contigsizes_data.contains_key(&record[1].parse::<String>().unwrap()) &
+                                    contigsizes_data.contains_key(&record[3].parse::<String>().unwrap()) {
+                                    return Some(line);
+                                }
+                            } else {
+                                return Some(line);
+                            }
                         }
                         
-
                         None
                     }).collect();
 
@@ -1437,50 +1503,6 @@ impl Pairs {
 
         let mut depth =  Arc::try_unwrap(depth).unwrap().into_inner().unwrap();
 
-        // let mut depth: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
-        // for (i, record) in rdr.records().enumerate() {
-        //     let record = record.unwrap();
-        //     if filter_mapq {
-        //         if record.len() >= 8 {
-        //             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-        //             if mapq <= min_quality {
-        //                 continue
-        //             }
-        //         }
-        //     }
-
-        //     let contig1 = &record[1];
-        //     let contig2 = &record[3];
-        //     let pos1 = record[2].parse::<u32>().unwrap();
-        //     let pos2 = record[4].parse::<u32>().unwrap();
-
-        //     if !depth.contains_key(&record[1]) {
-        //         let size1 = *contigsizes_data.get(contig1).unwrap_or(&0);
-        //         if size1 != 0 {
-        //             let bins1 = depth.entry(contig1.to_string()).or_insert_with(|| vec![0; (size1 / binsize as u64 + 1) as usize]);
-        //             bins1[pos1 as usize / binsize as usize] += 1;
-        //         }
-        
-        //     } 
-        //     if !depth.contains_key(&record[3]) {
-        //         let size2 = *contigsizes_data.get(contig2).unwrap_or(&0);
-        //         if size2 != 0 {
-        //             let bins2 = depth.entry(contig2.to_string()).or_insert_with(|| vec![0; (size2 / binsize as u64 + 1) as usize]);
-        //             bins2[pos2 as usize / binsize as usize] += 1;
-        //         }
-               
-        //     }
-
-        //     if let Some(bins1) = depth.get_mut(&record[1]) {
-        //         bins1[pos1 as usize / binsize as usize] += 1;
-        //     }
-            
-        //     if let Some(bins2) = depth.get_mut(&record[3]) {
-        //         bins2[pos2 as usize / binsize as usize] += 1;
-        //     }
-        
-        // }
-
         log::info!("Collected data from pairs file.");
         let depth: BTreeMap<_, _> = depth.into_iter().collect();
         let mut wtr = common_writer(output);
@@ -1496,7 +1518,9 @@ impl Pairs {
                         if bin_end > (*size).try_into().unwrap() {
                             bin_end = *size as usize;
                         }
-                        
+                        if bin_start == bin_end {
+                            continue;
+                        }
                         buffer.extend_from_slice(format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes());
             }
             {

@@ -242,7 +242,18 @@ impl KPruner {
             allelic_contig_pairs.retain(|x| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2));
         }
 
-        
+        // generate all possible allelic contig pairs
+        // let all_contigs: HashSet<&String> = contig_pairs.iter().flat_map(|x| vec![x.Contig1, x.Contig2].into_iter()).collect();
+        // let mut all_contig_pairs: HashSet<ContigPair2> = HashSet::new();
+        // for contig1 in all_contigs.iter() {
+        //     for contig2 in all_contigs.iter() {
+        //         if contig1 < contig2 {
+        //             all_contig_pairs.insert(ContigPair2::new(contig1, contig2));
+        //         }
+        //     }
+        // }
+
+
 
         // remove allelic_contig_pairs from self.contacts, which not contain it
         allelic_contig_pairs.retain(|x| contacts_data.contains_key(x));
@@ -381,10 +392,18 @@ impl KPruner {
         let mut buffer = Vec::new();
         for contig_pair in allelic_contig_pairs.iter() {
             let record = allelic_record_hashmap.get(contig_pair).unwrap();
-            write!(buffer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+            if record.contig1 > record.contig2 {
+                write!(buffer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
+                            contig_pair.Contig1, contig_pair.Contig2,
+                            record.mz2, record.mz1, record.mz_shared,
+                            record.similarity, 0).unwrap();
+            } else {
+                write!(buffer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
                             contig_pair.Contig1, contig_pair.Contig2,
                             record.mz1, record.mz2, record.mz_shared,
                             record.similarity, 0).unwrap();
+            }
+            
         }
 
         for contig_pair in cross_allelic.iter() {

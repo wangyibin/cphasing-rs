@@ -400,13 +400,19 @@ impl PoreCTable {
         }
 
         log::info!("Successful output pairs `{}`", output);
+        
+        let output_prefix = if output == "-" {
+            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+        } else {
+            Path::new(&output).with_extension("").to_str().unwrap().to_string()
+        };
 
-        concatemer_summary.save(&format!("{}.concatemer.summary", self.prefix()));
+        concatemer_summary.save(&format!("{}.concatemer.summary", output_prefix));
         Ok(())
     }
 
     
-    // pub fn to_pairs_multi_threads(&self, chromsizes: &String, output: &String, min_quality: u8, 
+    // pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8, 
     //                 min_order: usize, max_order: usize) -> Result<(), Box<dyn Error>> {
     //     let parse_result = self.parse();
     //     let mut rdr = match parse_result {
@@ -420,97 +426,99 @@ impl PoreCTable {
     //     let mut ph: PairHeader = PairHeader::new();
     //     ph.from_chromsizes(chromsizes_data);
     
-    //     let writer = common_writer(output);
-    //     let writer = Arc::new(Mutex::new(writer));
-    //     writer.lock().unwrap().write_all(ph.to_string().as_bytes()).unwrap();
+    //     let mut writer = common_writer(output);
+    //     writer.write_all(ph.to_string().as_bytes()).unwrap();
+        
+    //     let wtr = Arc::new(Mutex::new(writer));
+
+    //     let mut concatemer: Arc<Mutex<Concatemer>> = Arc::new(Mutex::new(Concatemer::new()));  
+    //     let mut concatemer_summary: Arc<Mutex<ConcatemerSummary>> = Arc::new(Mutex::new(ConcatemerSummary::new()));
     
-    //     let (sender, receiver) = bounded::<Vec<PairRecord>>(1000);
-    
+    //     let mut old_read_idx: u64 = 0; 
+    //     let mut flag: bool = false; 
+    //     let mut read_id: u64 = 0;
+        
+    //     let mut first_iteration = true;
+    //     let (sender, receiver) = bounded::<PoreCRecord>(1000);
     //     let mut handles = vec![];
-    //     for _ in 0..8 {
-    //         let writer = Arc::clone(&writer);
+    //     for _ in 0..4 {
     //         let receiver = receiver.clone();
+    //         let concatemer = Arc::clone(&concatemer);
+    //         let concatemer_summary = Arc::clone(&concatemer_summary);
     //         handles.push(thread::spawn(move || {
-    //             let mut wtr = csv::WriterBuilder::new()
-    //                 .has_headers(false)
-    //                 .delimiter(b'\t')
-    //                 .from_writer(writer.lock().unwrap());
-    
-    //             while let Ok(pairs) = receiver.recv() {
-    //                 for pair in pairs {
-    //                     wtr.serialize(pair).unwrap();
+    //             while let Ok(record) = receiver.recv() {
+    //                 let mut concatemer = concatemer.lock().unwrap();
+    //                 let mut concatemer_summary = concatemer_summary.lock().unwrap();
+    //                 if !first_iteration && record.read_idx != old_read_idx {
+    //                     let order = concatemer.count();
+    //                     if (order < max_order) && (order >= min_order) {
+    //                         concatemer.sort();
+    //                         concatemer_summary.count(&concatemer);
+    //                         for pair in concatemer.decompose() {
+    //                             let mut wtr = wtr.lock().unwrap();
+    //                             writeln!(wtr, "{}", PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
+    //                             read_id += 1;
+    //                         }
+    //                     }
+    //                     concatemer.clear();
     //                 }
+    //                 first_iteration = false;
+    //                 old_read_idx = record.read_idx;
+    //                 if record.mapq < min_quality {
+    //                     continue
+    //                 }
+    //                 concatemer.push(record);
     //             }
     //         }));
     //     }
-    
-    //     let mut concatemer: Concatemer = Concatemer::new();
-    //     let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
-    
-    //     let mut old_read_idx: u64 = 0;
-    //     let mut read_id: u64 = 0;
-    //     let mut first_iteration = true;
-    //     let mut batch = Vec::with_capacity(1000);
     
     //     for (i, line) in rdr.deserialize().enumerate() {
     //         let record: PoreCRecord = match line {
     //             Ok(v) => v,
     //             Err(error) => {
     //                 log::warn!("Could not parse line {}", i + 1);
-    //                 continue;
+    //                 continue
     //             },
     //         };
-    
-    //         if !first_iteration && record.read_idx != old_read_idx {
-    //             let order = concatemer.count();
-    //             if (order < max_order) && (order >= min_order) {
-    //                 concatemer.sort();
-    //                 concatemer_summary.count(&concatemer);
-    //                 for pair in concatemer.decompose() {
-    //                     batch.push(PairRecord::from_pore_c_pair(pair, read_id));
-    //                     read_id += 1;
-    //                 }
-    
-    //                 if batch.len() >= 1000 {
-    //                     sender.send(std::mem::take(&mut batch)).unwrap();
-    //                 }
-    //             }
-    
-    //             concatemer.clear();
-    //         }
-    
-    //         first_iteration = false;
-    //         old_read_idx = record.read_idx;
-    //         if record.mapq < min_quality {
-    //             continue;
-    //         }
-    
-    //         concatemer.push(record);
+    //         sender.send(record).unwrap();
     //     }
+    
+    //     drop(sender);
+    //     for handle in handles {
+    //         handle.join().unwrap();
+    //     }
+    
+    //     let mut concatemer = Arc::try_unwrap(concatemer).unwrap().into_inner().unwrap();
+    //     let mut concatemer_summary = Arc::try_unwrap(concatemer_summary).unwrap().into_inner().unwrap();
     
     //     // process last concatemer
     //     if (concatemer.count() < max_order) & (concatemer.count() >= min_order) {
     //         concatemer.sort();
+    
+    //         let mut batch = Vec::with_capacity(max_order);
     //         concatemer_summary.count(&concatemer);
     //         for pair in concatemer.decompose() {
     //             batch.push(PairRecord::from_pore_c_pair(pair, read_id));
     //             read_id += 1;
     //         }
-    //     }
     
-    //     if !batch.is_empty() {
-    //         sender.send(batch).unwrap();
-    //     }
-    
-    //     drop(sender);
-    
-    //     for handle in handles {
-    //         handle.join().unwrap();
+    //         if !batch.is_empty() {
+    //             let mut wtr = wtr.lock().unwrap();
+    //             for record in batch {
+    //                 writeln!(wtr, "{}", record);
+    //             }
+    //         }
     //     }
     
     //     log::info!("Successful output pairs `{}`", output);
+        
+    //     let output_prefix = if output == "-" {
+    //         Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+    //     } else {
+    //         Path::new(&output).with_extension("").to_str().unwrap().to_string()
+    //     };
     
-    //     concatemer_summary.save(&format!("{}.concatemer.summary", self.prefix()));
+    //     concatemer_summary.save(&format!("{}.concatemer.summary", output_prefix));
     //     Ok(())
     // }
 

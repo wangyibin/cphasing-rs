@@ -283,6 +283,14 @@ pub fn cli() -> Command {
                         .help("filtype of sequences, auto dont support for stream input")
                 )
                 .arg(
+                    Arg::new("COORDINATE")
+                        .long("coordinate")
+                        .short('c')
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("add coordinate suffix of record id")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -837,6 +845,14 @@ pub fn cli() -> Command {
                         .short('q')
                         .value_parser(value_parser!(u8))
                         .default_value("1"))
+                .arg(
+                    Arg::new("WHITELIST")
+                        .long("whitelist")
+                        .short('w')
+                        .help("whitelist file, only keep the contigs in whitelist")
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
+                        )
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1027,7 +1043,7 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("bam2paf")
             .about("convert dorado align bam to paf")
-            .arg(arg!(<BAM> "bam"))
+            .arg(arg!(<BAM> "bam file should be sorted by read name, dont sort it by coordinate"))
             .arg(
                 Arg::new("SECONDARY")
                     .long("secondary")

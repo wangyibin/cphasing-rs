@@ -395,7 +395,15 @@ impl PAFTable {
         summary.mapping = read_mapping_count;
         summary.complex = read_complex_count;
 
-        summary.save(&format!("{}.read.summary", self.prefix()));
+        
+        let output_prefix = if output == "-" {
+            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+        } else {
+            Path::new(&output).with_extension("").to_str().unwrap().to_string()
+        };
+
+     
+        summary.save(&format!("{}.read.summary", output_prefix));
 
         log::info!("Successful output Pore-C table `{}`", output);
         Ok(())
