@@ -995,6 +995,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-")
                         .help("output file, default is stdout"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg_required_else_help(true),
         )
         .subcommand(

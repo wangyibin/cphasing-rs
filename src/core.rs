@@ -1,4 +1,7 @@
 use anyhow::Result as anyResult;
+// use async_compression::tokio::bufread::GzipDecoder;
+// use tokio::io::TBufReader;
+
 use bio::io::fastq;
 use flate2::read;
 use flate2::write::GzEncoder;
@@ -28,7 +31,7 @@ use serde::{ Deserialize, Serialize };
 use rayon::prelude::*;
 
 
-const BUFFER_SIZE: usize = 128 * 1024;
+const BUFFER_SIZE: usize = 256 * 1024;
 type DynResult<T> = anyResult<T, Box<dyn Error + 'static>>;
 
 pub trait BaseTable {
@@ -215,6 +218,7 @@ pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 
     Ok(fp)
 }
 
+
 pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
     log::info!("Load `{}`", &file);
     let suffix = Path::new(file).extension();
@@ -225,10 +229,16 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
             Err(error) => panic!("No such of file `{}`: {}", file_path.display(), error),
             Ok(fp) => fp,
         };
+
+        // Box::new(BufReader::with_capacity(
+        //     BUFFER_SIZE,
+        //     GzipDecoder::new(BufReader::new(fp)),
+        // ))
         Box::new(BufReader::with_capacity(
             BUFFER_SIZE,
             read::MultiGzDecoder::new(fp),
         ))
+
     } else {
 
         parse_input(Some(file_path.clone())).expect(format!("No such of file, {}", file_path.display()).as_str())

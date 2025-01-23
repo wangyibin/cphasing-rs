@@ -684,6 +684,10 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
 
             let mut whitehash: HashSet<String> = HashSet::new();
 
@@ -696,10 +700,7 @@ fn main() {
                 }
             }
 
-            ThreadPoolBuilder::new()
-                .num_threads(*threads)
-                .build_global()
-                .unwrap();
+          
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let mut pairs = Pairs::new(&pairs);
 
@@ -749,11 +750,18 @@ fn main() {
             // contacts.write(&contacts.file);
         }
         Some(("pairs2depth", sub_matches)) => {
+            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
             let mut pairs = Pairs::new(&pairs);
             pairs.to_depth(*binsize, *min_quality, &output);
 
