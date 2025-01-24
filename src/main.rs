@@ -2,6 +2,7 @@
 use std::io::BufReader;
 use std::io::BufRead;
 use indexmap::IndexMap;
+use rayon::ThreadPoolBuilder;
 use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
 use cphasing::bam::{ split_bam, bam2pairs, 
@@ -91,7 +92,6 @@ fn main() {
 
         }
         Some(("alleles", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             use rayon::prelude::*;
 
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
@@ -112,7 +112,6 @@ fn main() {
         }
 
         Some(("kprune", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             use rayon::prelude::*;
             use std::sync::{Arc, Mutex};
             
@@ -240,7 +239,6 @@ fn main() {
 
         }
         Some(("prune", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             use rayon::prelude::*;
             use std::io::BufReader;
             use std::io::BufRead;
@@ -595,6 +593,13 @@ fn main() {
             let bed = sub_matches.get_one::<String>("BED").expect("required");
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+            
             let mut prt = PoreCTable::new(&table);
             if *invert {
                 log::info!("Invert the table.");
@@ -648,7 +653,6 @@ fn main() {
             }
         }
         Some(("pairs-merge", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             
             let files: Vec<_> = sub_matches.get_many::<String>("FILES").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -678,7 +682,6 @@ fn main() {
             pairs.dup(&collapsed_list, 123, &output);
         }
         Some(("pairs-filter", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -724,7 +727,6 @@ fn main() {
             
         }
         Some(("pairs2clm", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             // let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
@@ -750,7 +752,6 @@ fn main() {
             // contacts.write(&contacts.file);
         }
         Some(("pairs2depth", sub_matches)) => {
-            use rayon::ThreadPoolBuilder;
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
@@ -835,6 +836,12 @@ fn main() {
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
 
             let mut pairs = Pairs::new(&pairs);
 

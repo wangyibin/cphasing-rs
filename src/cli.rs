@@ -694,6 +694,12 @@ pub fn cli() -> Command {
                         .help("invert the selection")
                 )
                 .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1180,6 +1186,12 @@ pub fn cli() -> Command {
                         .short('q')
                         .value_parser(value_parser!(u8))
                         .default_value("1"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

@@ -251,7 +251,6 @@ impl BaseTable for Pairs {
 
 impl Pairs {
     pub fn parse(&mut self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
-    // pub fn parse(&mut self) -> anyResult<Box<dyn BufRead + Send + 'static>> {
         let input = common_reader(&self.file);
         self.header = PairHeader::new();
         self.header.from_pairs(&self.file);
@@ -262,9 +261,15 @@ impl Pairs {
                         .delimiter(b'\t')
                         .comment(Some(b'#'))
                         .from_reader(input);
-        // let rdr = input;
-
         Ok(rdr)
+    }
+
+    pub fn parse2(&mut self) -> anyResult<Box<dyn BufRead + Send + 'static>> {
+        let input = common_reader(&self.file);
+        self.header = PairHeader::new();
+        self.header.from_pairs(&self.file);
+
+        Ok(input)
     }
 
     pub fn remove_by_contig_pairs(&mut self, contigs: HashSet<ContigPair>, output: &String) -> anyResult<()> {
@@ -759,7 +764,7 @@ impl Pairs {
                 threads: usize,
                 low_memory: bool) {
         use hashbrown::HashMap;
-        let parse_result = self.parse();
+        let parse_result = self.parse2();
 
         let mut rdr = match parse_result {
             Ok(r) => r,
@@ -809,7 +814,7 @@ impl Pairs {
     
         
         let mut data: Arc<Mutex<HashMap<(u32, u32), Vec<SmallIntVec>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        let (sender, receiver) = bounded::<Vec<(usize, String)>>(1000);
 
         let mut handles = vec![];
         for _ in 0..8 {
@@ -821,85 +826,95 @@ impl Pairs {
             handles.push(thread::spawn(move || {
                 let mut updates: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::with_capacity(BATCH_SIZE);
                 while let Ok((records)) = receiver.recv() {
+                    let line = &records.get(0).unwrap().1;
+                    let line_list = line.split("\t").collect::<Vec<&str>>();
+                    let filter_needed = filter_mapq &&  line_list.get(7)
+                        .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                        .map_or(true, |mapq| mapq > min_quality);
+                    // let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
 
-                    let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
-
-                    for (idx, record) in records.iter().filter(|(idx, record)| {
-                        !filter_needed || record.get(7)
-                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
-                            .map_or(true, |mapq| mapq > min_quality)
-                    }) {
-                        let pos1 = record[2].parse::<u32>().unwrap_or_default();
-                        let pos2 = record[4].parse::<u32>().unwrap_or_default();
+                    // for (idx, record) in records.iter().filter(|(idx, record)| {
+                    //     !filter_needed || record.get(7)
+                    //         .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                    //         .map_or(true, |mapq| mapq > min_quality)
+                    // }) {
+                    //     let pos1 = record[2].parse::<u32>().unwrap_or_default();
+                    //     let pos2 = record[4].parse::<u32>().unwrap_or_default();
                         
-                        let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
-                            (&record[3], &record[1],  pos2, pos1)
-                        } else {
-                            (&record[1], &record[3], pos1, pos2)
-                        };
-                        if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
-                            updates.entry((idx1, idx2))
-                                .and_modify(|e| e.push(smallvec![pos1, pos2]))
-                                .or_insert_with(|| vec![smallvec![pos1, pos2]]);
-                        }
-                    }
-                    {
-                        let mut data = data.lock().unwrap();
-                        for (key, mut local_values) in updates.drain() {
-                            data.entry(key).or_insert_with(Vec::new).append(&mut local_values);
-                        }
-                    }
+                    //     let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
+                    //         (&record[3], &record[1],  pos2, pos1)
+                    //     } else {
+                    //         (&record[1], &record[3], pos1, pos2)
+                    //     };
+                    //     if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
+                    //         updates.entry((idx1, idx2))
+                    //             .and_modify(|e| e.push(smallvec![pos1, pos2]))
+                    //             .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+                    //     }
+                    // }
+                    // {
+                    //     let mut data = data.lock().unwrap();
+                    //     for (key, mut local_values) in updates.drain() {
+                    //         data.entry(key).or_insert_with(Vec::new).append(&mut local_values);
+                    //     }
+                    // }
                     
-                    // records.par_iter()
-                    //     .filter(|(_, record)| {
-                    //         !filter_needed || record.get(7)
-                    //             .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
-                    //             .map_or(true, |mapq| mapq > min_quality)
-                    //     })
-                    //     .fold(
-                    //         || HashMap::new(),
-                    //         |mut updates, (_, record)| {
-                    //             let pos1 = record[2].parse::<u32>().unwrap_or_default();
-                    //             let pos2 = record[4].parse::<u32>().unwrap_or_default();
+                    records.par_iter()
+                        .filter(|(_, record)| {
+                            let record: Vec<&str> = record.split('\t').collect();
+                            !filter_needed || record.get(7)
+                                .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                                .map_or(true, |mapq| mapq > min_quality)
+                        })
+                        .fold(
+                            || HashMap::new(),
+                            |mut updates, (_, record)| {
+                                let record: Vec<&str> = record.split('\t').collect();
                                 
-                    //             let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
-                    //                 (&record[3], &record[1], pos2, pos1)
-                    //             } else {
-                    //                 (&record[1], &record[3], pos1, pos2)
-                    //             };
-                    //             if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
-                    //                 updates.entry((idx1, idx2))
-                    //                     .and_modify(|e: &mut Vec<SmallVec<[u32; 2]>>| e.push(smallvec![pos1, pos2]))
-                    //                     .or_insert_with(|| vec![smallvec![pos1, pos2]]);
-                    //             }
-                    //             updates
-                    //         },
-                    //     )
-                    //     .reduce(
-                    //         || HashMap::new(),
-                    //         |mut global_updates, updates| {
-                    //             for (key, local_values) in updates {
-                    //                 global_updates.entry(key).or_insert_with(Vec::new).extend(local_values);
-                    //             }
-                    //             global_updates
-                    //         },
-                    //     )
-                    //     .into_iter()
-                    //     .for_each(|(key, local_values)| {
-                    //         let mut data = data.lock().unwrap();
-                    //         data.entry(key).or_insert_with(Vec::new).extend(local_values);
-                    //     });
+                                let pos1 = record[2].parse::<u32>().unwrap_or_default();
+                                let pos2 = record[4].parse::<u32>().unwrap_or_default();
+                                
+                                let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
+                                    (&record[3], &record[1], pos2, pos1)
+                                } else {
+                                    (&record[1], &record[3], pos1, pos2)
+                                };
+                                if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(*contig1), contig_idx.get(*contig2)) {
+                                    updates.entry((idx1, idx2))
+                                        .and_modify(|e: &mut Vec<SmallVec<[u32; 2]>>| e.push(smallvec![pos1, pos2]))
+                                        .or_insert_with(|| vec![smallvec![pos1, pos2]]);
+                                }
+                                updates
+                            },
+                        )
+                        .reduce(
+                            || HashMap::new(),
+                            |mut global_updates, updates| {
+                                for (key, local_values) in updates {
+                                    global_updates.entry(key).or_insert_with(Vec::new).extend(local_values);
+                                }
+                                global_updates
+                            },
+                        )
+                        .into_iter()
+                        .for_each(|(key, local_values)| {
+                            let mut data = data.lock().unwrap();
+                            data.entry(key).or_insert_with(Vec::new).extend(local_values);
+                        });
 
                     
                 }
               
             }));
         }
-        let batch_size = 10_000;
+        let batch_size = BATCH_SIZE;
         let mut batch = Vec::with_capacity(batch_size);
-        for (idx, record) in rdr.records().enumerate() {
+        for (idx, record) in rdr.lines().enumerate() {
             match record {
                 Ok(record) => {
+                    if record.starts_with('#') {
+                        continue
+                    }
                     batch.push((idx, record));
                     if batch.len() >= batch_size {
                         sender.send(std::mem::take(&mut batch)).unwrap();
@@ -924,42 +939,20 @@ impl Pairs {
         }
         
         let mut data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
-        log::info!("Collected data from pairs file.");
 
-        // let mut data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
-        // rdr.records().enumerate().for_each(|(idx, record_result)| {
-        //     match record_result {
-        //         Ok(record) => {
-        //             if filter_mapq && record.len() >= 8 {
-        //                 let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-        //                 if mapq <= min_quality {
-        //                     return; 
-        //                 }
-        //             }
+        // if output_depth {
+        //     log::info!("Calculating the depth of each contig");
+        //     let writer = common_writer(format!("{}.depth", output_prefix.to_string()).as_str());
+        //     let mut writer = Arc::new(Mutex::new(writer));
+        //     let mut depth: HashMap<u32, u32> = contig
 
-        //             let pos1 = record[2].parse::<u32>().unwrap_or_default();
-        //             let pos2 = record[4].parse::<u32>().unwrap_or_default();
+        //     data.par_iter().for_each(|(cp, vec)| {
 
-        //             let (contig1, contig2, pos1, pos2) = if record[1] > record[3] {
-        //                 (&record[3], &record[1],  pos2, pos1)
-        //             } else {
-        //                 (&record[1], &record[3], pos1, pos2)
-        //             };
-
-        //             if let (Some(&idx1), Some(&idx2)) = (contig_idx.get(contig1), contig_idx.get(contig2)) {
-        //                 data.entry((idx1, idx2))
-        //                     .and_modify(|e| e.push(smallvec![pos1, pos2]))
-        //                     .or_insert_with(|| vec![smallvec![pos1, pos2]]);
-        //             }
-        //         },
-        //         Err(e) => {
-        //             eprintln!("{:?}", e);
-        //         }
         //     }
-        // });
-
+        // }
         
         if output_split_contacts{
+            log::info!("Calculating the distance between split contigs");
             let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
             let mut writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
@@ -1242,7 +1235,7 @@ impl Pairs {
         let mut wtr = Arc::new(Mutex::new(wtr));
         let filter_white_list = !whitehash.is_empty();
 
-        for _ in 0..4 {
+        for _ in 0..8 {
             let receiver = receiver.clone();
             let wtr = Arc::clone(&wtr);
             let contigsizes_data = new_contigsizes_data.clone();
@@ -1253,41 +1246,6 @@ impl Pairs {
 
                     let no_filter = no_filter & !filter_white_list;
                     
-                    // let mut buffer: Vec<&String> = records.par_iter().filter_map(|line| {
-                    //     let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
-                        
-                    //     let record_len = record.len();
-
-                    //     if no_filter  {
-                    //         return Some(line);
-                    //     }  
-
-                    //     if record_len > 7 {
-                    //         if let Ok(mapq) = record[7].parse::<u8>() {
-                    //             if mapq >= min_quality {
-                    //                 if filter_white_list {
-                    //                     if contigsizes_data.contains_key(&record[1].parse::<String>().unwrap()) &
-                    //                         contigsizes_data.contains_key(&record[3].parse::<String>().unwrap()) {
-                    //                         return Some(line);
-                    //                     }
-                    //                 } else {
-                    //                     return Some(line);
-                    //                 }
-                    //             }
-                    //         } 
-                    //     } else {
-                    //         if filter_white_list {
-                    //             if contigsizes_data.contains_key(&record[1].parse::<String>().unwrap()) &
-                    //                 contigsizes_data.contains_key(&record[3].parse::<String>().unwrap()) {
-                    //                 return Some(line);
-                    //             }
-                    //         } else {
-                    //             return Some(line);
-                    //         }
-                    //     }
-                        
-                    //     None
-                    // }).collect();
 
                     let buffer: Vec<&String> = records.par_iter().filter_map(|line| {
                         let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
@@ -1418,7 +1376,7 @@ impl Pairs {
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
         
-        let mut parse_result = self.parse();
+        let mut parse_result = self.parse2();
         let mut rdr = match parse_result {
             Ok(r) => r,
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
@@ -1429,40 +1387,78 @@ impl Pairs {
         wtr.write_all(self.header.to_string().as_bytes()).unwrap();
         
         log::info!("Parsing pairs file...");
-        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        let (sender, receiver) = bounded::<Vec<(usize, String)>>(1000);
         let mut handles = vec![];
         let filter_mapq = min_quality > 0;
         let mut wtr = Arc::new(Mutex::new(wtr));
-        for _ in 0..4 {
+        for _ in 0..8 {
             let receiver = receiver.clone();
             let interval_hash = interval_hash.clone();
             let wtr = Arc::clone(&wtr);
             handles.push(thread::spawn(move || {
                 while let Ok((records)) = receiver.recv() {
-                    let filter_needed = filter_mapq && records.get(0).map_or(false, |(_, record)| record.len() >= 8);
-                    let mut data = vec![];
-                    for (idx, record) in records.iter().filter(|(idx, record)| {
-                        !filter_needed || record.get(7)
-                            .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
-                            .map_or(true, |mapq| mapq >= min_quality)
-                    }) {
-                        let chrom1 = &record[1];
-                        let pos1 = record[2].parse::<usize>().unwrap();
-                        let chrom2 = &record[3];
-                        let pos2 = record[4].parse::<usize>().unwrap();
-                        let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
-                            interval_hash.get(chrom2).map_or(false, |interval2| {
-                                interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
-                            })
-                        });
+                    let line = &records.get(0).unwrap().1;
+                    let line_list = line.split("\t").collect::<Vec<&str>>();
+                    let filter_needed = filter_mapq &&  line_list.get(7)
+                        .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                        .map_or(true, |mapq| mapq > min_quality);
 
-                        if is_in_regions ^ invert {
-                            let record = record.iter().map(|x| x.to_string()).collect::<Vec<String>>();
-                            if !record.is_empty() {
-                                data.push(record.join("\t"));
+                    // let filter_needed = filter_mapq && records.get(0).map_or(false, |(_, record)| record.len() >= 8);
+                    // let mut data = vec![];
+                    // for (idx, record) in records.iter().filter(|(idx, record)| {
+                    //     let record = record.split('\t').collect::<Vec<&str>>();
+                    //     !filter_needed || record.get(7)
+                    //         .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                    //         .map_or(true, |mapq| mapq >= min_quality)
+                    // }) {
+                    //     let record = record.split('\t').collect::<Vec<&str>>();
+                    //     let chrom1 = record[1];
+                    //     let pos1 = record[2].parse::<usize>().unwrap();
+                    //     let chrom2 = record[3];
+                    //     let pos2 = record[4].parse::<usize>().unwrap();
+                    //     let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
+                    //         interval_hash.get(chrom2).map_or(false, |interval2| {
+                    //             interval1.count(pos1, pos1+1) > 0 && interval2.count(pos2, pos2+1) > 0
+                    //         })
+                    //     });
+
+                    //     if is_in_regions ^ invert {
+                    //         let record = record.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+                    //         if !record.is_empty() {
+                    //             data.push(record.join("\t"));
+                    //         }
+                    //     }
+                    // }
+
+                    let data: Vec<String> = records.par_iter()
+                        .filter_map(|(_, record)| {
+                            let fields: Vec<&str> = record.split('\t').collect();
+                            if !filter_needed || fields.get(7)
+                                .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                                .map_or(true, |mapq| mapq >= min_quality)
+                            {
+                                let chrom1 = fields[1];
+                                let pos1 = fields[2].parse::<usize>().unwrap();
+                                let chrom2 = fields[3];
+                                let pos2 = fields[4].parse::<usize>().unwrap();
+                                let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
+                                    interval_hash.get(chrom2).map_or(false, |interval2| {
+                                        interval1.count(pos1, pos1 + 1) > 0 && interval2.count(pos2, pos2 + 1) > 0
+                                    })
+                                });
+
+                                if is_in_regions ^ invert {
+                                    let record = fields.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+                                    if !record.is_empty() {
+                                        return Some(record.join("\t"));
+                                    }
+                                }
                             }
-                        }
-                    }
+                            None
+                        })
+                        .collect();
+                    
+
                     
                     if !data.is_empty() {
                         let data = data.join("\n") + "\n";
@@ -1473,10 +1469,13 @@ impl Pairs {
             }));
         }
 
-        let batch_size = 10_000;
+        let batch_size = BATCH_SIZE;
         let mut batch = Vec::with_capacity(batch_size);
-        for (idx, record) in rdr.records().enumerate() {
+        for (idx, record) in rdr.lines().enumerate() {
             let record = record.unwrap();
+            if record.starts_with('#') {
+                continue;
+            }
             batch.push((idx, record));
             if batch.len() >= batch_size {
                 sender.send(std::mem::take(&mut batch)).unwrap();
@@ -1618,7 +1617,7 @@ impl Pairs {
     pub fn to_depth(&mut self, binsize: u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap as BrownHashMap;
         
-        let mut parse_result = self.parse();
+        let mut parse_result = self.parse2();
         let mut rdr = match parse_result {
             Ok(r) => r,
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
@@ -1648,7 +1647,7 @@ impl Pairs {
 
 
         let depth = Arc::new(Mutex::new(depth));
-        let (sender, receiver) = bounded::<Vec<(usize, StringRecord)>>(1000);
+        let (sender, receiver) = bounded::<Vec<(usize, String)>>(1000);
         let mut handles = vec![];
         // for _ in 0..8 {
         //     let receiver = receiver.clone();
@@ -1719,12 +1718,13 @@ impl Pairs {
             let contigsizes_data = contigsizes_data.clone();
             let contig_idx = contig_idx.clone();
             handles.push(thread::spawn(move || {
-                // let mut thread_local_updates: BrownHashMap<String, Vec<u32>> = BrownHashMap::new();
-            
                 
                 while let Ok((records)) = receiver.recv() {
+                    let line = &records.get(0).unwrap().1;
+                    let line_list = line.split('\t').collect::<Vec<&str>>();
+                    let filter_needed = filter_mapq && line_list.len() >= 8;
                     
-                    let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
+                    // let filter_needed = filter_mapq &&  records.get(0).map_or(false, |(_, record)| record.len() >= 8);
 
                     // for (idx, record) in records.iter().filter(|(idx, record)| {
                     //     !filter_needed || record.get(7)
@@ -1747,44 +1747,83 @@ impl Pairs {
 
                     // }
 
-                    
                     let thread_local_updates: HashMap<String, Vec<u32>> = records.par_iter()
-                            .filter(|(_, record)| {
-                                !filter_needed || record.get(7)
-                                    .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
-                                    .map_or(true, |mapq| mapq > min_quality)
-                            })
-                            .fold(
-                                || HashMap::new(),
-                                |mut thread_local_updates, (_, record)| {
-                                    let contig1 = &record[1];
-                                    let contig2 = &record[3];
-                                    let pos1 = record[2].parse::<u32>().unwrap_or_default();
-                                    let pos2 = record[4].parse::<u32>().unwrap_or_default();
-                                    for (contig, pos) in [(contig1, pos1), (contig2, pos2)] {
-                                        if let Some(&size) = contigsizes_data.get(contig) {
-                                            let bin_index = (pos / binsize) as usize;
-                                            let bins = thread_local_updates
-                                                .entry(contig.to_string())
-                                                .or_insert_with(|| vec![0; (size / binsize as u64 + 1) as usize]);
-                                            bins[bin_index] += 1;
-                                        }
+                        .filter(|(_, record)| {
+                            let fields: Vec<&str> = record.split('\t').collect();
+                            !filter_needed || fields.get(7)
+                                .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                                .map_or(true, |mapq| mapq > min_quality)
+                        })
+                        .fold(
+                            || HashMap::new(),
+                            |mut thread_local_updates, (_, record)| {
+                                let fields: Vec<&str> = record.split('\t').collect();
+                                let contig1 = fields.get(1).unwrap_or(&"");
+                                let contig2 = fields.get(3).unwrap_or(&"");
+                                let pos1 = fields.get(2).unwrap_or(&"0").parse::<u32>().unwrap_or_default();
+                                let pos2 = fields.get(4).unwrap_or(&"0").parse::<u32>().unwrap_or_default();
+                                for (contig, pos) in [(contig1, pos1), (contig2, pos2)] {
+                                    if let Some(&size) = contigsizes_data.get(*contig) {
+                                        let bin_index = (pos / binsize) as usize;
+                                        let bins = thread_local_updates
+                                            .entry(contig.to_string())
+                                            .or_insert_with(|| vec![0; (size / binsize as u64 + 1) as usize]);
+                                        bins[bin_index] += 1;
                                     }
-                                    thread_local_updates
-                                },
-                                )
-                                .reduce(
-                                    || HashMap::new(),
-                                    |mut global_updates, thread_local_updates| {
-                                        for (key, local_bins) in thread_local_updates {
-                                            let global_bins = global_updates.entry(key).or_insert_with(|| vec![0; local_bins.len()]);
-                                            for (i, count) in local_bins.iter().enumerate() {
-                                                global_bins[i] += count;
-                                            }
-                                        }
-                                        global_updates
-                                    },
-                                );
+                                }
+                                thread_local_updates
+                            },
+                        )
+                        .reduce(
+                            || HashMap::new(),
+                            |mut global_updates, thread_local_updates| {
+                                for (key, local_bins) in thread_local_updates {
+                                    let global_bins = global_updates.entry(key).or_insert_with(|| vec![0; local_bins.len()]);
+                                    for (i, count) in local_bins.iter().enumerate() {
+                                        global_bins[i] += count;
+                                    }
+                                }
+                                global_updates
+                            },
+                        );
+                    
+                    // let thread_local_updates: HashMap<String, Vec<u32>> = records.par_iter()
+                    //         .filter(|(_, record)| {
+                    //             !filter_needed || record.get(7)
+                    //                 .and_then(|mapq_str| mapq_str.parse::<u8>().ok())
+                    //                 .map_or(true, |mapq| mapq > min_quality)
+                    //         })
+                    //         .fold(
+                    //             || HashMap::new(),
+                    //             |mut thread_local_updates, (_, record)| {
+                    //                 let contig1 = &record[1];
+                    //                 let contig2 = &record[3];
+                    //                 let pos1 = record[2].parse::<u32>().unwrap_or_default();
+                    //                 let pos2 = record[4].parse::<u32>().unwrap_or_default();
+                    //                 for (contig, pos) in [(contig1, pos1), (contig2, pos2)] {
+                    //                     if let Some(&size) = contigsizes_data.get(contig) {
+                    //                         let bin_index = (pos / binsize) as usize;
+                    //                         let bins = thread_local_updates
+                    //                             .entry(contig.to_string())
+                    //                             .or_insert_with(|| vec![0; (size / binsize as u64 + 1) as usize]);
+                    //                         bins[bin_index] += 1;
+                    //                     }
+                    //                 }
+                    //                 thread_local_updates
+                    //             },
+                    //             )
+                    //             .reduce(
+                    //                 || HashMap::new(),
+                    //                 |mut global_updates, thread_local_updates| {
+                    //                     for (key, local_bins) in thread_local_updates {
+                    //                         let global_bins = global_updates.entry(key).or_insert_with(|| vec![0; local_bins.len()]);
+                    //                         for (i, count) in local_bins.iter().enumerate() {
+                    //                             global_bins[i] += count;
+                    //                         }
+                    //                     }
+                    //                     global_updates
+                    //                 },
+                    //             );
                     {
                         // let mut global_depth = depth.lock().unwrap();
                         // for (key, local_bins) in thread_local_updates.drain() {
@@ -1801,9 +1840,6 @@ impl Pairs {
                             global_bins[i] += count;
                         }
                     }
-
-
-                    
                 }
 
             }));
@@ -1811,8 +1847,11 @@ impl Pairs {
 
         let batch_size = 10_000;
         let mut batch = Vec::with_capacity(batch_size);
-        for (idx, record) in rdr.records().enumerate() {
+        for (idx, record) in rdr.lines().enumerate() {
             let record = record.unwrap();
+            if record.starts_with('#') {
+                continue;
+            }
             
             batch.push((idx, record));
             if batch.len() >= batch_size {
@@ -2101,35 +2140,6 @@ impl Pairs {
             }
         }
         
-        // let (tx, rx) = mpsc::channel();
-        // let num_threads = 10;
-        // reader.lines().enumerate().par_bridge()
-        //     .for_each_with(tx.clone(), |s, (idx, record)| {
-        //         let record = record.unwrap();
-        //         if record.starts_with("#") {
-        //             tx.send(record).unwrap();
-
-        //         } else {
-        //             let mut rng = StdRng::from_seed(seed_array);
-        //             let random_number: f64 = rng.gen();
-        //             if random_number < percent {
-        //                 tx.send(record).unwrap();
-        //             }
-        //         }
-        //     });
-        
-        // let mut output_counts = 0;
-        // for record in rx {
-        //     if output_counts > n && p == 0.0 {
-        //         break;
-        //     }
-
-        //     writeln!(wtr, "{}", record);
-        //     output_counts += 1
-        // }
-
-
-
 
         log::info!("Successful output new pairs file into `{}`", output);
         
@@ -2138,25 +2148,6 @@ impl Pairs {
 
 
 pub fn merge_pairs(input: Vec<&String>, output: &String) {
-    // let mut wtr = common_writer(output);
-
-    // for (i, file) in input.iter().enumerate() {
-    //     let mut reader = common_reader(file);
-    //     for line in reader.lines() {
-    //         let line = line.unwrap();
-    //         if line.starts_with("#") {
-    //             if i == 0  {
-    //                 writeln!(wtr, "{}", line);
-    //             }  else {
-    //                 continue
-    //             }
-    //         } else {
-    //             writeln!(wtr, "{}", line);
-    //         }
-
-    //     }
-    // }
-    // wtr.flush().unwrap()
 
     let mut wtr = common_writer(output);
     

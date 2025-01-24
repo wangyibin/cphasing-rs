@@ -317,6 +317,13 @@ impl PoreCTable {
         Ok(rdr)
     }
 
+    pub fn parse2(&mut self)  -> anyResult<Box<dyn BufRead + Send + 'static>> {
+        let input = common_reader(&self.file);
+      
+        Ok(input)
+    }
+
+
     pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8, 
                         min_order: usize, max_order: usize,
                     ) -> Result<(), Box<dyn Error>> {
@@ -576,7 +583,7 @@ impl PoreCTable {
         let wtr = common_writer(output);
         
 
-        let (sender, receiver) = bounded::<Vec<csv::StringRecord>>(1000);
+        let (sender, receiver) = bounded::<Vec<String>>(1000);
 
         let mut handles = vec![];
         let mut wtr = Arc::new(Mutex::new(wtr));
@@ -587,22 +594,36 @@ impl PoreCTable {
             let receiver = receiver.clone();
             handles.push(thread::spawn(move || {
                 while let Ok(records) = receiver.recv() {
-                    let mut data = vec![];
-                    for record in records {
+                    // let mut data = vec![];
+                    // for record in records {
+                    //     let target_start = record[6].parse::<usize>().unwrap();
+                    //     let target_end = record[7].parse::<usize>().unwrap();
+
+                    //     let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
+                    //         interval.count(target_start, target_end) > 0 });
+
+                    //     if is_in_regions ^ invert {
+                    //         let record = record.iter().join("\t");
+                    //         if !record.is_empty() {
+                    //             data.push(record);
+                    //         }
+                            
+                    //     }
+                    // }
+                    let data = records.par_iter().filter_map(|record| {
+                        let record = record.split("\t").collect::<Vec<_>>();
                         let target_start = record[6].parse::<usize>().unwrap();
                         let target_end = record[7].parse::<usize>().unwrap();
 
-                        let is_in_regions = interval_hash.get(&record[5]).map_or(false, |interval|{
+                        let is_in_regions = interval_hash.get(record[5]).map_or(false, |interval|{
                             interval.count(target_start, target_end) > 0 });
 
                         if is_in_regions ^ invert {
-                            let record = record.iter().join("\t");
-                            if !record.is_empty() {
-                                data.push(record);
-                            }
-                            
+                            Some(record.iter().join("\t"))
+                        } else {
+                            None
                         }
-                    }
+                    }).collect::<Vec<_>>();
 
                     if !data.is_empty() {
                         let mut wtr = wtr.lock().unwrap();
@@ -613,9 +634,9 @@ impl PoreCTable {
             }));
         }
 
-
-        let mut batch = Vec::with_capacity(1000);
-        for (idx, record) in self.parse().unwrap().records().enumerate() {
+        let batch_size = 10_000;
+        let mut batch = Vec::with_capacity(batch_size);
+        for (idx, record) in self.parse2().unwrap().lines().enumerate() {
             let record = match record {
                 Ok(v) => v,
                 Err(error) => {
@@ -624,7 +645,7 @@ impl PoreCTable {
                 },
             };
             batch.push(record);
-            if batch.len() == 1000 {
+            if batch.len() == batch_size {
                 sender.send(std::mem::take(&mut batch)).unwrap();
             }
         }
@@ -785,3 +806,45 @@ pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
     log::info!("Successful output merge porec tables into `{}`", output);
 }
 
+
+// #[derive(Debug)]
+// pub struct PoreCParquet {
+//     file: String,
+// }
+
+// impl PoreCParquet {
+//     pub fn new(name: &String) -> PoreCParquet {
+//         PoreCParquet { file: name.clone() }
+//     }
+
+//     pub fn file_name(&self) -> Cow<'_, str> {
+//         let path = Path::new(&self.file);
+//         path.file_name().expect("REASON").to_string_lossy()
+//     }    
+
+//     pub fn prefix(&self) -> String {
+//         let binding = self.file_name().to_string();
+//         let file_path = Path::new(&binding);
+//         let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
+
+//         (*file_prefix).to_string()
+//     }
+
+//     pub fn to_porec(&self, output: &String) {
+//         let mut wtr = common_writer(output);
+//         let parquet = parquet::read(&self.file).unwrap();
+//         let schema = parquet.schema();
+//         let mut record = vec![];
+//         for row in parquet.rows() {
+//             for (i, column) in row.iter().enumerate() {
+//                 let column = column.as_any();
+//                 let column = column.downcast_ref::<parquet::column::String>().unwrap();
+//                 let value = column.get(0);
+//                 record.push(value);
+//             }
+//             writeln!(wtr, "{}", record.join("\t"));
+//             record.clear();
+//         }
+//         log::info!("Successful output parquet file into `{}`", output);
+//     }
+// }
