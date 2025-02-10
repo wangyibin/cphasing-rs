@@ -1,4 +1,5 @@
-#[macro_use] extern crate scan_fmt;
+#![allow(dead_code)]
+// #[macro_use] extern crate scan_fmt;
 use std::io::BufReader;
 use std::io::BufRead;
 use indexmap::IndexMap;
@@ -10,7 +11,7 @@ use cphasing::bam::{ split_bam, bam2pairs,
                      bamstat,
                      bam2paf, slide2raw};
 use cphasing::cli::cli;
-use cphasing::clm::Clm;
+use cphasing::clm::{Clm, merge_clm};
 use cphasing::core::{ 
     BaseTable,  common_reader, 
     common_writer, ContigPair,
@@ -92,7 +93,6 @@ fn main() {
 
         }
         Some(("alleles", sub_matches)) => {
-            use rayon::prelude::*;
 
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let kmer_size = sub_matches.get_one::<usize>("K").expect("error");
@@ -240,8 +240,6 @@ fn main() {
         }
         Some(("prune", sub_matches)) => {
             use rayon::prelude::*;
-            use std::io::BufReader;
-            use std::io::BufRead;
             use std::sync::{Arc, Mutex};
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let allele_strand_table = sub_matches.get_one::<String>("ALLELESTRANDTABLE").expect("required");
@@ -377,6 +375,20 @@ fn main() {
 
             split_bam(&input_bam, &output_prefix, *record_num).unwrap();
         }
+        Some(("mergeclm", sub_matches)) => {
+            let clm_dir = sub_matches.get_one::<String>("CLM_DIR").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut clm_files = std::fs::read_dir(&clm_dir).unwrap()
+                .map(|x| x.unwrap().path().to_str().unwrap().to_string())
+                .collect::<Vec<String>>();
+            
+            // filter out non-clm files
+            clm_files = clm_files.into_iter().filter(|x| x.ends_with(".clm")).collect();
+
+            merge_clm(clm_files, &output).unwrap();
+
+        }
         Some(("splitclm", sub_matches)) => {
             let input_clm = sub_matches.get_one::<String>("CLM").expect("required");
             let cluster_file = sub_matches.get_one::<String>("CLUSTER").expect("required");
@@ -392,6 +404,14 @@ fn main() {
             let record_num = sub_matches.get_one::<usize>("RECORD_NUM").expect("error");
 
             split_fastq(&input_fastq, &output_prefix, *record_num).unwrap();
+        }
+        Some(("extract-fasta", sub_matches)) => {
+            let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let clusters = sub_matches.get_one::<String>("CLUSTERS").expect("required");
+            let trim_length = sub_matches.get_one::<usize>("TRIM_LENGTH").expect("error");
+
+            let fasta = Fastx::new(&input_fasta);
+            fasta.split_by_cluster(&clusters, *trim_length).unwrap();
         }
         Some(("slidefastq", sub_matches)) => {
             let input_fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
@@ -529,7 +549,7 @@ fn main() {
         Some(("cutsite", sub_matches)) => {
             let fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let _output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
         }
@@ -709,6 +729,14 @@ fn main() {
 
             pairs.filter_by_mapq(*min_quality, &whitehash, &output);
         }
+        Some(("pairs-split", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let _output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mut pairs = Pairs::new(&pairs);
+            pairs.split(*chunksize);
+        }
         Some(("pairs2contacts", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -776,7 +804,13 @@ fn main() {
 
             pairs.to_mnd(*min_quality, &output).unwrap();
         }
-        
+        // Some(("pairs2pqs", sub_matches)) => {
+        //     let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+        //     let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+        //     let mut pairs = Pairs::new(&pairs);
+        //     pairs.to_parquet(&output);
+        // }
         Some(("pairs2bam", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
@@ -835,6 +869,7 @@ fn main() {
             let bed = sub_matches.get_one::<String>("BED").expect("required");
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let edge_length = sub_matches.get_one::<u64>("EDGE_LENGTH").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
@@ -849,7 +884,7 @@ fn main() {
                 log::info!("Invert the table.");
             }
             // pairs.intersect(&bed, *invert, *min_quality, &output);
-            pairs.intersect_multi_threads(&bed, *invert, *min_quality, &output);
+            pairs.intersect_multi_threads(&bed, *invert, *min_quality, *edge_length, &output);
         }
 
         Some(("chromsizes", sub_matches)) => {

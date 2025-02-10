@@ -566,7 +566,7 @@ impl PoreCTable {
                     interval.count(target_start, target_end) > 0 });
 
             if is_in_regions ^ invert {
-                wtr.write_record(&record);
+                let _ = wtr.write_record(&record);
             }
 
         }
@@ -586,7 +586,7 @@ impl PoreCTable {
         let (sender, receiver) = bounded::<Vec<String>>(1000);
 
         let mut handles = vec![];
-        let mut wtr = Arc::new(Mutex::new(wtr));
+        let wtr = Arc::new(Mutex::new(wtr));
         
         for _ in 0..8 {
             let interval_hash = interval_hash.clone();
@@ -756,7 +756,7 @@ impl PoreCTable {
 
         let mut wtr = common_writer(output);
        
-        let mut output_counts = 0;
+        let output_counts = 0;
         let mut rng = StdRng::from_seed(seed_array);
 
         for record in reader.lines() {
@@ -770,7 +770,7 @@ impl PoreCTable {
                 }
 
                 s[5] = &contig;
-                writeln!(wtr, "{}", s.join("\t"));
+                writeln!(wtr, "{}", s.join("\t")).unwrap();
                 
                 
             }
@@ -784,7 +784,7 @@ pub fn merge_porec_tables(input: Vec<&String>, output: &String) {
     let mut idx = 0;
 
     for file in input {
-        let mut reader = common_reader(file);
+        let reader = common_reader(file);
         let mut max_idx: u64 = 0;
         for (i, line) in reader.lines().enumerate() {
             let line = line.unwrap();

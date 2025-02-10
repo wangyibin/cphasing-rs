@@ -1,4 +1,5 @@
 #[allow(unused)]
+#[allow(dead_code)]
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
 // use minimap2::*;

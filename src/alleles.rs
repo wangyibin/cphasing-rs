@@ -61,9 +61,9 @@ pub fn find_cliques(graph: &Graph<(), u64, Undirected>) -> Vec<HashSet<NodeIndex
     let mut cliques = Vec::new();
     let n = graph.node_count();
     let mut all_nodes = (0..n).map(NodeIndex::new).collect::<HashSet<NodeIndex>>();
-    let mut r = HashSet::new();
+    let r = HashSet::new();
 
-    let mut x = HashSet::new();
+    let x = HashSet::new();
 
     bron_kerbosch(graph, r, all_nodes, x, &mut cliques);
     cliques

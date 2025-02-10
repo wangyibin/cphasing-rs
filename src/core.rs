@@ -1,3 +1,4 @@
+#[allow(non_snake_case)]
 use anyhow::Result as anyResult;
 // use async_compression::tokio::bufread::GzipDecoder;
 // use tokio::io::TBufReader;
@@ -319,3 +320,4 @@ pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u32) -> anyResult<Has
     Ok(bins_db)
 
 }
+

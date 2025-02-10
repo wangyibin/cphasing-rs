@@ -82,11 +82,11 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
     
 
     let mut wtr = Writer::from_path(output, &header, bam::Format::Bam).unwrap();
-    wtr.set_threads(threads);
+    let _ = wtr.set_threads(threads);
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
         let mut new_record = record.clone();
-        let mut read_id = std::str::from_utf8(record.qname()).unwrap();
+        let read_id = std::str::from_utf8(record.qname()).unwrap();
         let (read_id, suffix) = read_id.rsplit_once("_").unwrap();
         let mut flag = record.flags();
         
@@ -234,7 +234,7 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         let mapq = record.mapq();
         writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
                 qname, qlen, qstart, qend, strand, 
-                tname, tlen, tstart, tend, match_length, alignment_length, mapq);
+                tname, tlen, tstart, tend, match_length, alignment_length, mapq).unwrap();
 
         idx += 1;
 
@@ -329,7 +329,7 @@ pub fn bam2fastq(input_bam: &String, output:&String, threads: usize) {
 
     let _ = bam.set_threads(threads);
 
-    let mut writer = common_writer(output);
+    let writer = common_writer(output);
     let mut wtr = FastqWriter::new(writer);
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
@@ -343,7 +343,7 @@ pub fn bam2fastq(input_bam: &String, output:&String, threads: usize) {
             .collect();
 
         let seq_record = FastqRecord::with_attrs(&id, None, &seq, &qual_str);
-        wtr.write_record(&seq_record);
+        let _ = wtr.write_record(&seq_record);
 
     }
 
@@ -370,7 +370,7 @@ pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
         let seq = record.seq().as_bytes();
         
         let seq_record = FastaRecord::with_attrs(&id, None, &seq,);
-        wtr.write_record(&seq_record);
+        let _ = wtr.write_record(&seq_record);
 
     }
 
@@ -395,7 +395,7 @@ pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
 
     let mut writer = common_writer(output);
         
-    writeln!(writer, "file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tQ1\tQ2\tQ3\tN50\tGC(%)");
+    writeln!(writer, "file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tQ1\tQ2\tQ3\tN50\tGC(%)").unwrap();
     let res = input_bams.par_iter().map(|input_bam| {
         let mut bam = if *input_bam == &String::from("-") {
             Reader::from_stdin().expect("Failed to read from stdin")
@@ -477,7 +477,7 @@ pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
         writeln!(writer, "{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{:.2}%", 
                     input_bam, total_count, total_len, min_len, 
                     avg_len, max_len, q1, q2, q3,
-                    n50, gc_content);
+                    n50, gc_content).unwrap();
     }
     
 }

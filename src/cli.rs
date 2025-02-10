@@ -218,8 +218,25 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("mergeclm")
+                .alias("clm-merge")
+                .alias("merge-clm")
+                .about("merge clm files")
+                .arg(arg!(<CLM_DIR> "the dir contains clm files"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout")
+                )
+
+        )
+        .subcommand(
             Command::new("splitclm")
                 .alias("split-clm")
+                .alias("clm-split")
                 .about("Split clm by the cluster file.")
                 .arg(arg!(<CLM> "clm"))
                 .arg(arg!(<CLUSTER> "cluster"))
@@ -248,6 +265,21 @@ pub fn cli() -> Command {
                         .short('o')
                         .value_parser(value_parser!(String))
                         .default_value("output.split"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("extract-fasta")
+                .about("extract fasta by a cluster file")
+                .alias("split-fasta-by-cluster")
+                .alias("split-fasta-by-clusters")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(arg!(<CLUSTERS> "clusters file"))
+                .arg(
+                    Arg::new("TRIM_LENGTH")
+                        .long("trim-length")
+                        .short('l')
+                        .value_parser(value_parser!(usize))
+                        .default_value("25000"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -900,6 +932,25 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("pairs-split")
+                .about("split pairs by chunksize")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("10000000"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("output.split"))
+                .arg_required_else_help(true),
+
+        )
+        .subcommand(
             Command::new("pairs2contacts")
                 .alias("pairs2contact")
                 .about("calculate the contacts between contigs")
@@ -1052,6 +1103,21 @@ pub fn cli() -> Command {
                         .default_value("4"))
                 .arg_required_else_help(true),
         )
+        // .subcommand(
+        //     Command::new("pairs2pqs")
+        //         .hide(true)
+        //         .about("convert pairs to pairs.pqs file")
+        //         .arg(arg!(<PAIRS> "pairs"))
+        //         .arg(
+        //             Arg::new("OUTPUT")
+        //                 .long("output")
+        //                 .short('o')
+        //                 .value_parser(value_parser!(String))
+        //                 .default_value(".")
+        //                 .help("output dir, default is ./"))
+        //         .arg_required_else_help(true),
+                    
+        // )
         .subcommand(
             Command::new("bam2paf")
             .about("convert dorado align bam to paf")
@@ -1186,6 +1252,14 @@ pub fn cli() -> Command {
                         .short('q')
                         .value_parser(value_parser!(u8))
                         .default_value("1"))
+                .arg(
+                    Arg::new("EDGE_LENGTH")
+                        .long("edge-length")
+                        .short('e')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0")
+                        .help("remove the alignments located in the edge of contigs")
+                )
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")

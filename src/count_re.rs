@@ -1,3 +1,6 @@
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(non_snake_case)]
 use anyhow::Result as AnyResult;
 use indexmap::IndexMap;
 use std::borrow::Cow;

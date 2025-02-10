@@ -1,5 +1,6 @@
 #[warn(unused_assignments)]
 #[allow(dead_code)]
+#[allow(non_snake_case)]
 use anyhow::Result as anyResult;
 use rust_htslib::bam::{ 
     self,
@@ -468,6 +469,7 @@ impl ReadUnit {
 
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct AlignmentUnit {
     Primary: Vec<Record>,
     Secondary: Vec<Vec<Record>>,

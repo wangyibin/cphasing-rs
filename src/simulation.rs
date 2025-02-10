@@ -538,14 +538,14 @@ pub fn simulate_hic(fasta: &String, vcf: &String, bam: &String, min_mapq: u8,
 
         idx += 1;
         
-        let mut chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
-        let mut chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap())).unwrap().to_string();
+        let chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+        let chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap())).unwrap().to_string();
 
-        let mut pos1 = record.pos() + 1;
-        let mut pos2 = record2.pos() + 1;
+        let pos1 = record.pos() + 1;
+        let pos2 = record2.pos() + 1;
         
-        let mut seq1 = record.seq().as_bytes().to_vec();
-        let mut seq2 = record2.seq().as_bytes().to_vec();
+        let seq1 = record.seq().as_bytes().to_vec();
+        let seq2 = record2.seq().as_bytes().to_vec();
         let start1 = pos1 - 1;
         let end1 = start1 + seq1.len() as i64;
         let start2 = pos2 - 1;
@@ -560,8 +560,8 @@ pub fn simulate_hic(fasta: &String, vcf: &String, bam: &String, min_mapq: u8,
         let vcf_records1 = vcf_reader1.query(&vcf_header, &region1).unwrap();
         let vcf_records2 = vcf_reader2.query(&vcf_header, &region2).unwrap();
         
-        let mut seq_vec1 = seq1.iter().map(|x| *x as char).collect::<Vec<char>>();
-        let mut seq_vec2 = seq2.iter().map(|x| *x as char).collect::<Vec<char>>();
+        let seq_vec1 = seq1.iter().map(|x| *x as char).collect::<Vec<char>>();
+        let seq_vec2 = seq2.iter().map(|x| *x as char).collect::<Vec<char>>();
         
         let mut pos_vec1 = Vec::new();
         let mut ref_vec1 = Vec::new();

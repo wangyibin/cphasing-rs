@@ -266,7 +266,7 @@ impl KPruner {
     
         log::info!("Starting cross-allelic identification ...");
         
-        let mut allelic_contigs = match method {
+        let allelic_contigs = match method {
             "precise" => self.alleletable.get_allelic_contigs_precise(whitehash),
             // "multiple" => self.alleletable.get_allelic_contig_groups_by_cliques(whitehash),
             _ => self.alleletable.get_allelic_contigs(method, whitehash),
@@ -387,7 +387,7 @@ impl KPruner {
         self.cross_allelic_counts += cross_allelic.len() as u32;
         log::info!("Cross allelic contig pairs: {}", self.cross_allelic_counts);
         
-        let mut allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
+        let allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
         
         let mut buffer = Vec::new();
         for contig_pair in allelic_contig_pairs.iter() {

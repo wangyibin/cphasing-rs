@@ -19,6 +19,7 @@ pub mod paf2;
 pub mod pairs;
 pub mod porec;
 pub mod prune;
+pub mod pqs;
 pub mod realign;
 pub mod scaffolding;
 pub mod simulation;

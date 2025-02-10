@@ -6,6 +6,7 @@ use bio::io::fastq::{Reader, Record, Writer};
 use bio::pattern_matching::horspool::Horspool;
 use indexmap::IndexMap;
 use hashbrown::HashMap as hashHashMap;
+use rayon::prelude::*;
 use std::collections::{ HashMap, HashSet };
 use std::error::Error;
 use std::borrow::Cow;
@@ -16,7 +17,6 @@ use std::path::Path;
 use std::ops::AddAssign;
 use std::sync::{Arc, Mutex};
 use std::thread;
-
 use seq_io::prelude::*;
 use seq_io::fastq;
 use seq_io::fastx::Reader as FastxReader;
@@ -102,7 +102,10 @@ impl Fastx {
         read_process_fastx_records(reader, 8, 4,
             |record, seq| { // runs in worker
                 *seq = record.seq_lines()
-                                .fold(String::new(), |s, seq| s + &String::from_utf8(seq.to_vec()).unwrap());
+                                .fold(String::new(), |mut s, seq| {
+                                    s.push_str(&String::from_utf8(seq.to_vec()).unwrap());
+                                    s
+                });
             },
             |record, seq| { // runs in main thread
                 chrom_seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
@@ -114,7 +117,7 @@ impl Fastx {
 
     pub fn count_re(&self, patterns: &String) -> AnyResult<hashHashMap<String, u64>> {
         use aho_corasick::AhoCorasick;
-        let mut chrom_count: hashHashMap<String, u64> = hashHashMap::new();
+        let chrom_count: hashHashMap<String, u64> = hashHashMap::new();
         let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
         let pattern_vec_uppercase: Vec<String> = pattern_vec.iter().map(|x| x.to_uppercase()).collect();
         let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
@@ -261,7 +264,17 @@ impl Fastx {
         
         Ok(positions)
     }
+    pub fn slidefasta(&self, output: &String, window: u64, step: u64)  -> AnyResult<()>{
+        let window = window as usize;
+        let step = step as usize;
+        let step = if step == 0 { window } else { step };
+        let reader = common_reader(&self.file);
 
+        
+        Ok(())
+
+
+    }
     pub fn slide(&self, output: &String, 
                     window: u64, step: u64, 
                     min_length: u64, filetype: &str,
@@ -475,11 +488,11 @@ impl Fastx {
             for i in 0..(seq_length - k + 1) {
                 let kmer = &seq_str[i..(i+k)];
                 if kmer_set.contains(kmer) {
-                    writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
+                    let _ = writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
                 } else {
                     let rev_kmer = String::from_utf8(bio::alphabets::dna::revcomp(kmer.bytes())).unwrap();
                     if kmer_set.contains(&rev_kmer) {
-                        writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
+                        let _ = writer.write_all(format!("{}\t{}\t{}\n", record.id(), i, i+k).as_bytes());
                     }
                 }
 
@@ -525,12 +538,68 @@ impl Fastx {
                 let re = regex::Regex::new(kmer).unwrap();
                 masked_seq = re.replace_all(&masked_seq, n.clone()).to_string();
             }
-            writer.write_all(format!(">{}\n{}\n", record.id(), masked_seq).as_bytes());
+            let _ = writer.write_all(format!(">{}\n{}\n", record.id(), masked_seq).as_bytes());
            
         }
         Ok(())
     }
 
+
+    pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
+        let reader = common_reader(cluster_file);
+        let mut cluster_map: HashMap<String, String> = HashMap::new();
+        let mut groups = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            let line = line.split("\t").collect::<Vec<&str>>();
+            let group = line[0].to_string();
+            groups.push(group.clone());
+
+            let contigs = line[2].split(" ").collect::<Vec<&str>>();
+            for contig in contigs {
+
+                cluster_map.insert(contig.to_string(), group.clone());
+            }
+        }
+
+        let reader = common_reader(&self.file);
+        let reader = bio::io::fasta::Reader::new(reader);
+        let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
+        for group in groups {
+            let writer = common_writer(&format!("{}.contigs.fasta", group));
+            writer_map.insert(group, writer);
+        }
+
+        let trim_threshold = trim_length * 3;
+
+        for result in reader.records() {
+            let record = match result {
+                Ok(record) => record,
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue
+                }
+            };
+            let id = record.id();
+            
+            if let Some(cluster) = cluster_map.get(id) {
+                if let Some(writer) = writer_map.get_mut(cluster) {
+                    let mut seq = record.seq();
+                    let length = seq.len();
+                    if length > trim_threshold {
+                        seq = &seq[trim_length..length - trim_length + 1];
+                    }
+                    let seq_str = std::str::from_utf8(&seq).unwrap();
+                    writer.write_all(format!(">{}\n{}\n", id, seq_str).as_bytes()).unwrap();
+                }
+            }
+        }
+        
+    
+
+        Ok(())
+    }
 }
 
 // split fastq into several files by record number

@@ -264,7 +264,7 @@ impl Pruner {
             self.cross_allelic_counts += 1;
             writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     contig_pair.Contig1, contig_pair.Contig2, 
-                    0, 0, 0, 0, 1);
+                    0, 0, 0, 0, 1).unwrap();
         }
     }
 
