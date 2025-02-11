@@ -13,6 +13,7 @@ overflow-checks = false
 
 
 [dependencies]
+
 # minimap2 = { path = "../minimap2-rs", features = ["default"]}
 # async-compression = "0.4.18"
 arrow = { version = "54.0" }
@@ -47,7 +48,7 @@ scan_fmt = { version = "0.2.6" }
 pathfinding = { version = "4.3.2" }
 parquet = { version = "54.0" }
 # parquet2 = { version = "0.17.0" }
-polars = { version = "0.39.0", features = ["parquet", "lazy", "dtype-full"] }
+polars = { version = "0.39.0", features = [ "csv", "parquet", "lazy", "dtype-full",] }
 petgraph = { version = "0.6" }
 rand = { version = "0.8.5"}
 rayon = { version = "1.8.0" }

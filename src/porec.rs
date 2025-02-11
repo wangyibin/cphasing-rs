@@ -351,7 +351,7 @@ impl PoreCTable {
         let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
 
         let mut old_read_idx: u64 = 0; 
-        let mut flag: bool = false; 
+
         let mut read_id: u64 = 0;
         
         let mut first_iteration = true;

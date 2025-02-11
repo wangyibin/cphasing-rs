@@ -72,7 +72,7 @@ impl Pruner {
         }
     }
 
-    pub fn prune(&mut self, whitehash: &HashSet<&String>, mut writer: &mut Box<dyn Write + Send> ) {
+    pub fn prune(&mut self, whitehash: &HashSet<&String>, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
         let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method);
 
@@ -146,7 +146,7 @@ impl Pruner {
                         flag = true;
                     }
                     
-                    let mut contig_pair = ContigPair2::new(contig1, contig2);
+                    let contig_pair = ContigPair2::new(contig1, contig2);
                     // println!("{:?}", contig_pair);
                     // contig_pair.order();
                     // println!("{:?}", contig_pair);

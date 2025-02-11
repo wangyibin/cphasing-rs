@@ -2,6 +2,7 @@
 // #[macro_use] extern crate scan_fmt;
 use std::io::BufReader;
 use std::io::BufRead;
+use std::path::Path;
 use indexmap::IndexMap;
 use rayon::ThreadPoolBuilder;
 use cphasing::alleles::AllelesFasta;
@@ -29,6 +30,7 @@ use cphasing::porec::{
         PoreCTable, merge_porec_tables };
 use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::prune::{ Pruner };
+use cphasing::pqs::{ PQS, merge_pqs };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec,
         simulate_hic };
@@ -683,7 +685,23 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-            merge_pairs(files, output)
+            // get first file
+            let first_file = files.first().unwrap();
+     
+            if Path::new(first_file).is_dir() {
+                let p = PQS::new(&first_file);
+                match p.is_pqs() {
+                    true => {
+                        let _ = merge_pqs(files, &output);
+                    },
+                    false => {
+                        log::error!("The first input directory is not a PQS directory.");
+                    }
+                }
+            } else {
+                merge_pairs(files, output)
+
+            }
         }
         Some(("pairs-break", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -725,9 +743,14 @@ fn main() {
 
           
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
-            let mut pairs = Pairs::new(&pairs);
+            
 
-            pairs.filter_by_mapq(*min_quality, &whitehash, &output);
+            if Path::new(pairs).is_dir() {
+               log::error!("The input directory is not a pairs or pairs.gz file.");
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.filter_by_mapq(*min_quality, &whitehash, &output);
+            }
         }
         Some(("pairs-split", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -757,13 +780,14 @@ fn main() {
         Some(("pairs2clm", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            // let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
+            let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let no_output_split_contacts = sub_matches.get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS").expect("error");
+            let output_depth = sub_matches.get_one::<bool>("OUTPUT_DEPTH").expect("error");
             // let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let mut pairs = Pairs::new(&pairs);
+            
             
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
@@ -774,8 +798,28 @@ fn main() {
                 true => false,
                 false => true
             };
-
-            pairs.to_clm(*min_contacts, *min_quality, &output, output_split_contacts, *threads, true);
+            
+            // pairs is dir 
+            if std::path::Path::new(&pairs).is_dir() {
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => { 
+                        let _ = p.to_clm(*min_contacts, 
+                                    *min_quality, &output, 
+                                    output_split_contacts, 
+                                    *output_depth, *binsize,
+                                    *threads);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.to_clm(*min_contacts, *min_quality, 
+                            &output, output_split_contacts, 
+                            *output_depth, *binsize, *threads, true);
+            }
             // let contacts = Contacts::from_clm(&output);
             // contacts.write(&contacts.file);
         }
@@ -791,18 +835,34 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-            let mut pairs = Pairs::new(&pairs);
-            pairs.to_depth(*binsize, *min_quality, &output);
+            if Path::new(&pairs).is_dir() {
+                log::error!("The input is a directory, that is not a pairs or pairs.gz file.");
 
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.to_depth(*binsize, *min_quality, &output);
+            }
         }
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
-            let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_mnd(*min_quality, &output).unwrap();
+            if Path::new(&pairs).is_dir() {
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        let _ = p.to_mnd(*min_quality, &output);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.to_mnd(*min_quality, &output).unwrap();
+            }
         }
         // Some(("pairs2pqs", sub_matches)) => {
         //     let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -816,9 +876,14 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let mut pairs = Pairs::new(&pairs);
 
-            pairs.to_bam(*min_quality, &output, *threads);
+            if Path::new(&pairs).is_dir() {
+                log::error!("The input is a directory, that is not a pairs or pairs.gz file.");
+
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.to_bam(*min_quality, &output, *threads);
+            }
         }
 
         Some(("bam2paf", sub_matches)) => {
@@ -878,13 +943,27 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-            let mut pairs = Pairs::new(&pairs);
+            
 
             if *invert {
                 log::info!("Invert the table.");
             }
-            // pairs.intersect(&bed, *invert, *min_quality, &output);
-            pairs.intersect_multi_threads(&bed, *invert, *min_quality, *edge_length, &output);
+
+            if Path::new(&pairs).is_dir() {
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        let _ = p.intersect(&bed, *invert, *min_quality, &output);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.intersect_multi_threads(&bed, *invert, *min_quality,
+                                                 *edge_length, &output);
+            }
         }
 
         Some(("chromsizes", sub_matches)) => {

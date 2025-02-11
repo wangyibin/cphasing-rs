@@ -763,6 +763,8 @@ impl Pairs {
                 // binsize: u32,
                 min_quality: u8,  output: &String,
                 output_split_contacts: bool, 
+                output_depth: bool,
+                binsize: u32,
                 threads: usize,
                 low_memory: bool) {
         use hashbrown::HashMap;
@@ -775,9 +777,9 @@ impl Pairs {
 
         // get output prefix
         let output_prefix =  if output.ends_with(".gz") {
-            Path::new(output.trim_end_matches(".gz")).file_stem().unwrap().to_str().unwrap()
+            output.trim_end_matches(".gz").trim_end_matches(".clm")
         } else {
-            Path::new(&output).file_stem().unwrap().to_str().unwrap()
+            output.trim_end_matches(".clm")
         };
 
         let pair_header = self.header.clone();
@@ -804,12 +806,7 @@ impl Pairs {
             log::warn!("chromsizes is empty !!!, please check it.");
         }
         
-        let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
-        let split_contigsizes: HashMap<u32, u32> = idx_sizes
-            .par_iter()
-            .map(|(k, v)| (*k, *v / 2))
-            .collect(); 
-
+        
         log::info!("Parsing pairs file ...");
         let mut contact_hash: HashMap<(SplitIdx, SplitIdx), u32>  = HashMap::new();
         let filter_mapq = min_quality > 0;
@@ -914,19 +911,76 @@ impl Pairs {
         
         let mut data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
 
-        // if output_depth {
-        //     log::info!("Calculating the depth of each contig");
-        //     let writer = common_writer(format!("{}.depth", output_prefix.to_string()).as_str());
-        //     let mut writer = Arc::new(Mutex::new(writer));
-        //     let mut depth: HashMap<u32, u32> = contig
+        if output_depth {
+            log::info!("Calculating the depth of each contig");
+        
+            let mut depth: HashMap<u32, Vec<u32>> = idx_sizes
+                                                        .clone()
+                                                        .into_iter()
+                                                        .map(|(chrom, size)| {
+                                                            let num_bins = (size / binsize as u32 + 1) as usize;
+                                                            (chrom, vec![0; num_bins])
+                                                        }).collect();
+            
+            data.iter().for_each(|(cp, vec)| {
+                let res = vec.iter().map(
+                    |x| {
+                        let pos1 = x[0];
+                        let pos2 = x[1];
+                        let split_index1 = (pos1 / binsize) as u32;
+                        let split_index2 = (pos2 / binsize) as u32;
+                        
+                        (split_index1, split_index2)
+                    }
+                ).collect::<Vec<_>>();
+                
+                res.iter().for_each(|(split_index1, split_index2)| {
+                    *depth.get_mut(&cp.0).unwrap().get_mut(*split_index1 as usize).unwrap() += 1;
+                    *depth.get_mut(&cp.1).unwrap().get_mut(*split_index2 as usize).unwrap() += 1;
+                });
+                
+            });
 
-        //     data.par_iter().for_each(|(cp, vec)| {
+            let depth: BTreeMap<_, _> = depth.into_iter().collect();
+            let writer = common_writer(format!("{}.depth", output_prefix.to_string()).as_str());
+            let mut wtr = Arc::new(Mutex::new(writer));
 
-        //     }
-        // }
+            depth.par_iter().for_each(|(contig, bins)| {
+                let size = idx_sizes.get(contig).unwrap_or(&0);
+                let contig = idx_contig.get(contig).unwrap();
+                
+                let mut buffer = Vec::with_capacity(bins.len() * 50);
+                for (bin, count) in bins.iter().enumerate() {
+                            let bin_start = bin * binsize as usize;
+                            let mut bin_end = bin_start + binsize as usize;
+            
+                            if bin_end > (*size).try_into().unwrap() {
+                                bin_end = *size as usize;
+                            }
+                            if bin_start == bin_end {
+                                continue;
+                            }
+                            buffer.extend_from_slice(format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes());
+                }
+                {
+                    let mut wtr = wtr.lock().unwrap();
+                    wtr.write_all(&buffer).unwrap();
+                }
+                
+            });
 
+            log::info!("Successful output depth file `{}`", 
+                                &format!("{}.depth", output_prefix.to_string()));
+      
+        }
 
         if output_split_contacts{
+            let mut contacts = Contacts::new(&format!("{}.pixels", self.prefix()).to_string());
+            let split_contigsizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = idx_sizes
+                .par_iter()
+                .map(|(k, v)| (*k, *v / 2))
+                .collect(); 
+
             log::info!("Calculating the distance between split contigs");
             let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
             let mut writer = Arc::new(Mutex::new(writer));

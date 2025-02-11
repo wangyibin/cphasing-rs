@@ -296,7 +296,7 @@ impl Fastx {
         match file_type {
             FileType::Fastq => {
                 let reader = Reader::with_capacity(100000, reader);
-                let mut writer = common_writer(output);
+                let writer = common_writer(output);
                 let mut wtr = Writer::new(writer);
                 let mut output_counts = 0;
                 let mut slided_counts = 0;
@@ -361,7 +361,7 @@ impl Fastx {
             },
             FileType::Fasta => {
                 let reader = bio::io::fasta::Reader::with_capacity(1024, reader);
-                let mut writer = common_writer(output);
+                let writer = common_writer(output);
                 let mut wtr = bio::io::fasta::Writer::new(writer);
                 
                 let mut output_counts = 0;

@@ -989,13 +989,6 @@ pub fn cli() -> Command {
                         .short('c')
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
-                // .arg(
-                //     Arg::new("BINSIZE")
-                //         .long("binsize")
-                //         .short('b')
-                //         .value_parser(value_parser!(u32))
-                //         .default_value("10000")
-                // )
                 .arg(
                     Arg::new("MIN_QUALITY")
                         .long("min-quality")
@@ -1008,6 +1001,21 @@ pub fn cli() -> Command {
                         .action(ArgAction::SetTrue)
                         .default_value("false")
                         .help("Dont output split contacts."))
+                .arg(
+                    Arg::new("OUTPUT_DEPTH")
+                        .short('d')
+                        .long("output-depth")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("Dont output split contacts."))
+                .arg(
+                    Arg::new("BINSIZE")
+                        .long("binsize")
+                        .short('b')
+                        .value_parser(value_parser!(u32))
+                        .default_value("10000")
+                )
+
                 // .arg(
                 //     Arg::new("LOW_MEMORY")
                 //         .long("low-memory")
@@ -1258,6 +1266,7 @@ pub fn cli() -> Command {
                         .short('e')
                         .value_parser(value_parser!(u64))
                         .default_value("0")
+                        .hide(true)
                         .help("remove the alignments located in the edge of contigs")
                 )
                 .arg(
