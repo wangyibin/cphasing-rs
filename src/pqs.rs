@@ -90,7 +90,7 @@ impl PQS {
         use hashbrown::HashMap;
         enable_string_cache();
 
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 1));
+        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 4));
         let min_mapq = min_quality as u32;
         // get prefix of parquet_dir
         let output_prefix = if output.ends_with(".gz") {
@@ -119,98 +119,263 @@ impl PQS {
         let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
         let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
         let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
+        
 
-        // let mut hashmap = HashMap::new();
-        // let mut results = Vec::new();
-        // for file in files {
-        //     let mut df = LazyFrame::scan_parquet(file,  ScanArgsParquet::default()).unwrap();
+        let (sender, receiver) = bounded(10);
+        let data = Arc::new(Mutex::new(HashMap::new()));
+
+        let producer_handles: Vec<_> = files.into_iter().map(|file| {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                    Ok(df) => df,
+                    Err(e) => {
+                        log::warn!("Empty file: {:?}", file);
+                        return;
+                    }
+                };
+    
+                let df = if min_mapq > 1 {
+                    df.filter(col("mapq").gt_eq(min_mapq))
+                } else {
+                    df
+                };
+    
+                let result = df.group_by(["chrom1", "chrom2"])
+                    .agg(&[col("pos1"), col("pos2")])
+                    .collect()
+                    .unwrap();
+    
+                sender.send(result).unwrap();
+            })
+        }).collect();
+
+        let consumer_handles: Vec<_> = (0..8).map(|_| {
+            let receiver = receiver.clone();
+            let data = Arc::clone(&data);
+            let contig_idx = contig_idx.clone();
+
+            thread::spawn(move || {
+                
+                while let Ok(df) = receiver.recv() {
+                    let mut local_data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
+                    let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+                    let rev_map1 = cat_col1.get_rev_map();
+    
+                    let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+                    let rev_map2 = cat_col2.get_rev_map();
+    
+                    let nrows = df.height();
+    
+                    for idx in 0..nrows {
+                        let row = df.get(idx).unwrap();
+                        let chrom1 = match row.get(0) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let chrom2 = match row.get(1) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let pos1 = match row.get(2) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        let pos2 = match row.get(3) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                            let chrom1 = rev_map1.get(*chrom1);
+                            let chrom2 = rev_map2.get(*chrom2);
+                            let chrom1 = contig_idx.get(chrom1).unwrap();
+                            let chrom2 = contig_idx.get(chrom2).unwrap();
+                            let mut vec: Vec<SmallIntVec> = Vec::new();
+                            for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
+                                vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
+                            }
+    
+                            let mut data = data.lock().unwrap();
+                            local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+                        }
+                    }
+
+                    let mut data = data.lock().unwrap();
+                    for (key, value) in local_data {
+                        data.entry(key).or_insert(Vec::new()).extend(value);
+                    }
+             
+                }
+            })
+        }).collect();
+
+
+        for handle in producer_handles {
+            handle.join().unwrap();
+        }
+    
+        drop(sender);
+
+        for handle in consumer_handles {
+            handle.join().unwrap();
+        }
+    
+
+        // let producer_handle = thread::spawn(move || {
+        //     for file in files {
+        //         let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+        //             Ok(df) => df,
+        //             Err(e) => {
+        //                 log::warn!("Empty file: {:?}", file);
+        //                 continue;
+        //             }
+        //         };
+
+        //         let df = if min_mapq > 1 {
+        //             df.filter(col("mapq").gt_eq(min_mapq))
+        //         } else {
+        //             df
+        //         };
+
+        //         let result = df.group_by(["chrom1", "chrom2"])
+        //             .agg(&[col("pos1"), col("pos2")])
+        //             .collect()
+        //             .unwrap();
+
+        //         sender.send(result).unwrap();
+        //     }
+        // });
+
+        
+        // let consumer_handle = thread::spawn({
+        //     let data = Arc::clone(&data);
+        //     move || {
+        //         while let Ok(df) = receiver.recv() {
+        //             let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+        //             let rev_map1 = cat_col1.get_rev_map();
+    
+        //             let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+        //             let rev_map2 = cat_col2.get_rev_map();
+    
+        //             let nrows = df.height();
+    
+        //             for idx in 0..nrows {
+        //                 let row = df.get(idx).unwrap();
+        //                 let chrom1 = match row.get(0) {
+        //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let chrom2 = match row.get(1) {
+        //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let pos1 = match row.get(2) {
+        //                     Some(AnyValue::List(v)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let pos2 = match row.get(3) {
+        //                     Some(AnyValue::List(v)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+        //                     let chrom1 = rev_map1.get(*chrom1);
+        //                     let chrom2 = rev_map2.get(*chrom2);
+        //                     let chrom1 = contig_idx.get(chrom1).unwrap();
+        //                     let chrom2 = contig_idx.get(chrom2).unwrap();
+        //                     let mut vec: Vec<SmallIntVec> = Vec::new();
+        //                     for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
+        //                         vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
+        //                     }
+    
+        //                     let mut data = data.lock().unwrap();
+        //                     data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+        //                 }
+        //             }
+        //         }
+        //     }
+        // });
+
+        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+            
+        // let mut results = files.into_par_iter().filter_map(|file| {
+        //     let mut df = match LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()) {
+        //         Ok(df) => df,
+        //         Err(e) => {
+        //             log::warn!("Empty file: {:?}", file);
+        //             return None;
+        //         }
+        //     };
 
         //     if min_mapq > 1 {
         //         df = df.clone().filter(col("mapq").gt_eq(min_mapq));
-            
+                
         //     }
 
-        //     let mut result = df.group_by(["chrom1", "chrom2"])
-        //                         .agg(vec![col("pos1"), col("pos2")])
-        //                         .collect().unwrap();
+        //     let result = df.group_by(["chrom1", "chrom2"])
+        //                 .agg(vec![col("pos1"), col("pos2")])
+        //                 .collect().unwrap();
 
-        //     results.push(result);
+        //     Some(result)
+        // }).collect::<Vec<_>>();
 
-        // }
+        // let mut data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
 
-        
-        let mut results = files.into_par_iter().filter_map(|file| {
-            let mut df = match LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()) {
-                Ok(df) => df,
-                Err(e) => {
-                    log::warn!("Empty file: {:?}", file);
-                    return None;
-                }
-            };
-
-            if min_mapq > 1 {
-                df = df.clone().filter(col("mapq").gt_eq(min_mapq));
-                
-            }
-
-            let result = df.group_by(["chrom1", "chrom2"])
-                        .agg(vec![col("pos1"), col("pos2")])
-                        .collect().unwrap();
-
-            // let result = df.collect().unwrap();
-            Some(result)
-        }).collect::<Vec<_>>();
-
-        let mut data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
-
-        for df in &results {
+        // for df in &results {
            
-            let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
-            let rev_map1 = cat_col.get_rev_map();
+        //     let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
+        //     let rev_map1 = cat_col.get_rev_map();
 
-            let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
-            let rev_map2 = cat_col.get_rev_map();
+        //     let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
+        //     let rev_map2 = cat_col.get_rev_map();
 
-            let nrows = df.height();
+        //     let nrows = df.height();
 
-            for idx in 0..nrows {
-                let row = df.get(idx).unwrap();
-                let chrom1 = match row.get(0) {
-                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                    _ => None
-                };
+        //     for idx in 0..nrows {
+        //         let row = df.get(idx).unwrap();
+        //         let chrom1 = match row.get(0) {
+        //             Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //             _ => None
+        //         };
                 
-                let chrom2 = match row.get(1) {
-                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                    _ => None
-                };
+        //         let chrom2 = match row.get(1) {
+        //             Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //             _ => None
+        //         };
 
-                let pos1 = match row.get(2) {
-                    Some(AnyValue::List(v)) => Some(v),
-                    _ => None
-                };
+        //         let pos1 = match row.get(2) {
+        //             Some(AnyValue::List(v)) => Some(v),
+        //             _ => None
+        //         };
             
-                let pos2 = match row.get(3) {
-                    Some(AnyValue::List(v)) => Some(v),
-                    _ => None
-                };
+        //         let pos2 = match row.get(3) {
+        //             Some(AnyValue::List(v)) => Some(v),
+        //             _ => None
+        //         };
             
-                if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
-                    let chrom1 = rev_map1.get(*chrom1);
-                    let chrom2 = rev_map2.get(*chrom2);
-                    let chrom1 = contig_idx.get(chrom1).unwrap();
-                    let chrom2 = contig_idx.get(chrom2).unwrap();
-                    // let vec: SmallIntVec = smallvec![*pos1, *pos2];
-                    let mut vec: Vec<SmallIntVec> = Vec::new();
-                    for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
-                        vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
-                    }
+        //         if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+        //             let chrom1 = rev_map1.get(*chrom1);
+        //             let chrom2 = rev_map2.get(*chrom2);
+        //             let chrom1 = contig_idx.get(chrom1).unwrap();
+        //             let chrom2 = contig_idx.get(chrom2).unwrap();
+        //             // let vec: SmallIntVec = smallvec![*pos1, *pos2];
+        //             let mut vec: Vec<SmallIntVec> = Vec::new();
+        //             for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
+        //                 vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
+        //             }
 
-                    data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
-                }
+        //             data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+        //         }
 
-            }
-        }
+        //     }
+        // }
 
         if output_split_contacts{
             log::info!("Calculating the distance between split contigs");
@@ -385,249 +550,10 @@ impl PQS {
         log::info!("Successful output clm file `{}`", output);
 
 
-        // results.into_par_iter()
-        //     .map(|df| {
-        //         let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
-        //         let rev_map1 = cat_col1.get_rev_map();
-
-        //         let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
-        //         let rev_map2 = cat_col2.get_rev_map();
-
-        //         let nrows = df.height();
-        //         let mut local_data: HashMap<(u32, u32), Vec<SmallVec<[u32; 2]>>> = HashMap::new();
-
-        //         for idx in 0..nrows {
-        //             let row = df.get(idx).unwrap();
-        //             let chrom1 = match row.get(0) {
-        //                 Some(AnyValue::Categorical(v, _, _)) => Some(v),
-        //                 _ => None
-        //             };
-
-        //             let chrom2 = match row.get(1) {
-        //                 Some(AnyValue::Categorical(v, _, _)) => Some(v),
-        //                 _ => None
-        //             };
-
-        //             let pos1 = match row.get(2) {
-        //                 Some(AnyValue::List(v)) => Some(v),
-        //                 _ => None
-        //             };
-
-        //             let pos2 = match row.get(3) {
-        //                 Some(AnyValue::List(v)) => Some(v),
-        //                 _ => None
-        //             };
-
-        //             if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
-        //                 let mut vec: Vec<SmallIntVec> = Vec::new();
-        //                 for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
-        //                     vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
-        //                 }
-
-        //                 local_data.entry((*chrom1, *chrom2)).or_insert(vec);
-        //             }
-        //         }
-
-        //         local_data
-        //     })
-        //     .reduce(
-        //         || HashMap::new(),
-        //         |mut acc, local_data| {
-        //             for (key, value) in local_data {
-        //                 acc.entry(key).or_insert_with(Vec::new).extend(value);
-        //             }
-        //             acc
-        //         },
-        //     );
-
-
-
-
-
-        // if !low_memory {
-        //     // let mut concatenated = concat(
-        //     //     results.iter().map(|x| x.lazy()).collect::<Vec<_>>(),
-        //     //     UnionArgs::default()
-        //     // ).unwrap();
-        //     let mut concatenated = results.remove(0);
-        //     for result in results {
-        //         concatenated = concatenated.vstack(&result).unwrap();
-        //     }
-
-        //     let mut results = concatenated
-        //                         .lazy()
-        //                         .group_by(["chrom1", "chrom2"])
-        //                         .agg(vec![col("pos1"), col("pos2")]);
-        //                         // .collect().unwrap();
-
-
-
-        //     let mut results = results.with_column(
-        //         col("pos1")
-        //             .arr().0
-        //             .apply(
-        //                 |nested_list_series| {
-        //                     let ca = nested_list_series.list().unwrap();
-
-        //                     let flattened: Vec<Option<Series>> = ca
-        //                     .into_iter() 
-        //                     .map(|opt_sublist| {
-        //                         if let Some(sublist) = opt_sublist {
-        //                             let merged: Vec<u32> = sublist
-        //                                 .list()
-        //                                 .unwrap()
-        //                                 .into_no_null_iter()
-        //                                 .flat_map(|inner_s| {
-        //                                     let s = inner_s.u32().unwrap().clone();
-        //                                     s.into_no_null_iter().collect::<Vec<u32>>()
-        //                                 })
-        //                                 .collect();
-
-        //                             Some(Series::new("", merged))
-        //                         } else {
-        //                             None
-        //                         }
-        //                     })
-        //                     .collect();
-                    
-        //                     let lc = ListChunked::from_iter(flattened);
-
-        //                     Ok(Some(lc.into_series()))
-        //                 },
-        //                 GetOutput::from_type(DataType::List(Box::new(DataType::UInt32)))
-        //             )
-        //             .alias("pos1"))
-        //     .with_column(
-        //         col("pos2")
-        //             .arr().0
-        //             .apply(
-        //                 |nested_list_series| {
-
-        //                     let ca = nested_list_series.list().unwrap();
-
-        //                     let flattened: Vec<Option<Series>> = ca
-        //                     .into_iter() 
-        //                     .map(|opt_sublist| {
-        //                         if let Some(sublist) = opt_sublist {
-        //                             let merged: Vec<u32> = sublist
-        //                                 .list()
-        //                                 .unwrap()
-        //                                 .into_no_null_iter()
-        //                                 .flat_map(|inner_s| {
-        //                                     let s = inner_s.u32().unwrap().clone();
-        //                                     s.into_no_null_iter().collect::<Vec<u32>>()
-        //                                 })
-        //                                 .collect();
-
-        //                             Some(Series::new("", merged))
-        //                         } else {
-        //                             None
-        //                         }
-        //                     })
-        //                     .collect();
-
-                    
-        //                     let lc = ListChunked::from_iter(flattened);
-
-        //                     Ok(Some(lc.into_series()))
-        //                 },
-        //                 GetOutput::from_type(DataType::List(Box::new(DataType::UInt32)))
-        //             )
-        //             .alias("pos2")
-        //     )
-        //     // .with_column(
-        //     //     col("pos1").arr().0
-        //     //         .apply(
-        //     //             |s| {
-        //     //                 let ca = s.list().unwrap();
-        //     //                 // let mut vec = Vec::with_capacity(ca.len());
-        //     //                 // for opt_sublis in ca {
-        //     //                 //     if let Some(sublis) = opt_sublis {
-        //     //                 //         vec.push(sublis.len() as u32);
-        //     //                 //     } else {
-        //     //                 //         vec.push(0);
-        //     //                 //     }
-        //     //                 // }
-        //     //                 let vec: Vec<u32> = ca
-        //     //                         .into_iter()
-        //     //                         .map(|opt_sublist| {
-        //     //                             if let Some(sublist) = opt_sublist {
-        //     //                                 sublist.len() as u32
-        //     //                             } else {
-        //     //                                 0
-        //     //                             }
-        //     //                         })
-        //     //                         .collect::<Vec<_>>()
-        //     //                         .into_par_iter()
-        //     //                         .collect();
-        //     //                 Ok(Some(Series::new("", vec)))
-        //     //             },
-        //     //             GetOutput::from_type(DataType::UInt32)
-        //     //         ).alias("count")
-        //     // )
-        //     .collect().unwrap();
-
-
-        //     let cat_col = results.column("chrom1").unwrap().categorical().unwrap();
-        //     let rev_map1 = cat_col.get_rev_map();
-
-        //     // for idx in &cat_col.physical().unique().unwrap() {
-        //     //     if let Some(idx) = idx {
-        //     //         println!("{:?}, {:?}", idx, rev_map.get(idx));
-        //     //     };
-        //     // }
-
-        //     let cat_col = results.column("chrom2").unwrap().categorical().unwrap();
-        //     let rev_map2 = cat_col.get_rev_map();
-
-        //     // for idx in &cat_col.physical().unique().unwrap() {
-        //     //     if let Some(idx) = idx {
-        //     //         println!("{:?}, {:?}", idx,  rev_map.get(idx));
-        //     //     };
-        //     // }
-
-
-        //     // let nrows = results.height();
-        //     // for idx in 0..nrows {
-        //     //     let row = results.get(idx).unwrap();
-        //     //     let chrom1 = match row.get(0) {
-        //     //         Some(AnyValue::Categorical(v, _, _)) => Some(v),
-        //     //         _ => None
-        //     //     };
-            
-        //     //     let chrom2 = match row.get(1) {
-        //     //         Some(AnyValue::Categorical(v, _, _)) => Some(v),
-        //     //         _ => None
-        //     //     };
-
-        //     //     let pos1 = match row.get(2) {
-        //     //         Some(AnyValue::List(v)) => Some(v),
-        //     //         _ => None
-        //     //     };
-            
-        //     //     let pos2 = match row.get(3) {
-        //     //         Some(AnyValue::List(v)) => Some(v),
-        //     //         _ => None
-        //     //     };
-            
-        //     //     if let (Some(chrom1), Some(chrom2)) = (chrom1, chrom2) {
-        //     //         // println!("{:?} {:?}", rev_map1.get(*chrom1), rev_map2.get(*chrom2));
-        //     //     }
-            
-            
-        //     //     for (p1, p2) in pos1.unwrap().iter().zip(pos2.unwrap().iter()) {
-        //     //         // println!("{:?} {:?}", p1, p2);
-        //     //     }
-            
-        //     // }
-        //     println!("{:?}", results);
-        // }
-
-
-
         Ok(())
     }
 
+    
 
     pub fn to_mnd(&self, min_quality: u8, output: &String) -> anyResult<()> {
         std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
