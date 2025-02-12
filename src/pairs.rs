@@ -1,6 +1,7 @@
-#[allow(unused)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 use bytecount;
 use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
@@ -2022,6 +2023,7 @@ impl Pairs {
                         (chrom2, pos2 )
                     }
                 };
+                
 
                 new_record.push_field(&record[0]);
                 new_record.push_field(&new_chrom1);

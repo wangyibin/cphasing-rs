@@ -88,9 +88,9 @@ impl PQS {
         binsize: u32,
         threads: usize) -> anyResult<()> {
         use hashbrown::HashMap;
-        enable_string_cache();
+        
 
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 4));
+        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
         let min_mapq = min_quality as u32;
         // get prefix of parquet_dir
         let output_prefix = if output.ends_with(".gz") {
@@ -199,7 +199,6 @@ impl PQS {
                                 vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
                             }
     
-                            let mut data = data.lock().unwrap();
                             local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
                         }
                     }
@@ -386,7 +385,7 @@ impl PQS {
                 .collect(); 
     
             let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
-            let mut writer = Arc::new(Mutex::new(writer));
+            let writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
                 if vec.len() < min_contacts as usize {
                     return;
@@ -462,7 +461,7 @@ impl PQS {
 
             let depth: BTreeMap<_, _> = depth.into_iter().collect();
             let writer = common_writer(format!("{}.depth", output_prefix.to_string()).as_str());
-            let mut wtr = Arc::new(Mutex::new(writer));
+            let wtr = Arc::new(Mutex::new(writer));
 
             depth.par_iter().for_each(|(contig, bins)| {
                 let size = idx_sizes.get(contig).unwrap_or(&0);
@@ -493,7 +492,7 @@ impl PQS {
       
         }
 
-        let mut wtr = common_writer(output.as_str());
+        let wtr = common_writer(output.as_str());
         let wtr = Arc::new(Mutex::new(wtr));
         data.par_iter().for_each(|(cp, vec)| {
             if cp.0 == cp.1 {
@@ -627,10 +626,588 @@ impl PQS {
         Ok(())
     }
 
+    pub fn to_contacts(&self, min_contacts: u32, min_quality: u8, output: &String) -> anyResult<()> {
+        use hashbrown::HashMap;
+        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
+        let min_mapq = min_quality as u32;
+       
+        let files = if min_mapq == 0 {
+            collect_parquet_files(format!("{}/q0", self.file).as_str())
+        } else {
+            collect_parquet_files(format!("{}/q1", self.file).as_str())
+        };
+
+        let files = if min_mapq == 0 {
+            collect_parquet_files(format!("{}/q0", self.file).as_str())
+        } else {
+            collect_parquet_files(format!("{}/q1", self.file).as_str())
+        };
+
+        let contigsize_file = format!("{}/_contigsizes", self.file);
+        let reader = common_reader(&contigsize_file);
+        let mut contigsizes = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let record = record.split("\t").collect::<Vec<&str>>();
+            let contig = record.get(0).unwrap().to_string();
+            let size = record.get(1).unwrap().parse::<u32>().unwrap();
+                contigsizes.insert(contig, size);
+        }
+
+        let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+        let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
+        let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
+
+        let (sender, receiver) = bounded(10);
+        let data = Arc::new(Mutex::new(HashMap::new()));
+
+        let producer_handles: Vec<_> = files.into_iter().map(|file| {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                    Ok(df) => df,
+                    Err(e) => {
+                        log::warn!("Empty file: {:?}", file);
+                        return;
+                    }
+                };
+    
+                let df = if min_mapq > 1 {
+                    df.filter(col("mapq").gt_eq(min_mapq))
+                } else {
+                    df
+                };
+    
+                let result = df.group_by(["chrom1", "chrom2"])
+                    .agg(&[col("pos1"), col("pos2")])
+                    .with_column(
+                        col("pos1").arr().0.apply(
+                            |s| {
+                                let ca = s.list().unwrap();
+                                let mut vec = Vec::with_capacity(ca.len());
+                                for i in 0..ca.len() {
+                                    let val = ca.get(i).unwrap();
+                                    
+                                    vec.push(val.len() as u32);
+                                }
+                                
+
+                                Ok(Some(Series::new("count1", vec)))
+                            },
+                            GetOutput::from_type(DataType::UInt32)
+                        ).alias("count")
+                    ).select(
+                        &[
+                            col("chrom1"),
+                            col("chrom2"),
+                            col("count")
+                        ]
+                    )
+                    .collect()
+                    .unwrap();
+    
+                sender.send(result).unwrap();
+            })
+        }).collect();
+
+        let consumer_handles: Vec<_> = (0..8).map(|_| {
+            let receiver = receiver.clone();
+            let data = Arc::clone(&data);
+            let contig_idx = contig_idx.clone();
+
+            thread::spawn(move || {
+                
+                while let Ok(df) = receiver.recv() {
+                    let mut local_data: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+                    let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+                    let rev_map1 = cat_col1.get_rev_map();
+    
+                    let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+                    let rev_map2 = cat_col2.get_rev_map();
+    
+                    let nrows = df.height();
+    
+                    for idx in 0..nrows {
+                        let row = df.get(idx).unwrap();
+                        let chrom1 = match row.get(0) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let chrom2 = match row.get(1) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let count = match row.get(2) {
+                            Some(AnyValue::UInt32(v)) => Some(v),
+                            _ => None
+                        };
+    
+                      
+                        if let (Some(chrom1), Some(chrom2), Some(count)) = (chrom1, chrom2, count) {
+                            let chrom1 = rev_map1.get(*chrom1);
+                            let chrom2 = rev_map2.get(*chrom2);
+                            let chrom1 = contig_idx.get(chrom1).unwrap();
+                            let chrom2 = contig_idx.get(chrom2).unwrap();
+                            
+                            
+                            local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).push(*count);
+                        }
+                    }
+
+                    let mut data = data.lock().unwrap();
+                    for (key, value) in local_data {
+                        data.entry(key).or_insert(Vec::new()).extend(value);
+                    }
+             
+                }
+            })
+        }).collect();
+
+
+        for handle in producer_handles {
+            handle.join().unwrap();
+        }
+    
+        drop(sender);
+
+        for handle in consumer_handles {
+            handle.join().unwrap();
+        }
+       
+        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+
+
+        let mut wtr = common_writer(output.as_str());
+        for (cp, vec) in data {
+            let count = vec.iter().sum::<u32>();    
+            if count < min_contacts {
+                continue;
+            }
+            let contig1 = idx_contig.get(&cp.0).unwrap();
+            let contig2 = idx_contig.get(&cp.1).unwrap();
+            let buffer = format!("{}\t{}\t{}\n", contig1, contig2, count);
+            
+            wtr.write_all(buffer.as_bytes()).unwrap();
+        }
+       
+
+        Ok(())
+       
+    }
+
+    pub fn to_depth(&self, binsize: u32, min_quality: u8, output: &String) {
+        use hashbrown::HashMap;
+        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
+        let min_mapq = min_quality as u32;
+        let files = if min_mapq == 0 {
+            collect_parquet_files(format!("{}/q0", self.file).as_str())
+        } else {
+            collect_parquet_files(format!("{}/q1", self.file).as_str())
+        };
+
+        let contigsize_file = format!("{}/_contigsizes", self.file);
+        let reader = common_reader(&contigsize_file);
+        let mut contigsizes = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let record = record.split("\t").collect::<Vec<&str>>();
+            let contig = record.get(0).unwrap().to_string();
+            let size = record.get(1).unwrap().parse::<u32>().unwrap();
+                contigsizes.insert(contig, size);
+        }
+
+        let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+        let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
+        let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
+
+
+        let (sender, receiver) = bounded(10);
+        let data = Arc::new(Mutex::new(HashMap::new()));
+
+        let producer_handles: Vec<_> = files.into_iter().map(|file| {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                    Ok(df) => df,
+                    Err(e) => {
+                        log::warn!("Empty file: {:?}", file);
+                        return;
+                    }
+                };
+    
+                let df = if min_mapq > 1 {
+                    df.filter(col("mapq").gt_eq(min_mapq))
+                } else {
+                    df
+                };
+    
+                let result = df.with_column(
+                        col("pos1") / binsize.into()
+                    )
+                    .with_column(
+                        col("pos2") / binsize.into()
+                    )
+                    .group_by(["chrom1", "chrom2"])
+                    .agg(&[col("pos1"), col("pos2")])
+                    .collect()
+                    .unwrap();
+    
+                sender.send(result).unwrap();
+            })
+        }).collect();
+
+        let consumer_handles: Vec<_> = (0..8).map(|_| {
+            let receiver = receiver.clone();
+            let data = Arc::clone(&data);
+            let contig_idx = contig_idx.clone();
+
+            thread::spawn(move || {
+                
+                while let Ok(df) = receiver.recv() {
+                    let mut local_data: HashMap<u32, Vec<u32>> = HashMap::new();
+                    let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+                    let rev_map1 = cat_col1.get_rev_map();
+    
+                    let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+                    let rev_map2 = cat_col2.get_rev_map();
+    
+                    let nrows = df.height();
+    
+                    for idx in 0..nrows {
+                        let row = df.get(idx).unwrap();
+                        let chrom1 = match row.get(0) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let chrom2 = match row.get(1) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let pos1 = match row.get(2) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        let pos2 = match row.get(3) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                            let chrom1 = rev_map1.get(*chrom1);
+                            let chrom2 = rev_map2.get(*chrom2);
+                            let chrom1 = contig_idx.get(chrom1).unwrap();
+                            let chrom2 = contig_idx.get(chrom2).unwrap();
+                           
+                            let mut vec1: Vec<u32> = Vec::new();
+                            for p1 in pos1.u32().unwrap().iter() {
+                                vec1.push(p1.unwrap());
+                            }
+                            
+                            let mut vec2: Vec<u32> = Vec::new();
+                            for p2 in pos2.u32().unwrap().iter() {
+                                vec2.push(p2.unwrap());
+                            }
+
+                            local_data.entry(*chrom1).or_insert(Vec::new()).extend(vec1);
+                            local_data.entry(*chrom2).or_insert(Vec::new()).extend(vec2);
+                            
+                        }
+                    }
+
+                    let mut data = data.lock().unwrap();
+                    for (key, value) in local_data {
+                        data.entry(key).or_insert(Vec::new()).extend(value);
+                    }
+             
+                }
+            })
+        }).collect();
+
+
+        for handle in producer_handles {
+            handle.join().unwrap();
+        }
+    
+        drop(sender);
+
+        for handle in consumer_handles {
+            handle.join().unwrap();
+        }
+
+        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+
+        log::info!("Calculating the depth of each contig");
+        
+        let mut depth: HashMap<u32, Vec<u32>> = idx_sizes
+                                                    .clone()
+                                                    .into_iter()
+                                                    .map(|(chrom, size)| {
+                                                        let num_bins = (size / binsize as u32 + 1) as usize;
+                                                        (chrom, vec![0; num_bins])
+                                                    }).collect();
+        
+        data.iter().for_each(|(cp, vec)| {
+           
+            
+            vec.iter().for_each(|pos| {
+                *depth.get_mut(cp).unwrap().get_mut(*pos as usize).unwrap() += 1;
+               
+            });
+
+            
+            
+        });
+
+        let depth: BTreeMap<_, _> = depth.into_iter().collect();
+        let writer = common_writer(output);
+        let wtr = Arc::new(Mutex::new(writer));
+
+        depth.par_iter().for_each(|(contig, bins)| {
+            let size = idx_sizes.get(contig).unwrap_or(&0);
+            let contig = idx_contig.get(contig).unwrap();
+            
+            let mut buffer = Vec::with_capacity(bins.len() * 50);
+            for (bin, count) in bins.iter().enumerate() {
+                let bin_start = bin * binsize as usize;
+                let mut bin_end = bin_start + binsize as usize;
+
+                if bin_end > (*size).try_into().unwrap() {
+                    bin_end = *size as usize;
+                }
+                if bin_start == bin_end {
+                    continue;
+                }
+                buffer.extend_from_slice(format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes());
+            }
+            {
+                let mut wtr = wtr.lock().unwrap();
+                wtr.write_all(&buffer).unwrap();
+            }
+            
+        });
+
+        log::info!("Successful output depth file `{}`", output);
+
+    }
+
+    pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
+        enable_string_cache();
+        type IvString = Interval<usize, String>;
+
+        let bed = Bed4::new(break_bed);
+        let interval_hash = bed.to_interval_hash();
+        
+
+        let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
+
+        let _ = std::fs::create_dir_all(output);
+        let _ = std::fs::create_dir_all(format!("{}/q0", output));
+        let _ = std::fs::create_dir_all(format!("{}/q1", output));
+
+        let _ = std::fs::copy(format!("{}/_contigsizes", self.file), format!("{}/_contigsizes", output));
+        let _ = std::fs::copy(format!("{}/_metadata", self.file), format!("{}/_metadata", output));
+        let _ = std::fs::copy(format!("{}/_readme", self.file), format!("{}/_readme", output));
+
+
+        let contigsize_file = format!("{}/_contigsizes", self.file);
+        let reader = common_reader(&contigsize_file);
+        let mut contigsizes = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let record = record.split("\t").collect::<Vec<&str>>();
+            let contig = record.get(0).unwrap().to_string();
+            let size = record.get(1).unwrap().parse::<u32>().unwrap();
+                contigsizes.insert(contig, size);
+        }
+
+        let output_q_dir = format!("{}/q0", output);
+        let copy_q_dir = format!("{}/q1", output);
+
+        let results = files.into_par_iter().for_each(|file| {
+            let mut df = LazyFrame::scan_parquet(file.clone(),  
+                    ScanArgsParquet::default()).unwrap();
+            
+            let df = df.collect().unwrap();
+
+            let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
+            let rev_map1 = cat_col.get_rev_map();
+
+            let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
+            let rev_map2 = cat_col.get_rev_map();
+
+            let cat_col = df.column("strand1").unwrap().categorical().unwrap();
+            let rev_map3 = cat_col.get_rev_map();
+
+            let cat_col = df.column("strand2").unwrap().categorical().unwrap();
+            let rev_map4 = cat_col.get_rev_map();
+
+            let nrows = df.height();
+
+            let mut data: Vec<bool> = Vec::new();
+            
+            let mut chrom1_vec = Vec::new();
+            let mut chrom2_vec = Vec::new();
+            let mut pos1_vec = Vec::new();
+            let mut pos2_vec = Vec::new();
+            let mut read_id_vec = Vec::new();
+            let mut strand1_vec = Vec::new();
+            let mut strand2_vec = Vec::new();
+            let mut mapq_vec = Vec::new();
+
+            for idx in 0..nrows {
+                let row = df.get(idx).unwrap();
+                
+                let chrom1 = match row.get(1) {
+                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                    _ => None
+                };
+
+                let chrom2 = match row.get(3) {
+                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                    _ => None
+                };
+
+                let pos1 = match row.get(2) {
+                    Some(AnyValue::UInt32(v)) => Some(v),
+                    _ => None
+                };
+                
+                let pos2 = match row.get(4) {
+                    Some(AnyValue::UInt32(v)) => Some(v),
+                    _ => None
+                };
+
+               
+        
+                if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                    let chrom1 = rev_map1.get(*chrom1);
+                    let chrom2 = rev_map2.get(*chrom2);
+                    let pos1 = *pos1 as usize;
+                    let pos2 = *pos2 as usize;
+
+                    let is_break_contig1 = interval_hash.contains_key(chrom1);
+                    let is_break_contig2 = interval_hash.contains_key(chrom2);
+
+                    if is_break_contig1 || is_break_contig2 {
+                        
+                        let strand1 = match row.get(5) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+        
+                        let strand2 = match row.get(6) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+        
+                        let mapq = match row.get(7) {
+                            Some(AnyValue::UInt8(v)) => Some(v),
+                            _ => None
+                        };
+
+                        let read_idx = match row.get(0) {
+                            Some(AnyValue::String(v)) => Some(v),
+                            _ => None
+                        };
+
+                        let (new_chrom1, new_pos1) = match is_break_contig1 {
+                            true => {
+                                let interval = interval_hash.get(chrom1).unwrap();
+                                let mut res = interval.find(pos1, pos1+1).collect::<Vec<_>>();
+                                if res.len() > 0 {
+                                    let new_pos = pos1 - res[0].start + 1;
+                                    let new_chrom = res[0].val.clone();
+                                    (new_chrom, new_pos)
+                                } else {
+                                    (chrom1.to_owned(), pos1)
+                                }
+                            },
+                            false => (chrom1.to_owned(), pos1)
+                        };
+
+                        let (new_chrom2, new_pos2) = match is_break_contig2 {
+                            true => {
+                                let interval = interval_hash.get(chrom2).unwrap();
+                                let res = interval.find(pos2, pos2+1).collect::<Vec<_>>();
+                                if res.len() > 0 {
+                                    let new_pos = pos2 - res[0].start + 1;
+                                    let new_chrom = res[0].val.clone();
+                                    (new_chrom, new_pos)
+                                } else {
+                                    (chrom2.to_owned(), pos2)
+                                }
+                               
+                            },
+                            false => (chrom2.to_owned(), pos2)
+                        };
+                        
+                        println!("{:?} {:?} {:?} {:?}", new_chrom1, new_pos1, new_chrom2, new_pos2);
+                        chrom1_vec.push(new_chrom1);
+                        chrom2_vec.push(new_chrom2);
+                        pos1_vec.push(new_pos1);
+                        pos2_vec.push(new_pos2);
+                        
+                        if let Some(read_idx) = read_idx {
+                                read_id_vec.push(read_idx.clone());
+                        }
+
+                        if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
+                            strand1_vec.push(rev_map3.get(*strand1));
+                            strand2_vec.push(rev_map4.get(*strand2));
+                            mapq_vec.push(mapq.clone());
+                        }
+
+                        data.push(false);
+                    } else {
+                        data.push(true);
+                    }
+                }
+
+            }
+
+            // let mut df2 = df![
+            //     // "read_id" => read_id_vec,
+            //     // "chrom1" => chrom1_vec,
+            //     // "pos1" => pos1_vec,
+            //     // "chrom2" => chrom2_vec,
+            //     // "pos2" => pos2_vec,
+            //     "strand1" => strand1_vec,
+            //     "strand2" => strand2_vec,
+            //     "mapq" => mapq_vec
+            // ].unwrap();
+            // println!("{:?}", df2);
+
+            // let data = Series::new("break", data);
+            // let mut df = df.filter(
+            //     data.bool().unwrap()
+            // ).unwrap();
+
+            // let mut df = df.vstack(&df2).unwrap();
+
+            // let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+            // let new_file = format!("{}/{}", output_q_dir, file_name);
+            // let mut new_file = File::create(new_file).unwrap();
+            // ParquetWriter::new(&mut new_file)
+            //     .finish(&mut df)
+            //     .unwrap();
+
+           
+            
+
+
+        });
+
+        
+    }
+
     pub fn intersect(&self, hcr_bed: &String, invert: bool,
                     min_mapq: u8, output: &String) -> anyResult<()> {
                         
-        type IvU8 = Interval<usize, u8>;
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
         
@@ -662,7 +1239,7 @@ impl PQS {
             format!("{}/q0", output)
         };
 
-        let mut results = files.into_par_iter().map(|file| {
+        let results = files.into_par_iter().map(|file| {
             let mut df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
 
             if min_mapq > 1 {

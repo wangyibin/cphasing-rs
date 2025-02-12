@@ -53,7 +53,7 @@ impl Clm {
         while cluster_file.read_line(&mut line)? > 0 {
             let mut iter = line.split_whitespace();
             let cluster = iter.next().unwrap();
-            let mut cluster_set = cluster_map.entry(cluster.to_string()).or_insert(Vec::new());
+            let cluster_set = cluster_map.entry(cluster.to_string()).or_insert(Vec::new());
             for item in iter {
                 cluster_set.push(item.to_string());
             }

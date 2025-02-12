@@ -1,4 +1,7 @@
-#[warn(unused_assignments)]
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 use lazy_static::lazy_static;
 use std::any::type_name;

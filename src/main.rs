@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-// #[macro_use] extern crate scan_fmt;
+#![allow(unused_variables, unused_assignments)]
 use std::io::BufReader;
 use std::io::BufRead;
 use std::path::Path;
@@ -708,8 +708,21 @@ fn main() {
             let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mut pairs = Pairs::new(&pairs);
-            pairs.break_contigs(&break_bed, &output);
+            if Path::new(&pairs).is_dir() {
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        log::error!("Current version does not support break contigs for PQS file.");
+                        // let _ = p.break_contigs(&break_bed, &output);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.break_contigs(&break_bed, &output);
+            }
         }
         Some(("pairs-dup", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -766,14 +779,33 @@ fn main() {
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let split_num = sub_matches.get_one::<u32>("SPLIT_NUM").expect("error");
-            let mut pairs = Pairs::new(&pairs);
-            let contacts = if *split_num > 1 {
-                pairs.to_split_contacts(*min_contacts, *split_num, *min_quality).unwrap()
+            
+            if Path::new(&pairs).is_dir() {
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        if *split_num > 1 {
+                            log::error!("Current version does not support split contacts for PQS file.");
+                            // let _ = p.to_split_contacts(*min_contacts, *split_num, *min_quality, &output);
+                        } else {
+                            let _ = p.to_contacts(*min_contacts, *min_quality, &output);
+                        }
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
             } else {
-                pairs.to_contacts(*min_contacts, *min_quality).unwrap()
-            };
-           
-            contacts.write(&output);
+                let mut _pairs = Pairs::new(&pairs);
+                let contacts = if *split_num > 1 {
+                    _pairs.to_split_contacts(*min_contacts, *split_num, *min_quality).unwrap()
+                } else {
+                    let mut _pairs = Pairs::new(&pairs);
+                    _pairs.to_contacts(*min_contacts, *min_quality).unwrap()
+                };
+            
+                contacts.write(&output);
+            }
             log::info!("Contacts written to {}", output);
             
         }
@@ -836,8 +868,15 @@ fn main() {
                 .unwrap();
 
             if Path::new(&pairs).is_dir() {
-                log::error!("The input is a directory, that is not a pairs or pairs.gz file.");
-
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        let _ = p.to_depth(*binsize, *min_quality, &output);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
             } else {
                 let mut pairs = Pairs::new(&pairs);
                 pairs.to_depth(*binsize, *min_quality, &output);

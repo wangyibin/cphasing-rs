@@ -1,3 +1,7 @@
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
 

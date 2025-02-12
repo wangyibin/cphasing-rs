@@ -1,5 +1,7 @@
-#[allow(unused)]
-#[allow(dead_code)]
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 // use crossbeam::queue::ArrayQueue;
 // use minimap2::*;
@@ -275,7 +277,7 @@ fn map_seq_to_seqs_by_edit_distance(read_id: &String,
     let mut align_results: Vec::<(usize, u32)> = Vec::new();
 
     // only retain the C and m in mod seq, and convert to str
-    let mut mod_seq = mod_seq.iter().filter(|x| {
+    let mod_seq = mod_seq.iter().filter(|x| {
         match x {
             b'C' | b'm' => true,
             _ => false,
@@ -351,7 +353,7 @@ fn map_seq_to_seqs_by_local(read_id: &String,
     // }).collect::<Vec<&u8>>();
 
     // convert &u8 to u8 
-    let mut mod_seq = mod_seq.iter().map(|x| {
+    let mod_seq = mod_seq.iter().map(|x| {
         *x
     }).collect::<Vec<u8>>();
     let mod_seq = String::from_utf8(mod_seq.to_vec()).unwrap();

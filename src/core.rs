@@ -1,4 +1,4 @@
-#[allow(non_snake_case)]
+#![allow(non_snake_case)]
 use anyhow::Result as anyResult;
 // use async_compression::tokio::bufread::GzipDecoder;
 // use tokio::io::TBufReader;

@@ -361,7 +361,7 @@ pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
 
     let _ = bam.set_threads(threads);
 
-    let mut writer = common_writer(output);
+    let writer = common_writer(output);
     let mut wtr = FastaWriter::new(writer);
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
@@ -410,7 +410,7 @@ pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
     
         let mut seq_len_vec: Vec<usize> = Vec::new();
         let mut gc_count: u64 = 0;
-        let mut total_qual: u64 = 0;
+        let total_qual: u64 = 0;
         while let Some(r) = bam.records().next() {
             let record = r.unwrap();
             

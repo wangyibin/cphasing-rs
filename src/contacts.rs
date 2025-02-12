@@ -1,3 +1,7 @@
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as AnyResult;
 use std::borrow::Cow;
 use std::collections::{ HashMap, HashSet };
@@ -446,8 +450,8 @@ impl Contacts2 {
             } else {
                 
                 let m1_log = match normalization_method   {
-                    "none" => 0.0,
-                    "cis" => 0.0,
+                    // "none" => 0.0,
+                    // "cis" => 0.0,
                     _ => { 0.0
                         // let m1 = unique_min.get(&contig_pair.Contig1.to_string()).unwrap_or(&0.0);
                        
@@ -455,8 +459,8 @@ impl Contacts2 {
                     }
                 };
                 let m2_log = match normalization_method {
-                    "none" => 0.0,
-                    "cis" => 0.0,
+                    // "none" => 0.0,
+                    // "cis" => 0.0,
                     _ => { 0.0
                         // let m2 = unique_min.get(&contig_pair.Contig2.to_string()).unwrap_or(&0.0);
                         // -(m2 + 1.0).log2()

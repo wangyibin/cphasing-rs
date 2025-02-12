@@ -1,6 +1,7 @@
-#[warn(unused_assignments)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 use rust_htslib::bam::{ 
     self,
@@ -475,7 +476,7 @@ pub struct AlignmentUnit {
     Secondary: Vec<Vec<Record>>,
 }
 
-
+#[allow(unused_variables, unused_assignments)]
 impl AlignmentUnit {
     fn new() -> Self {
         AlignmentUnit {

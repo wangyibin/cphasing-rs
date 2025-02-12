@@ -1,3 +1,7 @@
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 // use rdst::RadixSort;
 use std::borrow::Cow;
@@ -8,8 +12,8 @@ use std::path::Path;
 use std::process::exit;
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
-use petgraph::prelude::*;
-use petgraph::visit::NodeIndexable;
+// use petgraph::prelude::*;
+// use petgraph::visit::NodeIndexable;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use itertools::Itertools;
@@ -22,52 +26,52 @@ use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair, ContigPair2 };
 use crate::sketch::{ sketch, MinimizerInfo, MinimizerData };
 
-// maximal cliques 
-pub fn bron_kerbosch(
-    graph: &Graph<(), u64, Undirected>,
-    mut r: HashSet<NodeIndex>,
-    mut p: HashSet<NodeIndex>,
-    mut x: HashSet<NodeIndex>,
-    cliques: &mut Vec<HashSet<NodeIndex>>,
-) {
-    if p.is_empty() && x.is_empty() {
-        cliques.push(r.clone());
-        return;
-    }
+// // maximal cliques 
+// pub fn bron_kerbosch(
+//     graph: &Graph<(), u64, Undirected>,
+//     mut r: HashSet<NodeIndex>,
+//     mut p: HashSet<NodeIndex>,
+//     mut x: HashSet<NodeIndex>,
+//     cliques: &mut Vec<HashSet<NodeIndex>>,
+// ) {
+//     if p.is_empty() && x.is_empty() {
+//         cliques.push(r.clone());
+//         return;
+//     }
 
-    let mut p_candidates = p.clone();
-    p_candidates.retain(|&v| {
-        let mut neighbors = graph.neighbors(v);
-        neighbors.all(|n| p.contains(&n))
-    });
+//     let mut p_candidates = p.clone();
+//     p_candidates.retain(|&v| {
+//         let mut neighbors = graph.neighbors(v);
+//         neighbors.all(|n| p.contains(&n))
+//     });
 
-    let p_cloned = p.clone();
-    for v in p_cloned {
-        let mut neighbors = graph.neighbors(v);
-        let mut r_new = r.clone();
-        r_new.insert(v);
+//     let p_cloned = p.clone();
+//     for v in p_cloned {
+//         let mut neighbors = graph.neighbors(v);
+//         let mut r_new = r.clone();
+//         r_new.insert(v);
 
-        let p_new = p.intersection(&neighbors.clone().collect::<HashSet<_>>()).cloned().collect();
-        let x_new = x.intersection(&neighbors.collect::<HashSet<_>>()).cloned().collect();
+//         let p_new = p.intersection(&neighbors.clone().collect::<HashSet<_>>()).cloned().collect();
+//         let x_new = x.intersection(&neighbors.collect::<HashSet<_>>()).cloned().collect();
 
-        bron_kerbosch(graph, r_new, p_new, x_new, cliques);
+//         bron_kerbosch(graph, r_new, p_new, x_new, cliques);
 
-        p.remove(&v);
-        x.insert(v);
-    }
-}
+//         p.remove(&v);
+//         x.insert(v);
+//     }
+// }
 
-pub fn find_cliques(graph: &Graph<(), u64, Undirected>) -> Vec<HashSet<NodeIndex>> {
-    let mut cliques = Vec::new();
-    let n = graph.node_count();
-    let mut all_nodes = (0..n).map(NodeIndex::new).collect::<HashSet<NodeIndex>>();
-    let r = HashSet::new();
+// pub fn find_cliques(graph: &Graph<(), u64, Undirected>) -> Vec<HashSet<NodeIndex>> {
+//     let mut cliques = Vec::new();
+//     let n = graph.node_count();
+//     let mut all_nodes = (0..n).map(NodeIndex::new).collect::<HashSet<NodeIndex>>();
+//     let r = HashSet::new();
 
-    let x = HashSet::new();
+//     let x = HashSet::new();
 
-    bron_kerbosch(graph, r, all_nodes, x, &mut cliques);
-    cliques
-}
+//     bron_kerbosch(graph, r, all_nodes, x, &mut cliques);
+//     cliques
+// }
 
 #[derive(Debug, Clone)]
 pub struct AlleleHeader {
@@ -328,7 +332,7 @@ impl AlleleTable2 {
 
     pub fn get_allelic_contigs(&self, method: &str, whitehash: &HashSet<&String>) -> HashMap<&String, Vec<Vec<&String>>> {
         let mut data: HashMap<&String, Vec<Vec<&String>>> = HashMap::new();
-        let mut records = &self.allele_records;
+        let records = &self.allele_records;
         // sort records by mz_shared in ascending order
         // records.sort_by(|a, b| a.mz_shared.partial_cmp(&b.mz_shared).unwrap());
         for record in records {

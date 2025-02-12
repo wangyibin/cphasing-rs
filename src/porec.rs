@@ -1,4 +1,7 @@
-#[allow(dead_code)]
+#![allow(unused)]
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+#![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
 use crossbeam_channel::bounded;
 use std::thread;
@@ -529,16 +532,16 @@ impl PoreCTable {
     //     Ok(())
     // }
 
-    pub fn to_depth(&mut self, contigsizes: &String, binsize:u32, min_quality: u8, output: &String) {
-        use hashbrown::HashMap as BrownHashMap;
-        let mut parse_result = self.parse().unwrap();
-        let contigsizes = ChromSize { file: contigsizes.to_string() };
-        let contigsizes_data = contigsizes.data().unwrap();
+    // pub fn to_depth(&mut self, contigsizes: &String, binsize:u32, min_quality: u8, output: &String) {
+    //     use hashbrown::HashMap as BrownHashMap;
+    //     let mut parse_result = self.parse().unwrap();
+    //     let contigsizes = ChromSize { file: contigsizes.to_string() };
+    //     let contigsizes_data = contigsizes.data().unwrap();
 
-        let mut depth: BrownHashMap<String, BTreeMap<u32, u32>> = BrownHashMap::new();
-        let bins_db = binify(&contigsizes_data, binsize).unwrap();
-        // incomplete
-    }
+    //     let mut depth: BrownHashMap<String, BTreeMap<u32, u32>> = BrownHashMap::new();
+    //     let bins_db = binify(&contigsizes_data, binsize).unwrap();
+    //     // incomplete
+    // }
 
     pub fn intersect(&mut self, hcr_bed: &String, invert: bool, output: &String) {
         type IvU8 = Interval<usize, u8>;
@@ -688,7 +691,7 @@ impl PoreCTable {
             if is_break_contig {
                 
                 let interval = interval_hash.get(&record[5]).unwrap();
-                let mut res = interval.find(target_start, target_end).collect::<Vec<_>>();
+                let res = interval.find(target_start, target_end).collect::<Vec<_>>();
                 
                 if res.len() > 0 {
                     let break_contig_length = res[0].stop - res[0].start + 1;
