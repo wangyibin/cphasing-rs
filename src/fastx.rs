@@ -4,6 +4,7 @@ use bio::io::fastq::{Reader, Record, Writer};
 // use bio::io::fasta::{Reader as FastaReader,
 //                     Writer as FastaReader}
 use bio::pattern_matching::horspool::Horspool;
+use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use indexmap::IndexMap;
 use hashbrown::HashMap as hashHashMap;
 use rayon::prelude::*;
@@ -115,62 +116,67 @@ impl Fastx {
         Ok(chrom_seqs)
     }
 
-    pub fn count_re(&self, patterns: &String) -> AnyResult<hashHashMap<String, u64>> {
+    pub fn count_re(&self, patterns: &String) -> AnyResult<(hashHashMap<String, u64>, hashHashMap<String, u64>)> {
         use aho_corasick::AhoCorasick;
         let chrom_count: hashHashMap<String, u64> = hashHashMap::new();
         let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
         let pattern_vec_uppercase: Vec<String> = pattern_vec.iter().map(|x| x.to_uppercase()).collect();
-        let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
-        let all_patterns: Vec<&str> = pattern_vec_uppercase
-                                        .iter()
-                                        .chain(pattern_vec_lowercase.iter())
-                                        .map(|x| x.as_str())
-                                        .collect();
+        // let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
+        // let all_patterns: Vec<&str> = pattern_vec_uppercase
+        //                                 .iter()
+        //                                 .chain(pattern_vec_lowercase.iter())
+        //                                 .map(|x| x.as_str())
+        //                                 .collect();
         
-
         let chrom_count_mutex = Mutex::new(hashHashMap::new());
+        let chrom_length_mutex = Mutex::new(hashHashMap::new());
         
-        for pattern in all_patterns.iter() {
-            
-            let ac = AhoCorasick::new(&vec![pattern]).unwrap();
+        
+        let ac = AhoCorasick::new(&pattern_vec_uppercase).unwrap();
 
-            log::set_max_level(log::LevelFilter::Off);
-            let reader = common_reader(&self.file);
-            log::set_max_level(log::LevelFilter::Info);
-            let reader = FastxReader::new(reader);
-            
-            read_process_fastx_records(
-                reader,
-                4, // Number of worker threads
-                2, // Number of partitions
-                |record, count| {
-                    // Worker thread: Count matches for all patterns
-                    let sequence = record.seq();
-                    
-                    let mut local_count = 0u64;
+        log::set_max_level(log::LevelFilter::Off);
+        let reader = common_reader(&self.file);
+        log::set_max_level(log::LevelFilter::Info);
+        let reader = FastxReader::new(reader);
 
-                    for mat in ac.find_iter(sequence) {
-                        local_count += 1;
-                    }
+        
+        read_process_fastx_records(
+            reader,
+            4, // Number of worker threads
+            2, // Number of partitions
+            |record, (count, length)| {
+                // Worker thread: Count matches for all patterns
+                let sequence = record.seq().to_ascii_uppercase();
+                let mut local_count = 0u64;
 
-                    *count = local_count;
-                },
-                |record, count| {
-                    // Main thread: Aggregate counts
-                    let mut chrom_count = chrom_count_mutex.lock().unwrap();
-                    chrom_count
-                        .entry(record.id().unwrap().to_owned())
-                        .or_insert(0)
-                        .add_assign(*count as u64);
+                for mat in ac.find_iter(&sequence) {
+                    local_count += 1;
+                }
 
-                    None::<()>
-                },
-            )
-            .unwrap();
-        }
-        // Extract the final result
+                *length = record.seq_lines().fold(0, |l, seq| l + seq.len());
+                
+                *count = local_count;
+            },
+            |record, (count, length)| {
+                let mut chrom_count = chrom_count_mutex.lock().unwrap();
+                chrom_count
+                    .entry(record.id().unwrap().to_owned())
+                    .or_insert(0)
+                    .add_assign(*count as u64);
+                let mut chrom_length = chrom_length_mutex.lock().unwrap();
+                chrom_length
+                    .entry(record.id().unwrap().to_owned())
+                    .or_insert(0)
+                    .add_assign(*length as u64);
+                None::<()>
+            },
+        ).unwrap();
+        
         let chrom_count = chrom_count_mutex.into_inner().unwrap();
-        Ok(chrom_count)
+        let chrom_length = chrom_length_mutex.into_inner().unwrap();
+        let pattern_count = pattern_vec_uppercase.len() as u64;
+
+        Ok((chrom_count, chrom_length))
     }
 
     pub fn count_re2(&self, patterns: &String) -> AnyResult<IndexMap<String, u64>> {
@@ -188,7 +194,6 @@ impl Fastx {
         // merge two vectors
         let pattern_vec = pattern_vec_uppercase.iter().chain(pattern_vec_lowercase.iter()).collect::<Vec<&String>>();
 
-        
 
         for pattern in pattern_vec {
             log::set_max_level(log::LevelFilter::Off);
@@ -265,12 +270,133 @@ impl Fastx {
         Ok(positions)
     }
     pub fn slidefasta(&self, output: &String, window: u64, step: u64)  -> AnyResult<()>{
+        use std::fmt::Write;
         let window = window as usize;
         let step = step as usize;
         let step = if step == 0 { window } else { step };
         let reader = common_reader(&self.file);
 
+        let reader = bio::io::fasta::Reader::new(reader);
         
+        
+        let writer = common_writer(output);
+        let wtr = bio::io::fasta::Writer::new(writer);
+        let wtr = Arc::new(Mutex::new(wtr));
+        let (sender, receiver) = bounded::<(String, Vec<u8>)>(100);
+        let consumer_count = 8;
+        let mut handles = Vec::new();
+        for _ in 0..consumer_count {
+            let receiver = receiver.clone();
+            let writer = Arc::clone(&wtr);
+
+            handles.push(thread::spawn(move || {
+                
+                while let Ok((id, seq_bytes)) = receiver.recv() {
+                    let seq_length = seq_bytes.len();
+                    let seq_str = match std::str::from_utf8(&seq_bytes) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            log::error!("Invalid UTF-8: {}", e);
+                            continue;
+                        }
+                    };
+                    let mut start = 0;
+                    let mut end = window.min(seq_length);
+                    let mut vec = Vec::new();
+                    let mut name_buf = String::with_capacity(64);
+                    while start < seq_length {
+                        name_buf.clear();
+                        let _ = write!(name_buf, "{}:{}-{}", id, start, end);
+                        let record = bio::io::fasta::Record::with_attrs(
+                            &name_buf,
+                            None,
+                            &seq_str[start..end].as_bytes()
+                        );
+                        
+                        vec.push(record);
+
+                        start += step;
+                        end += step;
+                        if end > seq_length {
+                            end = seq_length;
+                        }
+                    }
+                    {
+                        let mut wtr = writer.lock().unwrap();
+                        for record in vec {
+                            match wtr.write_record(&record) {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    log::error!("Error writing record: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        for result in reader.records() {
+            match result {
+                Ok(rec) => {
+                    
+                    if sender.send((rec.id().to_owned(), rec.seq().to_vec())).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error reading record: {}", e);
+                    continue;
+                }
+            }
+        }
+
+        drop(sender);
+    
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        
+        // for result in reader.records() {
+        //     let record = match result {
+        //         Ok(record) => record,
+        //         Err(e) => {
+        //             log::error!("Error reading record: {}", e);
+        //             continue
+        //         }
+        //     };
+        //     let seq = record.seq();
+        //     let seq_length = seq.len();
+        //     let seq_str = std::str::from_utf8(&seq).unwrap();
+        //     let mut start = 0;
+        //     let mut end = window;
+        //     let mut i = 0;
+        //     if end >= seq_length {
+        //         end = seq_length;
+        //     }
+            
+        //     while start < seq_length {
+        //         let seq_window = &seq_str[start..end as usize];
+        //         let record = bio::io::fasta::Record::with_attrs(format!("{}:{}-{}", record.id(), start, end).as_str(),
+        //                                                     None, seq_window.as_bytes());
+        //         match wtr.write_record(&record) {
+        //             Ok(_) => {},
+        //             Err(e) => {
+        //                 log::error!("Error writing record: {}", e);
+        //             }
+                
+        //         };
+        //         start += step;
+        //         end += step;
+        //         if end >= seq_length {
+        //             end = seq_length;
+        //         }
+                
+        //         i += 1;
+        //     } 
+        // }
+
         Ok(())
 
 
@@ -595,8 +721,6 @@ impl Fastx {
                 }
             }
         }
-        
-    
 
         Ok(())
     }

@@ -426,6 +426,15 @@ fn main() {
             let fa = Fastx::new(&input_fastq);
             let _ = fa.slide(&output, *window, *step, *min_length, &filetype, *coordinate_suffix);
         }
+        Some(("slidefasta", sub_matches)) => {
+            let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let window = sub_matches.get_one::<u64>("WINDOW").expect("error");
+            let step = sub_matches.get_one::<u64>("STEP").expect("error");
+            
+            let fa = Fastx::new(&input_fasta);
+            let _ = fa.slidefasta(&output, *window, *step);
+        }
         Some(("slide2raw", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -532,10 +541,11 @@ fn main() {
             let min_re = sub_matches.get_one::<u64>("MIN_RE").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
-            let mut count_re = CountRE::new(&output);
+            // let fasta = Fastx::new(&input_fasta);
+            // let contigsizes = fasta.get_chrom_size().unwrap();
             let fasta = Fastx::new(&input_fasta);
-            let contigsizes = fasta.get_chrom_size().unwrap();
-            let counts = fasta.count_re(&pattern).unwrap();
+            let (counts, contigsizes) = fasta.count_re(&pattern).unwrap();
+            let mut count_re = CountRE::new(&output);
 
             // counts + 1 
             let counts: IndexMap<String, u64> = counts.into_iter()
@@ -545,6 +555,9 @@ fn main() {
             let counts: IndexMap<String, u64> = counts.into_iter()
                                                     .filter(|(_, v)| *v >= *min_re)
                                                     .collect();
+            let contigsizes = contigsizes.into_iter()
+                                        .filter(|(k, _)| counts.contains_key(k))
+                                        .collect();
             count_re.from_hashmap(counts, contigsizes);
             count_re.write(&output);
         }
@@ -709,11 +722,10 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             if Path::new(&pairs).is_dir() {
-                let p = PQS::new(&pairs);
+                let mut p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
-                        log::error!("Current version does not support break contigs for PQS file.");
-                        // let _ = p.break_contigs(&break_bed, &output);
+                        let _ = p.break_contigs(&break_bed, &output);
                     },
                     false => {
                         log::error!("The input directory is not a PQS directory.");

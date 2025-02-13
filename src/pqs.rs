@@ -1009,7 +1009,7 @@ impl PQS {
         let _ = std::fs::create_dir_all(format!("{}/q0", output));
         let _ = std::fs::create_dir_all(format!("{}/q1", output));
 
-        let _ = std::fs::copy(format!("{}/_contigsizes", self.file), format!("{}/_contigsizes", output));
+        
         let _ = std::fs::copy(format!("{}/_metadata", self.file), format!("{}/_metadata", output));
         let _ = std::fs::copy(format!("{}/_readme", self.file), format!("{}/_readme", output));
 
@@ -1023,6 +1023,29 @@ impl PQS {
             let contig = record.get(0).unwrap().to_string();
             let size = record.get(1).unwrap().parse::<u32>().unwrap();
                 contigsizes.insert(contig, size);
+        }
+
+        let contigsizes_data: HashMap<String, u32> = contigsizes.clone();
+        let mut new_contigsizes_data = contigsizes_data.clone();
+        for contig in contigsizes_data.keys() {
+            if interval_hash.contains_key(contig) {
+                new_contigsizes_data.remove(contig);
+                let interval = interval_hash.get(contig).unwrap();
+                let res = interval.iter().collect::<Vec<_>>();
+                for sub_res in res.iter() {
+                    // let new_contig = format!("{}:{}-{}", contig, sub_res.start, sub_res.stop);
+                    let new_contigs = &sub_res.val;
+                    let size = sub_res.stop - sub_res.start + 1;
+                    new_contigsizes_data.insert(new_contigs.clone(), size.try_into().unwrap());
+                }
+            }
+        }
+
+
+        let mut writer = common_writer(format!("{}/_contigsizes", output).as_str());
+        for (contig, size) in new_contigsizes_data {
+            let buffer = format!("{}\t{}\n", contig, size);
+            writer.write_all(buffer.as_bytes()).unwrap();
         }
 
         let output_q_dir = format!("{}/q0", output);
@@ -1114,6 +1137,9 @@ impl PQS {
                             Some(AnyValue::String(v)) => Some(v),
                             _ => None
                         };
+                        
+                        let pos1 = pos1 as usize;
+                        let pos2 = pos2 as usize;
 
                         let (new_chrom1, new_pos1) = match is_break_contig1 {
                             true => {
@@ -1122,12 +1148,12 @@ impl PQS {
                                 if res.len() > 0 {
                                     let new_pos = pos1 - res[0].start + 1;
                                     let new_chrom = res[0].val.clone();
-                                    (new_chrom, new_pos)
+                                    (new_chrom, new_pos as u32)
                                 } else {
-                                    (chrom1.to_owned(), pos1)
+                                    (chrom1.to_owned(), pos1 as u32)
                                 }
                             },
-                            false => (chrom1.to_owned(), pos1)
+                            false => (chrom1.to_owned(), pos1 as u32)
                         };
 
                         let (new_chrom2, new_pos2) = match is_break_contig2 {
@@ -1137,16 +1163,15 @@ impl PQS {
                                 if res.len() > 0 {
                                     let new_pos = pos2 - res[0].start + 1;
                                     let new_chrom = res[0].val.clone();
-                                    (new_chrom, new_pos)
+                                    (new_chrom, new_pos as u32 )
                                 } else {
-                                    (chrom2.to_owned(), pos2)
+                                    (chrom2.to_owned(), pos2 as u32)
                                 }
                                
                             },
-                            false => (chrom2.to_owned(), pos2)
+                            false => (chrom2.to_owned(), pos2 as u32)
                         };
-                        
-                        println!("{:?} {:?} {:?} {:?}", new_chrom1, new_pos1, new_chrom2, new_pos2);
+                    
                         chrom1_vec.push(new_chrom1);
                         chrom2_vec.push(new_chrom2);
                         pos1_vec.push(new_pos1);
@@ -1170,39 +1195,65 @@ impl PQS {
 
             }
 
-            // let mut df2 = df![
-            //     // "read_id" => read_id_vec,
-            //     // "chrom1" => chrom1_vec,
-            //     // "pos1" => pos1_vec,
-            //     // "chrom2" => chrom2_vec,
-            //     // "pos2" => pos2_vec,
-            //     "strand1" => strand1_vec,
-            //     "strand2" => strand2_vec,
-            //     "mapq" => mapq_vec
-            // ].unwrap();
-            // println!("{:?}", df2);
+            let mut df2 = df![
+                "read_idx" => read_id_vec,
+                "chrom1" => chrom1_vec,
+                "pos1" => pos1_vec,
+                "chrom2" => chrom2_vec,
+                "pos2" => pos2_vec,
+                "strand1" => strand1_vec,
+                "strand2" => strand2_vec,
+                "mapq" => mapq_vec
+            ].unwrap();
 
-            // let data = Series::new("break", data);
-            // let mut df = df.filter(
-            //     data.bool().unwrap()
-            // ).unwrap();
+            let data = Series::new("break", data);
+            let mut df = df.filter(
+                data.bool().unwrap()
+            ).unwrap()
+            .lazy()
+            .with_column(col("chrom1").cast(DataType::String))
+            .with_column(col("chrom2").cast(DataType::String))
+            .with_column(col("strand1").cast(DataType::String))
+            .with_column(col("strand2").cast(DataType::String))
+            .collect().unwrap();
 
-            // let mut df = df.vstack(&df2).unwrap();
+            let n_rows = df2.height();
+            let mut df = if n_rows > 0 {
+                df.vstack(&df2).unwrap()
+            } else {
+                df
+            };
 
-            // let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-            // let new_file = format!("{}/{}", output_q_dir, file_name);
-            // let mut new_file = File::create(new_file).unwrap();
-            // ParquetWriter::new(&mut new_file)
-            //     .finish(&mut df)
-            //     .unwrap();
+            let mut df = df.lazy().with_column(
+                col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+            ).with_column(
+                col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+            ).with_column(
+                col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+            ).with_column(
+                col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+            )
+            .collect().unwrap();
 
-           
-            
+            let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+            let new_file = format!("{}/{}", output_q_dir, file_name);
+            let mut new_file = File::create(new_file).unwrap();
+            ParquetWriter::new(&mut new_file)
+                .finish(&mut df)
+                .unwrap();
 
+            let mut df = df.lazy().filter(
+                col("mapq").gt_eq(1)
+            ).collect().unwrap();
 
+            let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+            let new_file = format!("{}/{}", copy_q_dir, file_name);
+            let mut new_file = File::create(new_file).unwrap();
+            ParquetWriter::new(&mut new_file)
+                .finish(&mut df)
+                .unwrap();
         });
 
-        
     }
 
     pub fn intersect(&self, hcr_bed: &String, invert: bool,
@@ -1332,7 +1383,6 @@ impl PQS {
     }
 }
 
-
 fn collect_parquet_files(parquets_dir: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for entry in WalkDir::new(parquets_dir) {
@@ -1359,44 +1409,13 @@ fn collect_parquet_files(parquets_dir: &str) -> Vec<PathBuf> {
 
 pub fn merge_pqs(input: Vec<&String>, output: &String) {
 
-    // mkdir -p output
     let _ = std::fs::create_dir_all(output);
     let _ = std::fs::create_dir_all(format!("{}/q0", output));
     let _ = std::fs::create_dir_all(format!("{}/q1", output));
 
-    // mv input/_contigsizes output/_contigsizes
     let _ = std::fs::copy(format!("{}/_contigsizes", input[0]), format!("{}/_contigsizes", output));
     let _ = std::fs::copy(format!("{}/_metadata", input[0]), format!("{}/_metadata", output));
     let _ = std::fs::copy(format!("{}/_readme", input[0]), format!("{}/_metadata", output));
-
-    // let idx = AtomicUsize::new(0);
-    // let idx2 = AtomicUsize::new(0);
-
-    // input.par_iter().for_each(|file| {
-    //     let p = PQS::new(file);
-    //     if !p.is_pqs() {
-    //         log::warn!("{} is not a valid PQS directory, skipped.", file);
-    //         return;
-    //     }
-
-    //     let q0 = format!("{}/q0", file);
-    //     let q1 = format!("{}/q1", file);
-
-    //     let q0_files = collect_parquet_files(q0.as_str());
-    //     let q1_files = collect_parquet_files(q1.as_str());
-
-    //     q0_files.par_iter().for_each(|q0_file| {
-    //         let current = idx.fetch_add(1, Ordering::SeqCst);
-    //         let output_file = format!("{}/q0/{}.q0.parquet", output, current);
-    //         let _ = std::fs::copy(q0_file, output_file);
-    //     });
-
-    //     q1_files.par_iter().for_each(|q1_file| {
-    //         let current = idx2.fetch_add(1, Ordering::SeqCst);
-    //         let output_file = format!("{}/q1/{}.q1.parquet", output, current);
-    //         let _ = std::fs::copy(q1_file, output_file);
-    //     });
-    // });
 
     let mut idx = 0;
     let mut idx2 = 0;
@@ -1416,13 +1435,13 @@ pub fn merge_pqs(input: Vec<&String>, output: &String) {
 
         for q0_file in q0_files {
             
-            let output_file = format!("{}/q0/{}.q0.parquet", output, idx);
+            let output_file = format!("{}/q0/{}.parquet", output, idx);
             let _ = std::fs::copy(q0_file, output_file);
             idx += 1;
         }
 
         for q1_file in q1_files {
-            let output_file = format!("{}/q1/{}.q1.parquet", output, idx2);
+            let output_file = format!("{}/q1/{}.parquet", output, idx2);
             let _ = std::fs::copy(q1_file, output_file);
             idx2 += 1;
         }

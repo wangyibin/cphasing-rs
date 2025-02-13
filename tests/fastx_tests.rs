@@ -25,11 +25,12 @@ mod tests {
 
     // #[test]
     // fn test_count_re() {
-    //     let fasta = String::from("test/test.fa");
+    //     // let fasta = String::from("test/test.fa");
+    //     let fasta = String::from("/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-2.2/500k/test.fa");
     //     let fa = Fastx::new(&fasta);
     //     let motif = String::from("GATC");
-    //     let counts = fa.count_re(&motif).unwrap();
-    //     println!("{:?}", counts);
+    //     let (counts, lengths) = fa.count_re(&motif).unwrap();
+    //     println!("{:?}", lengths);
     // }
 
     // #[test] 
@@ -41,6 +42,19 @@ mod tests {
     //     println!("{:?}", pos);
         
     // }
+
+    #[test]
+    fn test_slidefasta() {
+        // let fasta = String::from("/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-2.2/500k/test.fa");
+        let fasta = String::from("/data3/wangyb/0.CPhasing/82-114/82-114_hifi.bp.p_utg.fasta");
+
+        let fa = Fastx::new(&fasta);
+        let window: u64 = 10000;
+        let step: u64 = 0;
+        // let output = String::from("/data3/wangyb/0.CPhasing/0.simulation/AT_remove_inter_raw/align_data/ploidy-2.2/500k/10k.fa");
+        let output = String::from("/data3/wangyb/0.CPhasing/82-114/10k.fa");
+        let _ = fa.slidefasta(&output, window, step);
+    }
 
     // #[test]
     // fn test_slide() {
@@ -69,15 +83,15 @@ mod tests {
     //     }
     // }
 
-    #[test]
-    fn test_mask_high_frequency_kmer() {
-        let fasta = String::from("test/test.fa");
-        let k = 3 as usize;
-        let output = String::from("test/test.masked.fa");
-        let fa = Fastx::new(&fasta);
+    // #[test]
+    // fn test_mask_high_frequency_kmer() {
+    //     let fasta = String::from("test/test.fa");
+    //     let k = 3 as usize;
+    //     let output = String::from("test/test.masked.fa");
+    //     let fa = Fastx::new(&fasta);
         
-        let _ = fa.mask_high_frequency_kmer(k, 10, &output);
-    }
+    //     let _ = fa.mask_high_frequency_kmer(k, 10, &output);
+    // }
     // #[test]
     // fn test_kmer_position() {
     //     let fasta = String::from("test/test.fa");

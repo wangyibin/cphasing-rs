@@ -331,6 +331,31 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("slidefasta")
+                .about("slide fasta")
+                .alias("slidefa")
+                .arg(arg!(<FASTA> "fasta"))
+                .arg(
+                    Arg::new("WINDOW")
+                        .long("window")
+                        .short('w')
+                        .value_parser(value_parser!(u64))
+                        .default_value("10000"))
+                .arg(
+                    Arg::new("STEP")
+                        .long("step")
+                        .short('s')
+                        .value_parser(value_parser!(u64))
+                        .default_value("0"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("slide2raw")
                 .about("Convert slided read id to raw in bam file")
                 .arg(arg!(<BAM> "slided read mapping bam"))

@@ -2309,36 +2309,8 @@ impl Pairs {
             self.file_name().to_string()
         };
 
-        // let mut output_counts = 0;
-        // let mut output = 0;
-        // let mut wtr = common_writer(&format!("{}.{}", output, output_prefix));
-        // for (idx, record) in rdr.lines().enumerate() {
-        //     let record = record.unwrap();
-        //     if record.starts_with("#") {
-        //         continue;
-        //     }
-        //     if output_counts == 0 {
-        //         wtr = common_writer(&format!("{}.{}", output, output_prefix));
-        //         wtr.write_all(pair_header.as_bytes()).unwrap();
-        //         output += 1;
-        //     } 
-
-        //     output_counts += 1;
-        //     if output_counts >= chunksize {
-        //         output_counts = 0;
-        //     }
-    
-        //     if !record.is_empty() {
-        //         // writeln!(wtr, "{}", record).unwrap();
-        //         wtr.write_all(record.as_bytes()).unwrap();
-        //         wtr.write_all(b"\n").unwrap();
-        //     }
-      
-        // }
-
        
         let (sender, receiver) = bounded::<Vec<(u32, String)>>(100);   
-
 
         let mut handles = vec![];
 
@@ -2346,12 +2318,11 @@ impl Pairs {
             let receiver = receiver.clone();
             let output_prefix = output_prefix.to_string();
             let pair_header = pair_header.to_string();
-            let chunksize = chunksize;
-           
+        
             handles.push(thread::spawn(move || {
         
                 while let Ok(records) = receiver.recv() {
-                    let (chunk_id, line) = &records.get(0).unwrap();
+                    let (chunk_id, _) = &records.get(0).unwrap();
 
                     let mut wtr = common_writer(&format!("{}.{}", chunk_id, output_prefix));
                     wtr.write_all(pair_header.as_bytes()).unwrap();
@@ -2361,42 +2332,10 @@ impl Pairs {
                        wtr.write_all(b"\n").unwrap();
                     }
 
-                    // let buffer = records.iter().map(|(chunk_id, record)| {
-                    //     format!("{}\n", record)
-                    // }).collect::<Vec<String>>().join("");
-
-                    // wtr.write_all(buffer.as_bytes()).unwrap();
                 }
-                
             
             }));
         }
-
-        // let mut batch: Vec<(u32, String)> = Vec::with_capacity(chunksize);
-        // let mut chunk_id = 0;
-        // for (idx, record) in rdr.lines().enumerate() {
-        //     match record {
-        //         Ok(record) => {
-        //             if record.starts_with("#") {
-        //                 continue;
-        //             }
-        //             batch.push((chunk_id, record));
-        //             if batch.len() >= chunksize {
-        //                 sender.send(std::mem::take(&mut batch)).unwrap();
-        //                 chunk_id += 1;
-        //             }
-        //         },
-        //         Err(e) => {
-        //             log::warn!("Error: Could not parse record: {:?}", e);
-        //             continue
-        //         }
-        //     }
-        // }
-
-        // if !batch.is_empty() {
-           
-        //     sender.send(batch).unwrap();
-        // }
 
 
         let producer_handle = thread::spawn(move || {
