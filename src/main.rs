@@ -591,12 +591,24 @@ fn main() {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
             let prt = PoreCTable::new(&table);
 
-            prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
+            if output.ends_with(".pqs") {
+                let output = if output == "-" {
+                    let output = table.strip_suffix(".porec.gz").unwrap_or(&table);
+                    format!("{}.pqs", output)
+                } else {
+                    output.to_string()
+                };
+                prt.to_pairs_pqs(&chromsizes, &output, *chunksize, *min_quality, *min_order, *max_order).unwrap();
+            } else {
+                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
+            }
+            
         }
         Some(("porec-break", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
@@ -741,8 +753,12 @@ fn main() {
             let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mut pairs = Pairs::new(&pairs);
-            pairs.dup(&collapsed_list, 123, &output);
+            if Path::new(&pairs).is_dir() {
+                log::error!("The input directory is not a pairs or pairs.gz file.");
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.dup(&collapsed_list, 123, &output);
+            }
         }
         Some(("pairs-filter", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -782,8 +798,12 @@ fn main() {
             let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
             let _output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mut pairs = Pairs::new(&pairs);
-            pairs.split(*chunksize);
+            if Path::new(&pairs).is_dir() {
+                log::error!("The input directory is not a pairs or pairs.gz file.");
+            } else {
+                let mut pairs = Pairs::new(&pairs);
+                pairs.split(*chunksize);
+            }
         }
         Some(("pairs2contacts", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -864,8 +884,7 @@ fn main() {
                             &output, output_split_contacts, 
                             *output_depth, *binsize, *threads, true);
             }
-            // let contacts = Contacts::from_clm(&output);
-            // contacts.write(&contacts.file);
+
         }
         Some(("pairs2depth", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -915,13 +934,14 @@ fn main() {
                 pairs.to_mnd(*min_quality, &output).unwrap();
             }
         }
-        // Some(("pairs2pqs", sub_matches)) => {
-        //     let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
-        //     let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+        Some(("pairs2pqs", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-        //     let mut pairs = Pairs::new(&pairs);
-        //     pairs.to_parquet(&output);
-        // }
+            let mut pairs = Pairs::new(&pairs);
+            pairs.to_pqs(*chunksize, &output);
+        }
         Some(("pairs2bam", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
@@ -987,14 +1007,12 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let edge_length = sub_matches.get_one::<u64>("EDGE_LENGTH").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
                 .unwrap();
-
-            
 
             if *invert {
                 log::info!("Invert the table.");
@@ -1077,8 +1095,8 @@ fn main() {
 
         }
         _ => {
-            eprintln!("{:?}", matches.subcommand());
-            eprintln!("No such subcommand.");
+            let input_arg = matches.subcommand().unwrap().0; 
+            eprintln!("No such subcommand: {}", input_arg);
         },
     }
 }

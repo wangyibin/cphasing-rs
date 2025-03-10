@@ -687,6 +687,14 @@ pub fn cli() -> Command {
                         .default_value("50")
                         .help("max order of the concatemers")
                 )
+                .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                        .help("chunksize of the pqs output, unused for pairs or pairs.gz output")
+                )
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -1136,21 +1144,28 @@ pub fn cli() -> Command {
                         .default_value("4"))
                 .arg_required_else_help(true),
         )
-        // .subcommand(
-        //     Command::new("pairs2pqs")
-        //         .hide(true)
-        //         .about("convert pairs to pairs.pqs file")
-        //         .arg(arg!(<PAIRS> "pairs"))
-        //         .arg(
-        //             Arg::new("OUTPUT")
-        //                 .long("output")
-        //                 .short('o')
-        //                 .value_parser(value_parser!(String))
-        //                 .default_value(".")
-        //                 .help("output dir, default is ./"))
-        //         .arg_required_else_help(true),
+        .subcommand(
+            Command::new("pairs2pqs")
+                .hide(true)
+                .about("convert pairs to pairs.pqs file")
+                .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value(".")
+                        .help("output dir, default is ./"))
+                .arg_required_else_help(true),
                     
-        // )
+        )
         .subcommand(
             Command::new("bam2paf")
             .about("convert dorado align bam to paf")
@@ -1329,6 +1344,7 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("prunepairs")
                 .about("prune pairs")
+                .hide(true)
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<PRUNE> "Prune contigs"))
                 .arg(

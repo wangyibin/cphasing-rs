@@ -49,6 +49,12 @@ pub struct ChromSizeRecord {
     pub size: u64,
 }
 
+impl std::fmt::Display for ChromSizeRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}\t{}", self.chrom, self.size)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChromSize {
     pub file: String,

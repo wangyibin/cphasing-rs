@@ -714,7 +714,7 @@ impl Fastx {
                     let mut seq = record.seq();
                     let length = seq.len();
                     if length > trim_threshold {
-                        seq = &seq[trim_length..length - trim_length + 1];
+                        seq = &seq[trim_length..length - trim_length];
                     }
                     let seq_str = std::str::from_utf8(&seq).unwrap();
                     writer.write_all(format!(">{}\n{}\n", id, seq_str).as_bytes()).unwrap();

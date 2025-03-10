@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
-use crossbeam_channel::bounded;
+use crossbeam_channel::{ bounded, Sender, Receiver };
 use std::thread;
 use itertools::{Itertools, Combinations};
 use std::cmp::Ordering;
@@ -11,6 +11,7 @@ use std::collections::{ BTreeMap, HashMap };
 use std::borrow::Cow;
 use std::error::Error;
 use std::path::Path;
+use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
@@ -23,6 +24,11 @@ use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, binify, ChromSize, ChromSizeRecord };
 use crate::pairs::{ PairRecord, PairHeader };
 use crate::paf::PAFLine;
+
+enum PosValue {
+    U32(u32),
+    U64(u64),
+}
 
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -194,7 +200,7 @@ impl PartialEq for PoreCRecord {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Concatemer {
     pub records: Vec<PoreCRecord>,
 }
@@ -326,6 +332,287 @@ impl PoreCTable {
         Ok(input)
     }
 
+    pub fn to_pairs_pqs(&self, chromsizes: &String, output: &String, 
+        chunksize: usize, min_quality: u8, 
+        min_order: usize, max_order: usize,
+    ) -> anyResult<()> {
+        use polars::prelude::*;
+        use crate::pqs::_README as _readme;
+        use crate::pqs::_METADATA;
+
+        let parse_result = self.parse();
+        let mut rdr = match parse_result {
+            Ok(v) => v,
+            Err(error) => panic!("Could not parse input file: {:?}", self.file_name()),
+        };
+        log::info!("Only retain concatemer that order in the range of [{}, {})", min_order, max_order);
+        
+        let _ = std::fs::create_dir_all(output);
+        let _ = std::fs::create_dir_all(format!("{}/q0", output));
+        let _ = std::fs::create_dir_all(format!("{}/q1", output));
+
+        // copy chromsizes to output
+        let _ = std::fs::copy(chromsizes, format!("{}/_contigsizes", output));
+
+        let contigsizes = ChromSize::new(chromsizes);
+        let contigsizes_data = contigsizes.to_vec().unwrap();
+        let max_contig_size = contigsizes_data.iter().map(|x| x.size).max().unwrap();
+      
+        let pos_type = if max_contig_size < 4294967295 {
+            DataType::UInt32
+        } else {
+            DataType::UInt64
+        };
+
+        let pos_type_string = match pos_type {
+            DataType::UInt32 => "UInt32",
+            DataType::UInt64 => "UInt64",
+            _ => "UInt32",
+        };
+
+        let mut wtr = common_writer(format!("{}/_readme", output).as_str());
+        wtr.write_all(_readme.as_bytes()).unwrap();
+        wtr.flush().unwrap();
+
+        let create_date_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let mut wtr = common_writer(format!("{}/_metadata", output).as_str());
+        let mut _metadata = _METADATA.to_string();
+        _metadata = _metadata.replace("REPLACE", &create_date_time);
+        _metadata = _metadata.replace("CHUNKSIZE", &chunksize.to_string());
+        _metadata = _metadata.replace("pos_type_lower", pos_type_string.to_lowercase().as_str());
+        _metadata = _metadata.replace("pos_type", pos_type_string);
+        wtr.write_all(_metadata.as_bytes()).unwrap();
+        wtr.flush().unwrap();
+        
+
+        let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
+
+        let (sender, receiver) = bounded::<(usize, Vec<Concatemer>)>(100);
+        let mut handles = vec![];
+        
+        match max_contig_size {
+            0..=4294967295 => {
+                for _ in 0..8 {
+                    let receiver: Receiver<_> = receiver.clone();
+                    let output = output.clone();
+                    handles.push(thread::spawn(move || {
+                        while let Ok((chunk_id, records)) = receiver.recv() {
+                            let mut read_idx_vec: Vec<u64> = Vec::new();
+                            let mut chrom1_vec: Vec<String> = Vec::new();
+                            let mut pos1_vec: Vec<u32> = Vec::new();
+                            let mut chrom2_vec: Vec<String> = Vec::new();
+                            let mut pos2_vec: Vec<u32> = Vec::new();
+                            let mut strand1_vec: Vec<String> = Vec::new();
+                            let mut strand2_vec: Vec<String> = Vec::new();
+                            let mut mapq_vec: Vec<u8> = Vec::new();
+                            let mut read_idx = 0;
+                            for mut concatemer in records {
+                                concatemer.sort();
+                                for pair in concatemer.decompose() {
+                                    let (record1, record2) = (pair[0], pair[1]);
+                                    read_idx_vec.push(read_idx);
+                                    chrom1_vec.push(record1.target.clone());
+                                    pos1_vec.push((record1.target_start as u32 + record1.target_end as u32) / 2);
+                                    chrom2_vec.push(record2.target.clone());
+                                    pos2_vec.push((record2.target_start as u32 + record2.target_end as u32) / 2);
+                                    strand1_vec.push(record1.query_strand.to_string());
+                                    strand2_vec.push(record2.query_strand.to_string());
+                                    mapq_vec.push(std::cmp::min(record1.mapq, record2.mapq));
+                                    
+                                    read_idx += 1;
+                                }
+        
+                            }
+        
+                            let df = DataFrame::new(vec![
+                                Series::new("read_idx", read_idx_vec),
+                                Series::new("chrom1", chrom1_vec),
+                                Series::new("pos1", pos1_vec),
+                                Series::new("chrom2", chrom2_vec),
+                                Series::new("pos2", pos2_vec),
+                                Series::new("strand1", strand1_vec),
+                                Series::new("strand2", strand2_vec),
+                                Series::new("mapq", mapq_vec),
+                            ]).unwrap();
+        
+                            let mut df = df.lazy().with_column(
+                                col("read_idx").cast(DataType::String)
+                            ).with_column(
+                                col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).collect().unwrap();
+        
+                            let file = format!("{}/q0/{}.parquet", output, chunk_id);
+                            let mut file = File::create(file).unwrap();
+                            ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+                            
+                            let mut df = df.lazy().filter(
+                                col("mapq").gt_eq(1)
+                            ).collect().unwrap();
+                
+                            let file = format!("{}/q1/{}.parquet", output, chunk_id);
+                            let mut file = File::create(file).unwrap();
+                            ParquetWriter::new(&mut file)
+                                .finish(&mut df)
+                                .unwrap();
+                        }
+                    }))
+                }
+            },
+            _ => {
+                for _ in 0..8 {
+                    let receiver: Receiver<_> = receiver.clone();
+                    let output = output.clone();
+                    handles.push(thread::spawn(move || {
+                        while let Ok((chunk_id, records)) = receiver.recv() {
+                            let mut read_idx_vec: Vec<u64> = Vec::new();
+                            let mut chrom1_vec: Vec<String> = Vec::new();
+                            let mut pos1_vec: Vec<u64> = Vec::new();
+                            let mut chrom2_vec: Vec<String> = Vec::new();
+                            let mut pos2_vec: Vec<u64> = Vec::new();
+                            let mut strand1_vec: Vec<String> = Vec::new();
+                            let mut strand2_vec: Vec<String> = Vec::new();
+                            let mut mapq_vec: Vec<u8> = Vec::new();
+                            let mut read_idx = 0;
+                            for mut concatemer in records {
+                                concatemer.sort();
+                                for pair in concatemer.decompose() {
+                                    let (record1, record2) = (pair[0], pair[1]);
+                                    read_idx_vec.push(read_idx);
+                                    chrom1_vec.push(record1.target.clone());
+                                    pos1_vec.push(record1.target_start + record1.target_end / 2);
+                                    chrom2_vec.push(record2.target.clone());
+                                    pos2_vec.push(record2.target_start + record2.target_end / 2);
+                                    strand1_vec.push(record1.query_strand.to_string());
+                                    strand2_vec.push(record2.query_strand.to_string());
+                                    mapq_vec.push(std::cmp::min(record1.mapq, record2.mapq));
+                                    
+                                    read_idx += 1;
+                                }
+        
+                            }
+        
+                            let df = DataFrame::new(vec![
+                                Series::new("read_idx", read_idx_vec),
+                                Series::new("chrom1", chrom1_vec),
+                                Series::new("pos1", pos1_vec),
+                                Series::new("chrom2", chrom2_vec),
+                                Series::new("pos2", pos2_vec),
+                                Series::new("strand1", strand1_vec),
+                                Series::new("strand2", strand2_vec),
+                                Series::new("mapq", mapq_vec),
+                            ]).unwrap();
+        
+                            let mut df = df.lazy().with_column(
+                                col("read_idx").cast(DataType::String)
+                            ).with_column(
+                                col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).with_column(
+                                col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                            ).collect().unwrap();
+        
+                            let file = format!("{}/q0/{}.parquet", output, chunk_id);
+                            let mut file = File::create(file).unwrap();
+                            ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+                            
+                            let mut df = df.lazy().filter(
+                                col("mapq").gt_eq(1)
+                            ).collect().unwrap();
+                
+                           
+                            let file = format!("{}/q1/{}.parquet", output, chunk_id);
+                            let mut file = File::create(file).unwrap();
+                            ParquetWriter::new(&mut file)
+                                .finish(&mut df)
+                                .unwrap();
+                        }
+                    }))
+                }
+            }
+        }
+        
+        
+        let mut concatemer: Concatemer = Concatemer::new();
+        let mut batch = Vec::with_capacity(chunksize);
+        let mut first_iteration = true;
+        let mut previous_read_idx: u64 = 0;
+        let mut record_count = 0;
+        let mut chunk_id = 0 as usize;
+        let mut line_count = 0;
+        let mut total_pair_count = 0;   
+        for (i, line) in rdr.deserialize().enumerate() {
+            let record: PoreCRecord = match line {
+                Ok(v) => v,
+                Err(error) => {
+                    log::warn!("Could not parse line {}", i + 1);
+                    continue
+                },
+            }; 
+            
+            if !first_iteration && record.read_idx != previous_read_idx {
+                let order = concatemer.count();
+                if (order < max_order) && (order >= min_order) {
+                    concatemer_summary.count(&concatemer);
+                    batch.push(std::mem::take(&mut concatemer));
+                    
+                    record_count += order * (order - 1) / 2;
+                } else {
+                    concatemer.clear();
+                }
+                
+            }
+            first_iteration = false;
+            previous_read_idx = record.read_idx;
+            
+            if record.mapq < min_quality {
+                continue
+            }
+            line_count += 1;
+            concatemer.push(record); 
+            if record_count >= chunksize{
+                total_pair_count += record_count;
+                sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
+                record_count = 0;
+                chunk_id += 1;
+                line_count = 0;
+            }
+            
+        }
+        
+        if !batch.is_empty() {
+            sender.send((chunk_id, batch)).unwrap();
+        }
+        
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    
+        log::info!("Processed total {} lines", line_count);
+        log::info!("Generated total {} pairs", total_pair_count);
+        log::info!("Successful output pairs `{}`", output);
+        
+        let output_prefix = if output == "-" {
+            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+        } else {
+            Path::new(&output).with_extension("").to_str().unwrap().to_string()
+        };
+
+        concatemer_summary.save(&format!("{}.concatemer.summary", output_prefix));
+
+        Ok(())
+
+    }
 
     pub fn to_pairs(&self, chromsizes: &String, output: &String, min_quality: u8, 
                         min_order: usize, max_order: usize,
@@ -375,8 +662,7 @@ impl PoreCTable {
                         wtr.serialize(PairRecord::from_pore_c_pair(pair, read_id)).unwrap();
                         read_id += 1;
                     }
-                    
-                    
+                      
                 }
                 
                 concatemer.clear();
@@ -779,6 +1065,18 @@ impl PoreCTable {
             }
         }
         
+    }
+
+    pub fn split(&mut self, output: &String) {
+        let reader = common_reader(&self.file);
+        let mut wtr = common_writer(output);
+        
+        let (sender, receiver) = bounded::<Vec<(u32, String)>>(100);   
+
+
+
+
+        log::info!("Successful output split porec table into `{}`", output);
     }
 }
 

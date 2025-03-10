@@ -25,7 +25,7 @@ use std::hash::{ Hash, Hasher };
 use std::path::Path;
 use std::thread;
 use std::sync::{ Arc, Mutex};
-use std::io::{ Write, BufReader, BufRead, Read };
+use std::io::{ Write, BufReader, BufRead, Read, Cursor };
 use serde::{ Deserialize, Serialize};
 use smallvec::{ smallvec, SmallVec };
 use rayon::prelude::*;
@@ -2176,122 +2176,161 @@ impl Pairs {
         
     }
 
+    pub fn to_pqs(&mut self, chunksize: usize, output: &String) {
+        use polars::prelude::*;
+        use crate::pqs::_README as _readme; 
+        use crate::pqs::_METADATA;
+        let parse_result = self.parse2();
 
-    // pub fn to_parquet(&mut self, outdir: &String) {
-    //     use polars::prelude::*;
+        
+
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+
+        let pair_header = self.header.clone().to_string();
+
+        let contigsizes = &self.header.chromsizes;
+
+        let max_contig_size = contigsizes.iter().map(|x| x.size).max().unwrap();
+        
+        let pos_dtype = match max_contig_size {
+            0..=4294967295 => DataType::UInt32,
+            _ => DataType::UInt64,
+        };
+
+        let pos_dtype_string = match max_contig_size {
+            0..=4294967295 => "UInt32",
+            _ => "UInt64",
+        };
 
 
-    //     log::warn!("This function is not implemented yet.");
-    //     let chunksize = 1000_000;
-    //     let parse_result = self.parse2();
-    //     let rdr = match parse_result {
-    //         Ok(r) => r,
-    //         Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
-    //     };
+        let _ = std::fs::create_dir_all(output);
+        let _ = std::fs::create_dir_all(format!("{}/q0", output));
+        let _ = std::fs::create_dir_all(format!("{}/q1", output));
 
-    //     // mkdir -p outdir
-    //     let _ = std::fs::create_dir_all(outdir);
-    //     // mkdir -p q0 q1 
-    //     let _ = std::fs::create_dir_all(format!("{}/q0", outdir));
-    //     let _ = std::fs::create_dir_all(format!("{}/q1", outdir));
 
-    //     let (sender, receiver) = bounded(100);
-    //     let chunk_id = Arc::new(Mutex::new(1));
+        let mut wtr = common_writer(format!("{}/_contigsizes", output).as_str());
+        for record in contigsizes {
+            writeln!(wtr, "{}", record).unwrap();
+        }
+        wtr.flush().unwrap();   
 
-    //     let producer_handle = thread::spawn(move || {
-    //         for record in rdr.lines() {
-    //             let record = record.unwrap();
-    //             if !record.starts_with("#") {
-    //                 sender.send(record).unwrap();
-    //             }
-    //         }
-    //     });
+        let create_date_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut wtr = common_writer(format!("{}/_metadata", output).as_str());
+        let mut _metadata = _METADATA.to_string();
+        _metadata = _metadata.replace("REPLACE", &create_date_time);
+        _metadata = _metadata.replace("CHUNKSIZE", &chunksize.to_string());
+        _metadata = _metadata.replace("pos_type_lower", pos_dtype_string.to_lowercase().as_str());
+        _metadata = _metadata.replace("pos_type", pos_dtype_string);
+        writeln!(wtr, "{}", _metadata).unwrap();
+        wtr.flush().unwrap();
+        
+        let mut wtr = common_writer(format!("{}/_readme", output).as_str());
+        writeln!(wtr, "{}", _readme).unwrap();
+        wtr.flush().unwrap();
 
-    //     let consumer_handles: Vec<_> = (0..8).map(|_| {
-    //         let receiver = receiver.clone();
-    //         let chunk_id = Arc::clone(&chunk_id);
-    //         let outdir = outdir.to_string();
-    //         thread::spawn(move || {
-    //             let mut read_id = Vec::new();
-    //             let mut chrom1 = Vec::new();
-    //             let mut pos1 = Vec::new();
-    //             let mut chrom2 = Vec::new();
-    //             let mut pos2 = Vec::new();
-    //             let mut strand1 = Vec::new();
-    //             let mut strand2 = Vec::new();
-    //             let mut mapq = Vec::new();
-    
-    //             for record in receiver.iter() {
-    //                 let mut fields = record.split('\t');
-    //                 read_id.push(fields.next().unwrap().to_string());
-    //                 chrom1.push(fields.next().unwrap().to_string());
-    //                 pos1.push(fields.next().unwrap().parse::<u32>().unwrap());
-    //                 chrom2.push(fields.next().unwrap().to_string());
-    //                 pos2.push(fields.next().unwrap().parse::<u32>().unwrap());
-    //                 strand1.push(fields.next().unwrap().to_string());
-    //                 strand2.push(fields.next().unwrap().to_string());
-    //                 if let Some(mapq_field) = fields.next() {
-    //                     mapq.push(mapq_field.parse::<i8>().unwrap());
-    //                 } else {
-    //                     mapq.push(60);
-    //                 }
-    //                 if read_id.len() >= chunksize {
-    //                     let mut chunk_id = chunk_id.lock().unwrap();
-    //                     let mut file = File::create(format!("{}/q0/{}.q0.pq", outdir, *chunk_id)).unwrap();
-    //                     let mut df = DataFrame::new(vec![
-    //                         Series::new("read_id", read_id.drain(..)),
-    //                         Series::new("chrom1", chrom1.drain(..)),
-    //                         Series::new("pos1", pos1.drain(..)),
-    //                         Series::new("chrom2", chrom2.drain(..)),
-    //                         Series::new("pos2", pos2.drain(..)),
-    //                         Series::new("strand1", strand1.drain(..)),
-    //                         Series::new("strand2", strand2.drain(..)),
-    //                         Series::new("mapq", mapq.drain(..)),
-    //                     ]).unwrap();
-    //                     ParquetWriter::new(&mut file).finish(&mut df).unwrap();
-    
-    // //                     let mut filtered_df = df.clone().lazy().filter(col("mapq").gt_eq(1)).collect().unwrap();
-    //                     let mask = df.column("mapq").unwrap().gt_eq(1).unwrap();
-    //                     let mut filtered_df = df.filter(&mask).unwrap();
-                       
-    //                     let mut file = File::create(format!("{}/q1/{}.q1.pq", outdir, *chunk_id)).unwrap();
-    //                     ParquetWriter::new(&mut file).finish(&mut filtered_df).unwrap();
-    
-    //                     *chunk_id += 1;
-    //                 }
-    //             }
-    
-    //             if !read_id.is_empty() {
-    //                 let mut chunk_id = chunk_id.lock().unwrap();
-    //                 let mut file = File::create(format!("{}/q0/{}.q0.pq", outdir, *chunk_id)).unwrap();
-    //                 let mut df = DataFrame::new(vec![
-    //                     Series::new("read_id", read_id.drain(..)),
-    //                     Series::new("chrom1", chrom1.drain(..)),
-    //                     Series::new("pos1", pos1.drain(..)),
-    //                     Series::new("chrom2", chrom2.drain(..)),
-    //                     Series::new("pos2", pos2.drain(..)),
-    //                     Series::new("strand1", strand1.drain(..)),
-    //                     Series::new("strand2", strand2.drain(..)),
-    //                     Series::new("mapq", mapq.drain(..)),
-    //                 ]).unwrap();
-    //                 ParquetWriter::new(&mut file).finish(&mut df).unwrap();
-    
-    // //                let mut filtered_df = df.clone().lazy().filter(col("mapq").gt_eq(1)).collect().unwrap();
-    //                 let mask = df.column("mapq").unwrap().gt_eq(1).unwrap();
-    //                 let mut filtered_df = df.filter(&mask).unwrap();
-    //                 let mut file = File::create(format!("{}/q1/{}.q1.pq", outdir, *chunk_id)).unwrap();
-    //                 ParquetWriter::new(&mut file).finish(&mut filtered_df).unwrap();
-    //             }
-    //         })
-    //     }).collect();
-    
-    //     producer_handle.join().unwrap();
-    
-    //     for handle in consumer_handles {
-    //         handle.join().unwrap();
-    //     }
 
-    // }
+        let (sender, receiver) = bounded::<Vec<(u32, String)>>(100);   
+
+        let producer_handle = thread::spawn(move || {
+            let mut batch: Vec<(u32, String)> = Vec::with_capacity(chunksize);
+            let mut chunk_id = 0;
+            for record in rdr.lines() {
+                match record {
+                    Ok(record) => {
+                        if record.starts_with("#") {
+                            continue;
+                        }
+                        batch.push((chunk_id, record));
+                        if batch.len() >= chunksize {
+                            sender.send(std::mem::take(&mut batch)).unwrap();
+                            chunk_id += 1;
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("Error: Could not parse record: {:?}", e);
+                        continue;
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                sender.send(batch).unwrap();
+            }
+        });
+
+
+
+        let mut handles = vec![];
+        for _ in 0..8 {
+            let receiver = receiver.clone();
+            let output = output.clone();
+            let pos_dtype = pos_dtype.clone();
+            handles.push(thread::spawn(move || {
+                while let Ok(records) = receiver.recv() {
+                    let (chunk_id, _) = &records.get(0).unwrap();
+                    let _records = records.iter().map(|(_, record)| record.as_str()).collect::<Vec<&str>>();
+         
+                    let reader = Cursor::new(_records.join("\n"));
+                    let mut df = CsvReader::new(reader)
+                        .has_header(false)
+                        .with_comment_prefix(Some("#"))
+                        .with_separator(b'\t')
+                        .truncate_ragged_lines(true)
+                        .finish()
+                        .unwrap()
+                        .lazy()
+                        .select(
+                            vec![
+                                col("column_1").alias("read_id"),
+                                col("column_2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom1"),
+                                col("column_3").cast(pos_dtype.clone()).alias("pos1"),
+                                col("column_4").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom2"),
+                                col("column_5").cast(pos_dtype.clone()).alias("pos2"),
+                                col("column_6").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand1"),
+                                col("column_7").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand2"),
+                                col("column_8").cast(DataType::UInt8).alias("mapq"),
+        
+                            ]
+                        );
+                    
+                
+                    let mut df_collected = match df.clone().collect() {
+                        Ok(df) => df,
+                        Err(e) => {
+                            log::warn!("Error: Could not collect dataframe: {:?}, skipped", e);
+                            continue;
+                        }
+                    };
+                    
+
+                    
+                    {
+                        let mut file = File::create(format!("{}/q0/{}.parquet", output, chunk_id)).unwrap();
+                        ParquetWriter::new(&mut file).finish(&mut df.clone().collect().unwrap()).unwrap();
+                    }
+                    
+
+                    let mut file = File::create(format!("{}/q1/{}.parquet", output, chunk_id)).unwrap();
+                    let mask = df_collected.column("mapq").unwrap().gt_eq(1).unwrap();
+                    let mut df_filtered = df_collected.filter(&mask).unwrap();
+
+                    ParquetWriter::new(&mut file).finish(&mut df_filtered).unwrap();
+ 
+                }
+
+            }));
+        }
+
+        producer_handle.join().unwrap();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+            
+
+    }
 
     pub fn split(&mut self, chunksize: usize) {
         let parse_result = self.parse2();

@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
 use bio::io::fasta::{Reader as FastaReader, Record as FastaRecord, Writer as FastaWriter};
+use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use rust_htslib::bam::{ 
     self,
     record::Aux, record::CigarStringView, 
@@ -10,6 +11,9 @@ use rust_htslib::bam::{
     Header, header::HeaderRecord,
     Writer, ext::BamRecordExtensions};
 use rayon::prelude::*;
+use std::path::{ Path, PathBuf };
+use std::thread;
+use std::sync::{ Arc, Mutex};
 
 use crate::core::{ 
         ChromSizeRecord,
@@ -20,24 +24,85 @@ use crate::pairs::{ Pairs, PairHeader };
 // split bam by record number and write to different files 
 pub fn split_bam(input_bam: &String, output_prefix: &String, 
              record_num: usize) -> Result<(), Box<dyn std::error::Error>> {
+    
+    let mut output_prefix = output_prefix.clone();
+    if output_prefix.ends_with("/") {
+        output_prefix = format!("{}/{}", output_prefix, "split");
+    }
+    let parent = Path::new(&output_prefix).parent().unwrap().to_path_buf();
+    match parent.exists() {
+        true => {},
+        false => {
+            std::fs::create_dir_all(&parent).unwrap();
+        }
+    }
 
-                
+    
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-    let _ = bam.set_threads(8);
+    let _ = bam.set_threads(14);
     let header = Header::from_template(bam.header());
     let mut i = 0;
     let mut j = 0;
-    let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam).unwrap();
-    let _ = wtr.set_threads(8);
-    log::info!("write {} records to {}", record_num, format!("{}_{}.bam", output_prefix, j));
+    // let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam).unwrap();
+    // let _ = wtr.set_threads(8);
+    // log::info!("write {} records to {}", record_num, format!("{}_{}.bam", output_prefix, j));
 
     let mut read_name: Vec<u8> = Vec::new();
     let mut previous_read_name: Vec<u8> = Vec::new();
-    let mut line_num = 0;
+    // let mut line_num = 0;
+    // for r in bam.records() {
+    //     let record = r?;
+    //     read_name.clear();
+    //     read_name.extend_from_slice(record.qname());
+        
+    //     i += 1;
+        
+    //     if i == record_num {
+    //         if read_name != previous_read_name {
+
+    //             j += 1;
+    //             wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam)?;
+    //             let _ = wtr.set_threads(8);
+    //             log::info!("write {} records to {}", line_num, format!("{}_{}.bam", output_prefix, j));
+                
+    //             i = 0;
+    //             line_num = 0;
+    //         } else {
+    //             i -= 1;
+    //         }
+    //     }
+    //     line_num += 1;
+    //     wtr.write(&record)?;
+    //     std::mem::swap(&mut read_name, &mut previous_read_name);
+    // } 
+
+    let (sender, receiver) = bounded::<(usize, Vec<Record>)>(10);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let receiver = receiver.clone();
+        let output_prefix = output_prefix.clone();
+        let header = header.clone();
+        let handle = thread::spawn(move || {
+            while let Ok((chunk_id, records)) = receiver.recv() {
+                let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, chunk_id), &header, bam::Format::Bam).unwrap();
+                let _ = wtr.set_threads(8);
+                let length = records.len();
+                for record in records {
+                    wtr.write(&record).unwrap();
+                }
+                log::info!("write {} records to {}", length, format!("{}_{}.bam", output_prefix, chunk_id));
+            }
+        });
+        handles.push(handle);
+    }
+
+    let mut batch = Vec::with_capacity(record_num + 100);
+    let mut chunk_id: usize = 0;
     for r in bam.records() {
         let record = r?;
         read_name.clear();
@@ -49,23 +114,28 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
             if read_name != previous_read_name {
 
                 j += 1;
-                wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam)?;
-                let _ = wtr.set_threads(8);
-                log::info!("write {} records to {}", line_num, format!("{}_{}.bam", output_prefix, j));
                 
+                sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
+                chunk_id += 1;
+
                 i = 0;
-                line_num = 0;
             } else {
                 i -= 1;
             }
         }
-        line_num += 1;
-        wtr.write(&record)?;
-        std::mem::swap(&mut read_name, &mut previous_read_name);
-    } 
 
-    log::info!("write {} records to {}", i, format!("{}_{}.bam", output_prefix, j));
+        batch.push(record);
+        std::mem::swap(&mut read_name, &mut previous_read_name);
+    }
+    if batch.len() > 0 {
+        sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
+    }
     
+    drop(sender);
+    
+    for handle in handles {
+        handle.join().unwrap();
+    }
 
     Ok(())
 }
@@ -160,6 +230,13 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         chromsizes.push(csr);
     }
 
+    let chromsizes_db: HashMap<String, u64> = chromsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+
+    let tid2name: HashMap<usize, String> = (0..header.target_count()).map(|tid| {
+        let name = header.tid2name(tid);
+        (tid as usize, std::str::from_utf8(name).unwrap().to_string())
+    }).collect();
+
     let _ = bam.set_threads(threads);
     let mut idx = 0;
 
@@ -239,6 +316,145 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         idx += 1;
 
     }
+
+
+    // let (sender, receiver) = bounded::<Vec<Record>>(10);
+    // let wtr = Arc::new(Mutex::new(writer));
+    // let mut handles = Vec::new();
+
+    // for _ in 0..8 {
+    //     let receiver = receiver.clone();
+    //     let chromsizes_db = chromsizes_db.clone();
+    //     let tid2name = tid2name.clone();
+    //     let wtr = Arc::clone(&wtr);
+        
+    //     handles.push(thread::spawn(move || {
+    //         let mut local_data: Vec<String> = Vec::new();
+
+        
+    //         while let Ok(records) = receiver.recv() {
+    //             for record in records {
+
+    //                 // let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+    //                 let chrom = tid2name.get(&record.tid().try_into().unwrap()).unwrap().to_string();
+    //                 let strand = if record.is_reverse() { "-" } else { "+" };
+                    
+    //                 let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
+
+    //                 for cigar in record.cigar().iter() {
+    //                     let len = cigar.len() as i64;
+    //                     match cigar.char() {
+    //                         'M' | '=' | 'X' => {
+    //                             match_length += len;
+    //                             alignment_length += len;
+    //                             if cigar.char() == 'X' {
+    //                                 mm += len;
+    //                             }
+    //                         },
+    //                         'D' => {
+    //                             deletion_length += len;
+    //                             alignment_length += len;
+    //                         },
+    //                         'I' => {
+    //                             insertion_length += len;
+    //                             alignment_length += len;
+    //                         },
+    //                         'N' | 'P' => {
+    //                             alignment_length += len;
+    //                         },
+    //                         _ => {}
+    //                     }
+    //                 }
+
+
+    //                 let nm: i64 = match record.aux(b"NM") {
+    //                     Ok(value) => {
+    //                         match value {
+    //                             Aux::U8(v) => v.try_into().unwrap(),
+    //                             Aux::U16(v) => v.try_into().unwrap(),
+    //                             Aux::U32(v) => v.try_into().unwrap(),
+    //                             Aux::I32(v) => v.try_into().unwrap(),
+    //                             _ => 0, 
+    //                         }
+                            
+    //                     },
+    //                     Err(e) => 0
+    //                 };
+
+    //                 match_length = match_length - (nm - (insertion_length + deletion_length));
+
+
+    //                 let (qstart, qend, qlen) = get_query_start_end(&record);
+                
+    //                 let qname = std::str::from_utf8(record.qname()).unwrap();
+    //                 // let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
+    //                 let tname = tid2name.get(&record.tid().try_into().unwrap()).unwrap();
+    //                 let tlen = chromsizes_db.get(tname).unwrap().clone();
+    //                 // let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
+                    
+    //                 let tstart = record.reference_start();
+    //                 let tend = record.reference_end();
+    //                 let mapq = record.mapq();
+                    
+    //                 local_data.push(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+    //                         qname, qlen, qstart, qend, strand, 
+    //                         tname, tlen, tstart, tend, match_length, alignment_length, mapq));
+    //             }
+    //         }
+
+    //         let mut wtr = wtr.lock().unwrap();
+    //         for line in local_data {
+    //             writeln!(wtr, "{}", line).unwrap();
+    //         }
+    //     }));
+
+    // }
+
+    // let batch_size = 1000;
+    // let mut batch = Vec::with_capacity(batch_size);
+    // let mut read_name: Vec<u8> = Vec::new();
+    // let mut previous_read_name: Vec<u8> = Vec::new();
+    // let mut i = 0;
+    // for r in bam.records() {
+    //     let record = r.unwrap();
+    //     if record.is_unmapped() { 
+    //         continue;
+    //     }
+
+    //     if record.is_secondary() & !is_secondary {
+    //         continue
+    //     }
+
+    //     read_name.clear();
+    //     read_name.extend_from_slice(record.qname());
+    //     i += 1;
+    //     if i == batch_size {
+
+    //         if read_name != previous_read_name {
+    //             sender.send(std::mem::take(&mut batch)).unwrap();
+    //             i = 0
+    //         } else {
+    //             i -= 1;
+    //         }
+    //     }
+
+    //     batch.push(record);
+    //     previous_read_name.clear();
+    //     std::mem::swap(&mut read_name, &mut previous_read_name);
+
+    // }    
+
+    // if batch.len() > 0 {
+    //     sender.send(std::mem::take(&mut batch)).unwrap();
+    // }
+
+    // drop(sender);
+    // for handle in handles {
+    //     handle.join().unwrap();
+    // }
+
+    log::info!("Successfully output paf to {}", output);
+
 }
 
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {

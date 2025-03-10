@@ -42,14 +42,24 @@ mod tests {
         
     // }
 
+    // #[test]
+    // fn test_collapse() {
+    //     let mut pairs = Pairs::new(&String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/B9_all_porec_reads.corrected.pairs.gz"));
+    //     let collapsed_list = String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/tour/asm.collapsed.contig.list");
+
+    //     println!("{}", pairs.file_name());
+    //     pairs.dup(&collapsed_list, 123,& String::from("-"));
+
+    // }
+
     #[test]
-    fn test_collapse() {
-        let mut pairs = Pairs::new(&String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/B9_all_porec_reads.corrected.pairs.gz"));
-        let collapsed_list = String::from("/data3/wangyb/0.CPhasing/5.collapsed/B9/tour/asm.collapsed.contig.list");
-
-        println!("{}", pairs.file_name());
-        pairs.dup(&collapsed_list, 123,& String::from("-"));
-
+    fn test_to_pqs() {
+        let mut pairs = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.gz");
+        let mut output = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.rust.pqs");
+        let chunksize = 1000000 as usize;
+        let mut pairs = Pairs::new(&pairs);
+        
+        let _ = pairs.to_pqs(chunksize, &output);
     }
 
 }
