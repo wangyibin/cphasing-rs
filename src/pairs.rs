@@ -2183,7 +2183,6 @@ impl Pairs {
         let parse_result = self.parse2();
 
         
-
         let mut rdr = match parse_result {
             Ok(r) => r,
             Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
@@ -2283,7 +2282,7 @@ impl Pairs {
                         .lazy()
                         .select(
                             vec![
-                                col("column_1").alias("read_id"),
+                                col("column_1").alias("read_idx"),
                                 col("column_2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom1"),
                                 col("column_3").cast(pos_dtype.clone()).alias("pos1"),
                                 col("column_4").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom2"),

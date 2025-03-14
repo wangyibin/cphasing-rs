@@ -584,13 +584,14 @@ impl PQS {
     
 
     pub fn to_mnd(&self, min_quality: u8, output: &String) -> anyResult<()> {
+        enable_string_cache();
         std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
         let min_mapq = min_quality as u32;
         // get prefix of parquet_dir
         let output_prefix = if output.ends_with(".gz") {
-            output.trim_end_matches(".gz").trim_end_matches(".clm").to_string()
+            output.trim_end_matches(".gz").to_string()
         } else {
-            output.trim_end_matches(".clm").to_string()
+            output.to_string()
         };
 
         let files = if min_mapq == 0 {
@@ -605,21 +606,18 @@ impl PQS {
 
             if min_mapq > 1 {
                 df = df.clone().filter(col("mapq").gt_eq(min_mapq));
-                
             }
-           
-          
-
+        
             let result = df.select(
                 &[
-                    lit(1i32).alias("strand1"),
+                    lit(0i32).alias("strand1"),
                     col("chrom1"),
                     col("pos1"),
                     lit(0u32).alias("frag1"),
-                    lit(1i32).alias("strand2"),
+                    lit(0i32).alias("strand2"),
                     col("chrom2"),
                     col("pos2"),
-                    lit(0u32).alias("frag2"),
+                    lit(1u32).alias("frag2"),
                     col("mapq").alias("mapq1"),
                     lit("-").alias("cigar1"),
                     lit("-").alias("sequence1"),
@@ -634,17 +632,19 @@ impl PQS {
         }).collect::<Vec<_>>();
 
         let mut file = File::create(output.as_str()).unwrap();
-        let mut df = results.remove(0).collect().unwrap();
-        CsvWriter::new(&mut file)
-            .include_header(false)
-            .with_separator(b' ')
-            .finish(&mut df)
-            .unwrap();
-       
 
-        for i in 1..results.len() {
+        if !results.is_empty() {
+            let mut df = results[0].clone().collect().unwrap();
+            CsvWriter::new(&mut file)
+                .include_header(false)
+                .with_separator(b' ')
+                .finish(&mut df)
+                .unwrap();
+        }
+
+        for result in results.iter().skip(1) {
             let mut file = OpenOptions::new().append(true).open(output.as_str()).unwrap();
-            let mut df = results.remove(0).collect().unwrap();
+            let mut df = result.clone().collect().unwrap();
             CsvWriter::new(&mut file)
                 .include_header(false)
                 .with_separator(b' ')
@@ -1201,11 +1201,31 @@ impl PQS {
                         if let (Some((new_chrom1, new_pos1)), Some((new_chrom2, new_pos2))) = (new1, new2) {
                             
                             if new_chrom1 <= new_chrom2 {
+                                if let Some(read_idx) = read_idx {
+                                    read_id_vec.push(read_idx.clone());
+                                }
+
+                                if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
+                                    strand1_vec.push(rev_map3.get(*strand1));
+                                    strand2_vec.push(rev_map4.get(*strand2));
+                                    mapq_vec.push(mapq.clone());
+                                }
+
                                 chrom1_vec.push(new_chrom1);
                                 pos1_vec.push(new_pos1);
                                 chrom2_vec.push(new_chrom2);
                                 pos2_vec.push(new_pos2);
                             } else {
+                                if let Some(read_idx) = read_idx {
+                                    read_id_vec.push(read_idx.clone());
+                                }
+                                
+                                if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
+                                    strand1_vec.push(rev_map3.get(*strand1));
+                                    strand2_vec.push(rev_map4.get(*strand2));
+                                    mapq_vec.push(mapq.clone());
+                                }
+
                                 chrom1_vec.push(new_chrom2);
                                 pos1_vec.push(new_pos2);
                                 chrom2_vec.push(new_chrom1);
@@ -1213,20 +1233,8 @@ impl PQS {
                             }
                             
                            
-                        } else {
-                            continue
-                        }
+                        } 
                         
-                        if let Some(read_idx) = read_idx {
-                                read_id_vec.push(read_idx.clone());
-                        }
-
-                        if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
-                            strand1_vec.push(rev_map3.get(*strand1));
-                            strand2_vec.push(rev_map4.get(*strand2));
-                            mapq_vec.push(mapq.clone());
-                        }
-
                         data.push(false);
                     } else {
                         data.push(true);
