@@ -3,6 +3,7 @@ use anyhow::Result as anyResult;
 
 use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use log::LevelFilter;
+use rand::prelude::*;
 use std::collections::{ BTreeMap, HashMap, HashSet };
 use std::hash::BuildHasherDefault;
 use std::borrow::Cow;
@@ -154,7 +155,7 @@ impl PQS {
 
         std::env::set_var("POLARS_MAX_THREADS", format!("{}", threads));
         let min_mapq = min_quality as u32;
-        // get prefix of parquet_dir
+    
         let output_prefix = if output.ends_with(".gz") {
             output.trim_end_matches(".gz").trim_end_matches(".clm").to_string()
         } else {
@@ -187,35 +188,12 @@ impl PQS {
         let idx_contig_sizes: HashMap<u32, (String, u32), BuildHasherDefault<XxHash64>> = 
                 contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), (k.clone(), v.clone()))).collect();
 
-        let (sender, receiver) = bounded(100);
+        let (sender, receiver) = bounded::<LazyFrame>(100);
         let data = Arc::new(Mutex::new(HashMap::new()));
 
-        let producer_handles: Vec<_> = files.into_par_iter().map(|file| {
-            let sender = sender.clone();
-            thread::spawn(move || {
-                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
-                    Ok(df) => df,
-                    Err(e) => {
-                        log::warn!("Empty file: {:?}", file);
-                        return;
-                    }
-                };
-    
-                let df = if min_mapq > 1 {
-                    df.filter(col("mapq").gt_eq(min_mapq))
-                } else {
-                    df
-                };
-    
-                let result = df.group_by(["chrom1", "chrom2"])
-                    .agg(&[col("pos1"), col("pos2")]);
-    
-                sender.send(result).unwrap();
-            })
-        }).collect();
 
         let consumer_handles: Vec<_> = (0..8).map(|_| {
-            let receiver = receiver.clone();
+            let receiver: Receiver<_> = receiver.clone();
             let data = Arc::clone(&data);
             let contig_idx = contig_idx.clone();
 
@@ -382,9 +360,32 @@ impl PQS {
             })
         }).collect();
 
-        for handle in producer_handles {
-            handle.join().unwrap();
+        // for handle in producer_handles {
+        //     handle.join().unwrap();
+        // }
+
+        for file in files.into_iter() {
+
+            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                Ok(df) => df,
+                Err(e) => {
+                    log::warn!("Empty file: {:?}", file);
+                    continue
+                }
+            };
+
+            let df = if min_mapq > 1 {
+                df.filter(col("mapq").gt_eq(min_mapq))
+            } else {
+                df
+            };
+
+            let result = df.group_by(["chrom1", "chrom2"])
+                .agg(&[col("pos1"), col("pos2")]);
+
+            sender.send(result).unwrap();
         }
+
     
         drop(sender);
 
@@ -575,8 +576,8 @@ impl PQS {
 
         log::info!("Successful output clm file `{}`", output);
 
-        let mut wtr = wtr.lock().unwrap();
-        wtr.flush().unwrap();
+        // let mut wtr = wtr.lock().unwrap();
+        // wtr.flush().unwrap();
 
         Ok(())
     }
@@ -689,55 +690,10 @@ impl PQS {
         let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
         let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
 
-        let (sender, receiver) = bounded(100);
+        let (sender, receiver) = bounded::<LazyFrame>(100);
         let data = Arc::new(Mutex::new(HashMap::new()));
 
-        let producer_handles: Vec<_> = files.into_iter().map(|file| {
-            let sender = sender.clone();
-            thread::spawn(move || {
-                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
-                    Ok(df) => df,
-                    Err(e) => {
-                        log::warn!("Empty file: {:?}", file);
-                        return;
-                    }
-                };
-    
-                let df = if min_mapq > 1 {
-                    df.filter(col("mapq").gt_eq(min_mapq))
-                } else {
-                    df
-                };
-    
-                let result = df.group_by(["chrom1", "chrom2"])
-                    .agg(&[col("pos1"), col("pos2")])
-                    .with_column(
-                        col("pos1").arr().0.apply(
-                            |s| {
-                                let ca = s.list().unwrap();
-                                let mut vec = Vec::with_capacity(ca.len());
-                                for i in 0..ca.len() {
-                                    let val = ca.get(i).unwrap();
-                                    
-                                    vec.push(val.len() as u32);
-                                }
-                                
-
-                                Ok(Some(Series::new("count1", vec)))
-                            },
-                            GetOutput::from_type(DataType::UInt32)
-                        ).alias("count")
-                    ).select(
-                        &[
-                            col("chrom1"),
-                            col("chrom2"),
-                            col("count")
-                        ]
-                    );
-    
-                sender.send(result).unwrap();
-            })
-        }).collect();
+       
 
         let consumer_handles: Vec<_> = (0..8).map(|_| {
             let receiver = receiver.clone();
@@ -796,10 +752,56 @@ impl PQS {
         }).collect();
 
 
-        for handle in producer_handles {
-            handle.join().unwrap();
+        // for handle in producer_handles {
+        //     handle.join().unwrap();
+        // }
+        
+       
+        for file in files.into_iter() {
+            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                Ok(df) => df,
+                Err(e) => {
+                    log::warn!("Empty file: {:?}", file);
+                    continue
+                }
+            };
+
+            let df = if min_mapq > 1 {
+                df.filter(col("mapq").gt_eq(min_mapq))
+            } else {
+                df
+            };
+
+            let result = df.group_by(["chrom1", "chrom2"])
+                .agg(&[col("pos1"), col("pos2")])
+                .with_column(
+                    col("pos1").arr().0.apply(
+                        |s| {
+                            let ca = s.list().unwrap();
+                            let mut vec = Vec::with_capacity(ca.len());
+                            for i in 0..ca.len() {
+                                let val = ca.get(i).unwrap();
+                                
+                                vec.push(val.len() as u32);
+                            }
+                            
+
+                            Ok(Some(Series::new("count1", vec)))
+                        },
+                        GetOutput::from_type(DataType::UInt32)
+                    ).alias("count")
+                ).select(
+                    &[
+                        col("chrom1"),
+                        col("chrom2"),
+                        col("count")
+                    ]
+                );
+
+            sender.send(result).unwrap();
+
         }
-    
+
         drop(sender);
 
         for handle in consumer_handles {
@@ -831,7 +833,7 @@ impl PQS {
         use hashbrown::HashMap;
         std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
         let min_mapq = min_quality as u32;
-        let files = if min_mapq == 0 {
+        let mut files = if min_mapq == 0 {
             collect_parquet_files(format!("{}/q0", self.file).as_str())
         } else {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
@@ -853,38 +855,9 @@ impl PQS {
         let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
 
 
-        let (sender, receiver) = bounded(100);
+        let (sender, receiver) = bounded::<LazyFrame>(100);
         let data = Arc::new(Mutex::new(HashMap::new()));
 
-        let producer_handles: Vec<_> = files.into_iter().map(|file| {
-            let sender = sender.clone();
-            thread::spawn(move || {
-                let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
-                    Ok(df) => df,
-                    Err(e) => {
-                        log::warn!("Empty file: {:?}", file);
-                        return;
-                    }
-                };
-    
-                let df = if min_mapq > 1 {
-                    df.filter(col("mapq").gt_eq(min_mapq))
-                } else {
-                    df
-                };
-    
-                let result = df.with_column(
-                        col("pos1") / binsize.into()
-                    )
-                    .with_column(
-                        col("pos2") / binsize.into()
-                    )
-                    .group_by(["chrom1", "chrom2"])
-                    .agg(&[col("pos1"), col("pos2")]);
-    
-                sender.send(result).unwrap();
-            })
-        }).collect();
 
         let consumer_handles: Vec<_> = (0..8).map(|_| {
             let receiver = receiver.clone();
@@ -958,8 +931,38 @@ impl PQS {
         }).collect();
 
 
-        for handle in producer_handles {
-            handle.join().unwrap();
+        // for handle in producer_handles {
+
+        //     handle.join().unwrap();
+            
+        // }
+
+        for file in files.into_iter() {
+            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                Ok(df) => df,
+                Err(e) => {
+                    log::warn!("Empty file: {:?}", file);
+                    continue
+                }
+            };
+
+            let df = if min_mapq > 1 {
+                df.filter(col("mapq").gt_eq(min_mapq))
+            } else {
+                df
+            };
+
+            let result = df.with_column(
+                    col("pos1") / binsize.into()
+                )
+                .with_column(
+                    col("pos2") / binsize.into()
+                )
+                .group_by(["chrom1", "chrom2"])
+                .agg(&[col("pos1"), col("pos2")]);
+
+            sender.send(result).unwrap();
+     
         }
     
         drop(sender);
@@ -1023,12 +1026,14 @@ impl PQS {
     }
 
     pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
-        enable_string_cache();
+        // enable_string_cache();
         type IvString = Interval<usize, String>;
 
         let bed = Bed4::new(break_bed);
         let interval_hash = bed.to_interval_hash();
-        
+        let breaked_contigs = interval_hash.keys().map(|x| x.clone()).collect::<Vec<String>>();
+        let breaked_series = Series::new("contig", breaked_contigs);
+
 
         let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
 
@@ -1074,233 +1079,273 @@ impl PQS {
             writer.write_all(buffer.as_bytes()).unwrap();
         }
 
+        let _ = writer.flush();
+
         let output_q_dir = format!("{}/q0", output);
         let copy_q_dir = format!("{}/q1", output);
 
-        let results = files.into_par_iter().for_each(|file| {
+
+        let results = files.chunks(500).for_each(|file_chunk| { file_chunk.into_par_iter().for_each(|file| {
             let df = LazyFrame::scan_parquet(file.clone(),  
-                    ScanArgsParquet::default()).unwrap();
+                        ScanArgsParquet::default()).unwrap();
             
-            let df = df.collect().unwrap();
+            let mut df = df.collect().unwrap();
+            
+            let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+            let rev_map1 = cat_col1.get_rev_map();
 
-            let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
-            let rev_map1 = cat_col.get_rev_map();
-
-            let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
-            let rev_map2 = cat_col.get_rev_map();
-
+            let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+            let rev_map2 = cat_col2.get_rev_map();
+          
             let cat_col = df.column("strand1").unwrap().categorical().unwrap();
             let rev_map3 = cat_col.get_rev_map();
 
             let cat_col = df.column("strand2").unwrap().categorical().unwrap();
             let rev_map4 = cat_col.get_rev_map();
 
-            let nrows = df.height();
-
-            let mut data: Vec<bool> = Vec::new();
+            let phys_map1 = cat_col1.physical();
+            let phys_map2 = cat_col2.physical();
             
-            let mut chrom1_vec = Vec::new();
-            let mut chrom2_vec = Vec::new();
-            let mut pos1_vec = Vec::new();
-            let mut pos2_vec = Vec::new();
-            let mut read_id_vec = Vec::new();
-            let mut strand1_vec = Vec::new();
-            let mut strand2_vec = Vec::new();
-            let mut mapq_vec = Vec::new();
+            let mask1 = phys_map1.iter().map(|x| {
+                let chrom = rev_map1.get(x.unwrap());
+                interval_hash.contains_key(chrom)
+            }).collect::<Vec<_>>();
+            
+            let mask2 = phys_map2.iter().map(|x| {
+                let chrom = rev_map2.get(x.unwrap());
+                interval_hash.contains_key(chrom)
+            }).collect::<Vec<_>>();
 
-            for idx in 0..nrows {
-                let row = df.get(idx).unwrap();
-                
-                let chrom1 = match row.get(1) {
-                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                    _ => None
-                };
+            let mask = mask1.iter().zip(mask2.iter()).map(|(x, y)| *x && *y).collect::<Vec<_>>();
+            let is_filter = mask.iter().all(|x| !x);
+            if mask.iter().all(|x| !x) {
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let new_file = format!("{}/{}", output_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
 
-                let chrom2 = match row.get(3) {
-                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                    _ => None
-                };
+                let mut df = df.lazy().filter(
+                    col("mapq").gt_eq(1)
+                ).collect().unwrap();
 
-                let pos1 = match row.get(2) {
-                    Some(AnyValue::UInt32(v)) => Some(v),
-                    _ => None
-                };
-                
-                let pos2 = match row.get(4) {
-                    Some(AnyValue::UInt32(v)) => Some(v),
-                    _ => None
-                };
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let new_file = format!("{}/{}", copy_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
+            } else {
+                let nrows = df.height();
 
-               
-        
-                if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
-                    let chrom1 = rev_map1.get(*chrom1);
-                    let chrom2 = rev_map2.get(*chrom2);
-                    let pos1 = *pos1 as usize;
-                    let pos2 = *pos2 as usize;
+                let mut data: Vec<bool> = Vec::new();
+            
+                let mut chrom1_vec = Vec::new();
+                let mut chrom2_vec = Vec::new();
+                let mut pos1_vec = Vec::new();
+                let mut pos2_vec = Vec::new();
+                let mut read_id_vec = Vec::new();
+                let mut strand1_vec = Vec::new();
+                let mut strand2_vec = Vec::new();
+                let mut mapq_vec = Vec::new();
 
-                    let is_break_contig1 = interval_hash.contains_key(chrom1);
-                    let is_break_contig2 = interval_hash.contains_key(chrom2);
 
-                    if is_break_contig1 || is_break_contig2 {
-                        
-                        let strand1 = match row.get(5) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None
-                        };
-        
-                        let strand2 = match row.get(6) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None
-                        };
-        
-                        let mapq = match row.get(7) {
-                            Some(AnyValue::UInt8(v)) => Some(v),
-                            _ => None
-                        };
-
-                        let read_idx = match row.get(0) {
-                            Some(AnyValue::String(v)) => Some(v),
-                            _ => None
-                        };
-                        
-                        let pos1 = pos1 as usize;
-                        let pos2 = pos2 as usize;
-
-                        let new1 = match is_break_contig1 {
-                            true => {
-                                let interval = interval_hash.get(chrom1).unwrap();
-                                let res = interval.find(pos1, pos1 + 1).collect::<Vec<_>>();
-                                if res.len() > 0 {
-                                    let new_pos = pos1 - res[0].start + 1;
-                                    let new_chrom = res[0].val.clone();
-                                    Some((new_chrom, new_pos as u32))
-                                } else {
-                                    None
-                                }
-                            },
-                            false => Some((chrom1.to_owned(), pos1 as u32))
-                        };
-
-                        let new2 = match is_break_contig2 {
-                            true => {
-                                let interval = interval_hash.get(chrom2).unwrap();
-                                let res = interval.find(pos2, pos2 + 1).collect::<Vec<_>>();
-                                if res.len() > 0 {
-                                    let new_pos = pos2 - res[0].start + 1;
-                                    let new_chrom = res[0].val.clone();
-                                    Some((new_chrom, new_pos as u32 ))
-                                } else {
-                                    None
-                                }
-                               
-                            },
-                            false => Some((chrom2.to_owned(), pos2 as u32))
-                        };
+                for idx in 0..nrows {
+                    let row = df.get(idx).unwrap();
                     
-                        if let (Some((new_chrom1, new_pos1)), Some((new_chrom2, new_pos2))) = (new1, new2) {
+                    let chrom1 = match row.get(1) {
+                        Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                        _ => None
+                    };
+
+                    let chrom2 = match row.get(3) {
+                        Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                        _ => None
+                    };
+
+                    let pos1 = match row.get(2) {
+                        Some(AnyValue::UInt32(v)) => Some(v),
+                        _ => None
+                    };
+                    
+                    let pos2 = match row.get(4) {
+                        Some(AnyValue::UInt32(v)) => Some(v),
+                        _ => None
+                    };
+
+                    if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                        let chrom1 = rev_map1.get(*chrom1);
+                        let chrom2 = rev_map2.get(*chrom2);
+                        let pos1 = *pos1 as usize;
+                        let pos2 = *pos2 as usize;
+
+                        let is_break_contig1 = interval_hash.contains_key(chrom1);
+                        let is_break_contig2 = interval_hash.contains_key(chrom2);
+
+                        if is_break_contig1 || is_break_contig2 {
                             
-                            if new_chrom1 <= new_chrom2 {
-                                if let Some(read_idx) = read_idx {
-                                    read_id_vec.push(read_idx.clone());
-                                }
+                            let strand1 = match row.get(5) {
+                                Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                                _ => None
+                            };
+            
+                            let strand2 = match row.get(6) {
+                                Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                                _ => None
+                            };
+            
+                            let mapq = match row.get(7) {
+                                Some(AnyValue::UInt8(v)) => Some(v),
+                                _ => None
+                            };
 
-                                if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
-                                    strand1_vec.push(rev_map3.get(*strand1));
-                                    strand2_vec.push(rev_map4.get(*strand2));
-                                    mapq_vec.push(mapq.clone());
-                                }
+                            let read_idx = match row.get(0) {
+                                Some(AnyValue::String(v)) => Some(v),
+                                _ => None
+                            };
+                            
+                            let pos1 = pos1 as usize;
+                            let pos2 = pos2 as usize;
 
-                                chrom1_vec.push(new_chrom1);
-                                pos1_vec.push(new_pos1);
-                                chrom2_vec.push(new_chrom2);
-                                pos2_vec.push(new_pos2);
-                            } else {
-                                if let Some(read_idx) = read_idx {
-                                    read_id_vec.push(read_idx.clone());
+                            let new1 = match is_break_contig1 {
+                                true => {
+                                    let interval = interval_hash.get(chrom1).unwrap();
+                                    let res = interval.find(pos1, pos1 + 1).collect::<Vec<_>>();
+                                    if res.len() > 0 {
+                                        let new_pos = pos1 - res[0].start + 1;
+                                        let new_chrom = res[0].val.clone();
+                                        Some((new_chrom, new_pos as u32))
+                                    } else {
+                                        None
+                                    }
+                                },
+                                false => Some((chrom1.to_owned(), pos1 as u32))
+                            };
+
+                            let new2 = match is_break_contig2 {
+                                true => {
+                                    let interval = interval_hash.get(chrom2).unwrap();
+                                    let res = interval.find(pos2, pos2 + 1).collect::<Vec<_>>();
+                                    if res.len() > 0 {
+                                        let new_pos = pos2 - res[0].start + 1;
+                                        let new_chrom = res[0].val.clone();
+                                        Some((new_chrom, new_pos as u32 ))
+                                    } else {
+                                        None
+                                    }
+                                
+                                },
+                                false => Some((chrom2.to_owned(), pos2 as u32))
+                            };
+                        
+                            if let (Some((new_chrom1, new_pos1)), Some((new_chrom2, new_pos2))) = (new1, new2) {
+                                
+                                if new_chrom1 <= new_chrom2 {
+                                    if let Some(read_idx) = read_idx {
+                                        read_id_vec.push(read_idx.clone());
+                                    }
+
+                                    if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
+                                        strand1_vec.push(rev_map3.get(*strand1));
+                                        strand2_vec.push(rev_map4.get(*strand2));
+                                        mapq_vec.push(mapq.clone());
+                                    }
+
+                                    chrom1_vec.push(new_chrom1);
+                                    pos1_vec.push(new_pos1);
+                                    chrom2_vec.push(new_chrom2);
+                                    pos2_vec.push(new_pos2);
+                                } else {
+                                    if let Some(read_idx) = read_idx {
+                                        read_id_vec.push(read_idx.clone());
+                                    }
+                                    
+                                    if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
+                                        strand1_vec.push(rev_map3.get(*strand1));
+                                        strand2_vec.push(rev_map4.get(*strand2));
+                                        mapq_vec.push(mapq.clone());
+                                    }
+
+                                    chrom1_vec.push(new_chrom2);
+                                    pos1_vec.push(new_pos2);
+                                    chrom2_vec.push(new_chrom1);
+                                    pos2_vec.push(new_pos1);
                                 }
                                 
-                                if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
-                                    strand1_vec.push(rev_map3.get(*strand1));
-                                    strand2_vec.push(rev_map4.get(*strand2));
-                                    mapq_vec.push(mapq.clone());
-                                }
-
-                                chrom1_vec.push(new_chrom2);
-                                pos1_vec.push(new_pos2);
-                                chrom2_vec.push(new_chrom1);
-                                pos2_vec.push(new_pos1);
-                            }
+                            } 
                             
-                           
-                        } 
-                        
-                        data.push(false);
-                    } else {
-                        data.push(true);
+                            data.push(false);
+                        } else {
+                            data.push(true);
+                        }
                     }
+
                 }
 
+                let df2 = df![
+                    "read_idx" => read_id_vec,
+                    "chrom1" => chrom1_vec,
+                    "pos1" => pos1_vec,
+                    "chrom2" => chrom2_vec,
+                    "pos2" => pos2_vec,
+                    "strand1" => strand1_vec,
+                    "strand2" => strand2_vec,
+                    "mapq" => mapq_vec
+                ].unwrap();
+
+                let data = Series::new("break", data);
+                let df = df.filter(
+                    data.bool().unwrap()
+                ).unwrap()
+                .lazy()
+                .with_column(col("chrom1").cast(DataType::String))
+                .with_column(col("chrom2").cast(DataType::String))
+                .with_column(col("strand1").cast(DataType::String))
+                .with_column(col("strand2").cast(DataType::String))
+                .collect().unwrap();
+
+                let n_rows = df2.height();
+                let df = if n_rows > 0 {
+                    df.vstack(&df2).unwrap()
+                } else {
+                    df
+                };
+
+                let mut df = df.lazy().with_column(
+                    col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                ).with_column(
+                    col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                ).with_column(
+                    col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                ).with_column(
+                    col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                )
+                .collect().unwrap();
+
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let new_file = format!("{}/{}", output_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
+
+                let mut df = df.lazy().filter(
+                    col("mapq").gt_eq(1)
+                ).collect().unwrap();
+
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let new_file = format!("{}/{}", copy_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
             }
 
-            let df2 = df![
-                "read_idx" => read_id_vec,
-                "chrom1" => chrom1_vec,
-                "pos1" => pos1_vec,
-                "chrom2" => chrom2_vec,
-                "pos2" => pos2_vec,
-                "strand1" => strand1_vec,
-                "strand2" => strand2_vec,
-                "mapq" => mapq_vec
-            ].unwrap();
 
-            let data = Series::new("break", data);
-            let df = df.filter(
-                data.bool().unwrap()
-            ).unwrap()
-            .lazy()
-            .with_column(col("chrom1").cast(DataType::String))
-            .with_column(col("chrom2").cast(DataType::String))
-            .with_column(col("strand1").cast(DataType::String))
-            .with_column(col("strand2").cast(DataType::String))
-            .collect().unwrap();
-
-            let n_rows = df2.height();
-            let df = if n_rows > 0 {
-                df.vstack(&df2).unwrap()
-            } else {
-                df
-            };
-
-            let mut df = df.lazy().with_column(
-                col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-            ).with_column(
-                col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-            ).with_column(
-                col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-            ).with_column(
-                col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-            )
-            .collect().unwrap();
-
-            
-            let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-            let new_file = format!("{}/{}", output_q_dir, file_name);
-            let mut new_file = File::create(new_file).unwrap();
-            ParquetWriter::new(&mut new_file)
-                .finish(&mut df)
-                .unwrap();
-
-            let mut df = df.lazy().filter(
-                col("mapq").gt_eq(1)
-            ).collect().unwrap();
-
-            let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-            let new_file = format!("{}/{}", copy_q_dir, file_name);
-            let mut new_file = File::create(new_file).unwrap();
-            ParquetWriter::new(&mut new_file)
-                .finish(&mut df)
-                .unwrap();
+            });
+        
+                
         });
 
     }
@@ -1430,6 +1475,185 @@ impl PQS {
         log::info!("Successful output intersect file `{}`", output);
         
         Ok(())
+    }
+
+
+    pub fn dup(&self, collapsed_list: &String, seed: usize, output: &String) {
+        enable_string_cache();
+
+        let output = match output.as_str() {
+            "-" => {
+                let mut output = self.file.clone();
+                output.push_str("_dup");
+                output
+            },
+            _ => output.clone()
+        };
+
+        let seed_bytes = seed.to_ne_bytes();
+        let mut seed_array = [0u8; 32];
+        for (i, byte) in seed_bytes.iter().enumerate() {
+            seed_array[i] = *byte;
+        }
+
+        let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
+        let _ = std::fs::create_dir_all(output.clone());
+        let _ = std::fs::create_dir_all(format!("{}/q0", output));
+        let _ = std::fs::create_dir_all(format!("{}/q1", output));
+
+        let _ = std::fs::copy(format!("{}/_contigsizes", self.file), format!("{}/_contigsizes", output));
+        let _ = std::fs::copy(format!("{}/_metadata", self.file), format!("{}/_metadata", output));
+        let _ = std::fs::copy(format!("{}/_readme", self.file), format!("{}/_readme", output));
+
+        let reader = common_reader(collapsed_list);
+        let mut collapsed_contigs: HashMap<String, Vec<String>> = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let s: Vec<&str> = record.split("\t").collect();
+            if s.len() != 2 {
+                log::warn!("Invalid record: {}", record);
+                continue;
+            }
+            let contig1 = s[0].to_string();
+            let contig2 = s[1].to_string();
+            collapsed_contigs.entry(contig1.clone()).or_insert(vec![contig1]).push(contig2);
+        }    
+
+        let contigsize_file = format!("{}/_contigsizes", self.file);
+        let reader = common_reader(&contigsize_file);
+        let mut contigsizes = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let record = record.split("\t").collect::<Vec<&str>>();
+            let contig = record.get(0).unwrap().to_string();
+            let size = record.get(1).unwrap().parse::<u32>().unwrap();
+                contigsizes.insert(contig, size);
+        }
+
+       
+        let mut wtr = common_writer(format!("{}/_contigsizes", output).as_str());
+        for (contig, size) in contigsizes {
+            if let Some(collapsed_contigs) = collapsed_contigs.get(&contig) {
+                for collapsed_contig in collapsed_contigs {
+                    let buffer = format!("{}\t{}\n", collapsed_contig, size);
+                    wtr.write_all(buffer.as_bytes()).unwrap();
+                }
+            } else {
+                let buffer = format!("{}\t{}\n", contig, size);
+                wtr.write_all(buffer.as_bytes()).unwrap();
+            }
+            
+        
+        
+        let output_q_dir = format!("{}/q0", output);
+        let copy_q_dir = format!("{}/q1", output);
+        
+        files.chunks(500).for_each(|file_chunk| {
+            file_chunk.par_iter().for_each(|file| {
+                let mut rng = StdRng::from_seed(seed_array);
+                let mut rng2 = StdRng::from_seed(seed_array);
+                let mut df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
+                let mut df = df.collect().unwrap();
+
+                let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
+                let rev_map1 = cat_col.get_rev_map();
+
+                let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
+                let rev_map2 = cat_col.get_rev_map();
+
+                let nrows = df.height();
+
+                let mut chrom1_vec: Vec<String> = Vec::with_capacity(nrows);
+                let mut chrom2_vec: Vec<String> = Vec::with_capacity(nrows);
+
+                for idx in 0..nrows {
+                    let row = df.get(idx).unwrap();
+                    let chrom1 = match row.get(1) {
+                        Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                        _ => None
+                    };
+                    let chrom2 = match row.get(3) {
+                        Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                        _ => None
+                    };
+                    let pos1 = match row.get(2) {
+                        Some(AnyValue::UInt32(v)) => Some(v),
+                        _ => None
+                    };
+                    let pos2 = match row.get(4) {
+                        Some(AnyValue::
+                        UInt32(v)) => Some(v),
+                        _ => None 
+                    };
+
+                    if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                        let chrom1 = rev_map1.get(*chrom1);
+                        let chrom2 = rev_map2.get(*chrom2);
+                        let pos1 = *pos1 as usize;
+                        let pos2 = *pos2 as usize;
+                        
+                        let new_chrom1 = match collapsed_contigs.get(chrom1) {
+                            Some(v) => {
+                                let idx = rng.gen_range(0..v.len());
+                                v.get(idx).unwrap()
+                            },
+                            None => chrom1
+                        };
+
+                        let new_chrom2 = match collapsed_contigs.get(chrom2) {
+                            Some(v) => {
+                                let idx = rng2.gen_range(0..v.len());
+                                v.get(idx).unwrap()
+                            },
+                            None => chrom2
+                        };
+                        
+                        chrom1_vec.push(new_chrom1.to_string());
+                        chrom2_vec.push(new_chrom2.to_string());
+
+                    }
+                
+                }
+
+                let chrom1_series = Series::new("chrom1", chrom1_vec);
+                let chrom2_series = Series::new("chrom2", chrom2_vec);
+                
+                df.with_column(chrom1_series).unwrap();
+                df.with_column(chrom2_series).unwrap();
+
+                df = df.lazy().with_column(
+                    col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                ).with_column(
+                    col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                ).collect().unwrap();
+
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let new_file = format!("{}/{}", output_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
+
+                let mut df = df.lazy().filter(
+                    col("mapq").gt_eq(1)
+                ).collect().unwrap();
+
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                
+                let new_file = format!("{}/{}", copy_q_dir, file_name);
+                let mut new_file = File::create(new_file).unwrap();
+                ParquetWriter::new(&mut new_file)
+                    .finish(&mut df)
+                    .unwrap();
+            
+            })
+
+
+        });
+
+
+
+
     }
 }
 

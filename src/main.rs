@@ -568,6 +568,20 @@ fn main() {
 
             cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
         }
+        Some(("paf2depth", sub_matches)) => {
+            let paf = sub_matches.get_one::<String>("PAF").expect("required");
+            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let window_size = sub_matches.get_one::<usize>("WINSIZE").expect("error");
+            let mut step_size = sub_matches.get_one::<usize>("STEPSIZE").expect("error");
+            let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let pt = PAFTable::new(&paf);
+            if *step_size == 0 {
+                step_size = window_size;
+            } 
+            pt.to_depth(&chromsizes, *window_size, *step_size, *min_mapq, &output).unwrap();
+
+        }
         Some(("paf2porec", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let empty_string = String::new();
@@ -731,7 +745,13 @@ fn main() {
         Some(("pairs-break", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
 
             if Path::new(&pairs).is_dir() {
                 let mut p = PQS::new(&pairs);
@@ -754,7 +774,15 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             if Path::new(&pairs).is_dir() {
-                log::error!("The input directory is not a pairs or pairs.gz file.");
+                let p = PQS::new(&pairs);
+                match p.is_pqs() {
+                    true => {
+                        let _ = p.dup(&collapsed_list, 123, &output);
+                    },
+                    false => {
+                        log::error!("The input directory is not a PQS directory.");
+                    }
+                }
             } else {
                 let mut pairs = Pairs::new(&pairs);
                 pairs.dup(&collapsed_list, 123, &output);
@@ -812,6 +840,13 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let split_num = sub_matches.get_one::<u32>("SPLIT_NUM").expect("error");
             
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
             if Path::new(&pairs).is_dir() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {

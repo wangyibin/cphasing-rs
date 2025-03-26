@@ -591,6 +591,41 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("paf2depth")
+                .about("Calculate depth from paf file")
+                .arg(arg!(<PAF> "paf"))
+                .arg(arg!(<CHROMSIZES> "chromsizes"))
+                .arg(
+                    Arg::new("WINSIZE")
+                        .long("winsize")
+                        .short('w')
+                        .value_parser(value_parser!(usize))
+                        .default_value("10000")
+                )
+                .arg(
+                    Arg::new("STEPSIZE")
+                        .long("stepsize")
+                        .short('s')
+                        .value_parser(value_parser!(usize))
+                        .default_value("0")
+                )
+                .arg(
+                    Arg::new("MIN_MAPQ")
+                        .long("min-mapq")
+                        .short('q')
+                        .value_parser(value_parser!(u8))
+                        .default_value("0")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+
+        )
+        .subcommand(
             Command::new("paf2porec")
                 .about("convert paf to pore-c table")
                 .alias("paf2table")
@@ -943,6 +978,12 @@ pub fn cli() -> Command {
                 .about("Break contigs at chimeric points follwed a bed")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<BREAK_BED> "break contigs with a bed format"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1005,6 +1046,12 @@ pub fn cli() -> Command {
                         .short('n')
                         .value_parser(value_parser!(u32))
                         .default_value("1"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1161,8 +1208,8 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value(".")
-                        .help("output dir, default is ./"))
+                        .default_value("output.pqs")
+                        .help("output dir, default is output.pqs"))
                 .arg_required_else_help(true),
                     
         )

@@ -3,14 +3,18 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
+use crossbeam_channel::{bounded, unbounded, Sender, Receiver};
+use crossbeam::{scope};
+use std::thread;
 use lazy_static::lazy_static;
 use std::any::type_name;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rust_lapper::{Interval, Lapper};
@@ -20,6 +24,8 @@ use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
 use crate::porec::PoreCRecordPlus as PoreCRecord;
 
+
+const CHUNK_SIZE: usize = 10_000;
 
 const PASS_STR : &str = "pass";
 const SINGLETON_STR : &str = "singleton";
@@ -411,4 +417,236 @@ impl PAFTable {
         log::info!("Successful output Pore-C table `{}`", output);
         Ok(())
     }
+
+    pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
+                min_mapq: u8, output: &String) -> Result<(), Box<dyn Error>> {
+        let mut chromsize_map: HashMap<String, usize> = HashMap::new();
+        {
+            let input = common_reader(chromsize);
+            let buf = std::io::BufReader::new(input);
+            for line in buf.lines() {
+                let line = line?;
+                if line.trim().is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let mut spl = line.split_whitespace();
+                let chr = spl.next().unwrap_or("").to_string();
+                let size_str = spl.next().unwrap_or("0");
+                let size = size_str.parse::<usize>().unwrap_or(0);
+                chromsize_map.insert(chr, size);
+            }
+        }
+
+        let mut coverage_diff_map: HashMap<String, BTreeMap<usize, i64>> = HashMap::new();
+        for (chr, _) in chromsize_map.iter() {
+            coverage_diff_map.insert(chr.clone(), BTreeMap::new());
+        }
+
+        let mut rdr = self.parse()?;
+        let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
+        
+        let mut handles = Vec::new();
+        let mut coverage_diff_map = Arc::new(Mutex::new(coverage_diff_map));
+        for _ in 0..4 {
+            let receiver = receiver.clone();
+            let coverage_diff_map_clone = Arc::clone(&coverage_diff_map);
+            handles.push(thread::spawn(move || {
+                while let Ok(records) = receiver.recv() {
+                    let mut local_data = HashMap::new();
+                    for record in records {
+                        let mapq = record.mapq;
+                        if mapq < min_mapq {
+                            continue;
+                        }
+                        let chr = record.target.clone();
+                        let start = record.target_start as usize;
+                        let end = record.target_end as usize;
+
+                        let local_btm = local_data.entry(chr).or_insert_with(BTreeMap::new);
+                        *local_btm.entry(start).or_insert(0) += 1;
+                        *local_btm.entry(end).or_insert(0) -= 1;
+                    }
+
+                    let mut coverage_diff_map_locked = coverage_diff_map_clone.lock().unwrap();
+                    for (chr, local_btm) in local_data {
+                        let global_btm = coverage_diff_map_locked
+                            .entry(chr)
+                            .or_insert_with(BTreeMap::new);
+                        for (pos, delta) in local_btm {
+                            *global_btm.entry(pos).or_insert(0) += delta;
+                        }
+                    }
+
+                }
+            }))
+
+
+        }
+
+        let mut batch = Vec::with_capacity(CHUNK_SIZE);
+        for record in rdr.deserialize() {
+            let record: PAFLine = record?;
+            batch.push(record);
+            if batch.len() >= CHUNK_SIZE {
+                sender.send(batch).unwrap();
+                batch = Vec::with_capacity(CHUNK_SIZE);
+            }
+        }
+
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
+
+        drop(sender);
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+
+        // let mut rdr = self.parse()?;
+        // for (line_num, rec) in rdr.deserialize().enumerate() {
+        //     let record: PAFLine = match rec {
+        //         Ok(r) => r,
+        //         Err(e) => {
+        //             log::warn!("Error parsing line {} in {}: {:?}", line_num, self.file_name(), e);
+        //             continue;
+        //         }
+        //     };
+        //     let mapq = record.mapq;
+        //     if mapq < min_mapq {
+        //         continue;
+        //     }
+        //     let chr = record.target.clone();
+        //     let start = record.target_start as usize;
+        //     let end = record.target_end as usize;
+
+        //     if let Some(diff) = coverage_diff_map.get_mut(&chr) {
+        //         *diff.entry(start).or_insert(0) += 1;
+        //         *diff.entry(end).or_insert(0) -= 1;
+        //     }
+        // }
+
+        let mut coverage_diff_map = Arc::try_unwrap(coverage_diff_map).unwrap().into_inner().unwrap();
+        if step_size == window_size {
+            let mut wtr = common_writer(output);
+            for (chr, chrom_length) in &chromsize_map {
+                if let Some(diff) = coverage_diff_map.get_mut(chr) {
+                    let mut running = 0i64;
+                    let mut prev_pos = 0usize;
+                    
+                    let mut bin_start = 0usize;
+                    let mut bin_sum = 0i64;
+                    let mut bin_count = 0usize;
+
+                    for (&pos, &delta) in diff.iter() {
+                        while prev_pos < pos && prev_pos < *chrom_length {
+                            bin_sum += running;
+                            bin_count += 1;
+                            prev_pos += 1;
+
+                            if prev_pos - bin_start == window_size {
+                                let mean_coverage = bin_sum as f64 / bin_count as f64;
+                                let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+                                wtr.write_all(line.as_bytes())?;
+
+                                bin_sum = 0;
+                                bin_count = 0;
+                                bin_start = prev_pos;
+                            }
+                        }
+        
+                        running += delta;
+                    }
+
+                    while prev_pos < *chrom_length {
+                        bin_sum += running;
+                        bin_count += 1;
+                        prev_pos += 1;
+
+                        if prev_pos - bin_start == window_size {
+                            let mean_coverage = bin_sum as f64 / bin_count as f64;
+                            let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+                            wtr.write_all(line.as_bytes())?;
+                            bin_sum = 0;
+                            bin_count = 0;
+                            bin_start = prev_pos;
+                        }
+                    }
+
+                    if bin_count > 0 {
+                        let mean_coverage = bin_sum as f64 / bin_count as f64;
+                        let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+                        wtr.write_all(line.as_bytes())?;
+                    }
+                    
+                }
+            }
+
+            log::info!(
+                "Successful output coverage (window {}bp) to `{}`",
+                window_size,
+                output
+            );
+
+        } else {
+
+            let mut wtr = common_writer(output);
+
+            for (chr, &chrom_len) in &chromsize_map {
+                let diff = match coverage_diff_map.get_mut(chr) {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+                let mut coverage_vec = vec![0i64; chrom_len];
+                let mut running = 0i64;
+                let mut prev_pos = 0usize;
+                for (&pos, &delta) in diff.iter() {
+                    while prev_pos < pos && prev_pos < chrom_len {
+                        coverage_vec[prev_pos] = running;
+                        prev_pos += 1;
+                    }
+                    running += delta;
+                }
+    
+                while prev_pos < chrom_len {
+                    coverage_vec[prev_pos] = running;
+                    prev_pos += 1;
+                }
+
+                let mut prefix_sum = vec![0i64; chrom_len + 1];
+                for i in 0..chrom_len {
+                    prefix_sum[i+1] = prefix_sum[i] + coverage_vec[i];
+                }
+
+                let mut i = 0usize;
+                while i < chrom_len {
+                    let w_end = std::cmp::min(i + window_size, chrom_len);
+                    let total_cov = prefix_sum[w_end] - prefix_sum[i];
+                    let window_len = w_end - i;
+                    if window_len == 0 {
+                        break;
+                    }
+                    let mean_cov = total_cov as f64 / window_len as f64;
+
+                    let line = format!("{}\t{}\t{}\t{:.3}\n", chr, i, w_end, mean_cov);
+                    wtr.write_all(line.as_bytes())?;
+
+                    i += step_size; 
+                }
+            }
+
+            log::info!(
+                "Successful output coverage (window {}bp, step {}bp) to `{}`",
+                window_size,
+                step_size,
+                output
+            );
+        }
+
+        Ok(())
+    }
+
+    
 }
