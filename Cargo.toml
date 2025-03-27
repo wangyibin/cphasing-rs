@@ -1,7 +1,9 @@
 [package]
-name = "cphasing"
+name = "cphasing-rs"
 version = "0.2.0"
 edition = "2021"
+description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
+repository = "https://github.com/wangyibin/cphasing-rs"
 
 [[bin]]
 name = "cphasing-rs"
