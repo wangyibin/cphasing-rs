@@ -1,3 +1,7 @@
+## [v0.2.0] - 20250327
+- First release to the public, which is used in CPhasing v0.2.6.r297
+
+
 ## [v0.0.16]
 ## Enhancement
 - `aligner`, change to banded_semi_global_SW algorithm 

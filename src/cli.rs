@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser};
 
-const VERSION: &str = "0.0.16";
+const VERSION: &str = "0.2.0";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -997,6 +997,12 @@ pub fn cli() -> Command {
                 .about("dup collapsed contigs by collapsed rescue")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<COLLAPSED> "collapsed contigs with raw contig and duplicated contigs"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg(Arg::new("OUTPUT")
                         .long("output")
                         .short('o')

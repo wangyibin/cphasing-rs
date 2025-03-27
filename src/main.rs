@@ -771,7 +771,13 @@ fn main() {
         Some(("pairs-dup", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
 
             if Path::new(&pairs).is_dir() {
                 let p = PQS::new(&pairs);

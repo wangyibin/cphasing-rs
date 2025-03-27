@@ -1495,6 +1495,12 @@ impl PQS {
         for (i, byte) in seed_bytes.iter().enumerate() {
             seed_array[i] = *byte;
         }
+        
+        let seed_bytes2 = (seed * 2).to_ne_bytes();
+        let mut seed_array2 = [0u8; 32];
+        for (i, byte) in seed_bytes2.iter().enumerate() {
+            seed_array2[i] = *byte;
+        }
 
         let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
         let _ = std::fs::create_dir_all(output.clone());
@@ -1543,15 +1549,18 @@ impl PQS {
                 wtr.write_all(buffer.as_bytes()).unwrap();
             }
             
-        
+        }
         
         let output_q_dir = format!("{}/q0", output);
         let copy_q_dir = format!("{}/q1", output);
         
-        files.chunks(500).for_each(|file_chunk| {
-            file_chunk.par_iter().for_each(|file| {
-                let mut rng = StdRng::from_seed(seed_array);
-                let mut rng2 = StdRng::from_seed(seed_array);
+        let chunksize = files.len() / 10;
+        files.par_chunks(chunksize).enumerate().for_each(|(chunk_idx, file_chunk)| {
+            // log::info!("Processing chunk {}: {}", chunk_idx, file_chunk.len());
+            let mut rng = StdRng::from_seed(seed_array);
+            let mut rng2 = StdRng::from_seed(seed_array2);
+            file_chunk.iter().for_each(|file| {
+                
                 let mut df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
                 let mut df = df.collect().unwrap();
 
@@ -1576,21 +1585,10 @@ impl PQS {
                         Some(AnyValue::Categorical(v, _, _)) => Some(v),
                         _ => None
                     };
-                    let pos1 = match row.get(2) {
-                        Some(AnyValue::UInt32(v)) => Some(v),
-                        _ => None
-                    };
-                    let pos2 = match row.get(4) {
-                        Some(AnyValue::
-                        UInt32(v)) => Some(v),
-                        _ => None 
-                    };
-
-                    if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                    
+                    if let (Some(chrom1), Some(chrom2)) = (chrom1, chrom2) {
                         let chrom1 = rev_map1.get(*chrom1);
                         let chrom2 = rev_map2.get(*chrom2);
-                        let pos1 = *pos1 as usize;
-                        let pos2 = *pos2 as usize;
                         
                         let new_chrom1 = match collapsed_contigs.get(chrom1) {
                             Some(v) => {
@@ -1648,12 +1646,9 @@ impl PQS {
             
             })
 
-
         });
-
-
-
-
+        
+        log::info!("Successful output a contig duplicated pairs file into {}", output);
     }
 }
 
