@@ -6,6 +6,7 @@ license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
 repository = "https://github.com/wangyibin/cphasing-rs"
 
+
 [[bin]]
 name = "cphasing-rs"
 path = "src/main.rs"
