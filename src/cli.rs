@@ -2,12 +2,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{arg, Arg, ArgAction, Command, 
-            Subcommand, value_parser};
+            Subcommand, value_parser, ColorChoice};
 
 const VERSION: &str = "0.2.0";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
+        .color(ColorChoice::Auto)
         .about("Phasing and scaffolding based on Pore-C or Hi-C data")
         .subcommand_required(true)
         .version(VERSION)

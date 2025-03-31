@@ -1,7 +1,8 @@
 [package]
-name = "cphasing-rs"
+name = "cphasing"
 version = "0.2.0"
 edition = "2021"
+license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
 repository = "https://github.com/wangyibin/cphasing-rs"
 
@@ -71,4 +72,31 @@ walkdir = "2.3.2"
 [profile.release]
 opt-level = 'z'
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.28.0"
+# CI backends to support
+ci = "github"
+# The archive format to use for non-windows builds (defaults .tar.xz)
+unix-archive = ".tar.gz"
+
+binaries-in-root = true
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+# Whether CI should trigger releases with dispatches instead of tag pushes
+dispatch-releases = true
+# Which phase dist should use to create the GitHub release
+github-release = "announce"
+# Whether to auto-include files like READMEs, LICENSEs, and CHANGELOGs (default true)
+auto-includes = false
+# The installers to generate for each app
+installers = []
+
 
