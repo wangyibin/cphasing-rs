@@ -101,9 +101,10 @@ unix-archive = ".tar.gz"
 binaries-in-root = true
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = [
-#            "aarch64-unknown-linux-musl", 
-#            "aarch64-apple-darwin", 
-            "x86_64-unknown-linux-musl"]
+            "aarch64-unknown-linux-musl", 
+            "aarch64-apple-darwin", 
+            "x86_64-unknown-linux-musl"
+            ]
 # Whether CI should trigger releases with dispatches instead of tag pushes
 dispatch-releases = true
 # Which phase dist should use to create the GitHub release

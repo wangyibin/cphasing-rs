@@ -1,0 +1,35 @@
+[project]
+authors = ["wangyibin <yibinwang96@outlook.com>"]
+channels = ["conda-forge"]
+description = "Library of C-Phasing"
+name = "cphasing-rs"
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+version = "0.2.0"
+
+[system-requirements]
+linux = "3.10.0"
+libc = "2.17"
+
+[tasks]
+
+[dependencies]
+
+[feature.build.dependencies]
+# Needed for building
+compilers = ">=1.9.0,<2"
+git = ">=2.46.0,<3"
+openssl = "3.*"
+pkg-config = "0.29.*"
+rust = "==1.81.0"
+rust-src = ">=1.81.0,<2"
+
+[feature.build.target.linux-64.dependencies]
+clang = ">=7,<8.0"
+compilers = ">=1.6.0"
+make = ">=4.3,<5"
+mold = ">=2.33.0,<3.0"
+
+[environments]
+default = {features = [
+    "build",
+]}
