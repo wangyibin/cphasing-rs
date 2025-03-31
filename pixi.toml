@@ -24,7 +24,7 @@ rust = "==1.81.0"
 rust-src = ">=1.81.0,<2"
 
 [feature.build.target.linux-64.dependencies]
-clang = ">=7,<8.0"
+clang = ">=18.1.8,<19.0"
 compilers = ">=1.6.0"
 make = ">=4.3,<5"
 mold = ">=2.33.0,<3.0"
