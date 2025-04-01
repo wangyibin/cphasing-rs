@@ -125,7 +125,10 @@ jobs:
 
       - name: Install dependencies
         if: ${{ join(matrix.targets, '-') == 'aarch64-unknown-linux-musl' }}
-        run: sudo apt-get update && sudo apt-get install -y libc6-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y libc6-dev build-essential clang
+          echo "C_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include" >> $GITHUB_ENV
+
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
