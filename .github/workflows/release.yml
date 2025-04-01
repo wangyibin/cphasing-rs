@@ -127,11 +127,16 @@ jobs:
         if: ${{ join(matrix.targets, '-') == 'aarch64-unknown-linux-musl' }}
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross clang binutils-aarch64-linux-gnu
-          sudo apt-get install -y musl-dev musl-tools
-          export CPATH=/usr/aarch64-linux-gnu/include
-          export LIBRARY_PATH=/usr/aarch64-linux-gnu/lib
-          export CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc
-          export CXX_aarch64_unknown_linux_musl=aarch64-linux-gnu-g++
+          sudo apt-get install -y musl-dev musl-tools clang
+          echo "C_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include" >> $GITHUB_ENV
+          echo "CPLUS_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib" >> $GITHUB_ENV
+          echo "C_INCLUDE_PATH=/usr/aarch64-linux-gnu/include" >> $GITHUB_ENV
+          echo "CPLUS_INCLUDE_PATH=/usr/aarch64-linux-gnu/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=/usr/aarch64-linux-gnu/lib" >> $GITHUB_ENV
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+         
 
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
