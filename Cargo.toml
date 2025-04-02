@@ -34,7 +34,6 @@ csv = { version = "1.1.6" }
 # dashmap = { version = "5.5.3", features = ["serde"] }
 flate2 = {version = "1.0.28", default-features = false}
 gzp = { version = "0.11.3"}
-hashbrown = { version = "0.14.3", features=[ "raw" ]}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
 # indicatif = { version = "0.17.8", }
@@ -71,9 +70,11 @@ twox-hash = { version = "1.6.2" }
 walkdir = "2.3.2"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+hashbrown = { version = "0.14.3", features=[ "rayon" ]}
 block-aligner = { version = "0.5", features = ["simd_avx2"] }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 block-aligner = { version = "0.5", features = ["simd_neon"] }
+hashbrown = { version = "0.14.3", features=[ "raw" ]}
 
 [build]
 rustflags = ["-Z", "threads=8"]

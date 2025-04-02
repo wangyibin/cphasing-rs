@@ -127,7 +127,7 @@ jobs:
         if: ${{ join(matrix.targets, '-') == 'aarch64-unknown-linux-musl' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-dev musl-tools 
+          sudo apt-get install -y libclang-dev clang --fix-missing
         
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
