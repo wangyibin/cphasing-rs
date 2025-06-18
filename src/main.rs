@@ -9,7 +9,8 @@ use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
 use cphasing::bam::{ split_bam, bam2pairs, 
                      bam2fastq, bam2fasta,
-                     bamstat,
+                     bamstat, bamstat_hic,
+                     bamstat_porec,
                      bam2paf, slide2raw};
 use cphasing::cli::cli;
 use cphasing::clm::{Clm, merge_clm};
@@ -1031,7 +1032,20 @@ fn main() {
             
             bamstat(&bam,  &output, *threads);
         }
-
+        Some(("hicbamstat", sub_matches)) => {
+            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            bamstat_hic(&bam,  &output, *threads);
+        }
+        Some(("porecbamstat", sub_matches)) => {
+            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            
+            bamstat_porec(&bam,  &output, *threads);
+        }
         Some(("bam2pairs", sub_matches)) => {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");

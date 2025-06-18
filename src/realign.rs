@@ -671,7 +671,3 @@ pub fn read_bam(input_bam: &String, mapq: u8, output: &String) {
     }
 
 }
-
-
-
-

@@ -23,6 +23,11 @@ pkg-config = "0.29.*"
 rust = "==1.81.0"
 rust-src = ">=1.81.0,<2"
 
+[feature.build.target.linux-aarch64.dependencies]
+clang = ">=14.0.0,<15.0"
+libclang = ">=14.0,<15.0"
+
+
 [feature.build.target.linux-64.dependencies]
 clang = ">=18.1.8,<19.0"
 compilers = ">=1.6.0"

@@ -1310,6 +1310,55 @@ pub fn cli() -> Command {
                         .help("output file, default is stdout"))
                 .arg_required_else_help(true),
         )
+
+        .subcommand(
+            Command::new("hicbamstat")
+                .about("stat the hic bam")
+                .hide(true)
+                .arg(
+                    Arg::new("BAM")
+                        .action(ArgAction::Set)
+                        .num_args(0..)
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porecbamstat")
+                .about("stat the porec bam")
+                .hide(true)
+                .arg(
+                    Arg::new("BAM")
+                        .action(ArgAction::Set)
+                        .num_args(0..)
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output file, default is stdout"))
+                .arg_required_else_help(true),
+        )
         .subcommand(
             Command::new("bam2pairs")
                 .about("convert paired read align bam to pairs, only support for paired end reads")

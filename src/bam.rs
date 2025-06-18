@@ -252,6 +252,11 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         if record.is_secondary() & !is_secondary {
             continue
         }
+        let flag = if record.is_secondary() {
+            "tp:A:S"
+        } else {
+            "tp:A:P"
+        };
 
         let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
         let strand = if record.is_reverse() { "-" } else { "+" };
@@ -298,8 +303,24 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
             Err(e) => 0
         };
 
+        let _as: i64 =  match record.aux(b"AS") {
+            Ok(value) => {
+                match value {
+                    Aux::U8(v) => v.try_into().unwrap(),
+                    Aux::U16(v) => v.try_into().unwrap(),
+                    Aux::U32(v) => v.try_into().unwrap(),
+                    Aux::I32(v) => v.try_into().unwrap(),
+                    _ => 0, 
+                }
+                
+            },
+            Err(e) => 0
+        };
+
         match_length = match_length - (nm - (insertion_length + deletion_length));
 
+        let as_string = format!("AS:i:{}", _as);
+        let nm_string = format!("NM:i:{}", nm);
 
         let (qstart, qend, qlen) = get_query_start_end(&record);
     
@@ -309,9 +330,10 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         let tstart = record.reference_start();
         let tend = record.reference_end();
         let mapq = record.mapq();
-        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
                 qname, qlen, qstart, qend, strand, 
-                tname, tlen, tstart, tend, match_length, alignment_length, mapq).unwrap();
+                tname, tlen, tstart, tend, match_length, alignment_length, mapq,
+                nm_string, as_string, flag).unwrap();
 
         idx += 1;
 
@@ -606,6 +628,137 @@ fn calculate_quartiles(data: &Vec<usize>) -> (usize, usize, usize) {
 
     (q1, q2, q3)
 }
+
+pub fn bamstat_hic(input_bams: &Vec<&String>, output: &String, threads: usize) {
+    let mut writer = common_writer(output);
+    let res = input_bams.par_iter().map(|input_bam| {
+        let mut bam = if *input_bam == &String::from("-") {
+            Reader::from_stdin().expect("Failed to read from stdin")
+        } else {
+            Reader::from_path(input_bam).expect("Failed to read from the provided path")
+        };
+
+        let header = Header::from_template(bam.header());
+        let header = HeaderView::from_header(&header);
+    
+        let _ = bam.set_threads(threads);
+        let mut unmap_counts = 0;
+        let mut multiple_counts = 0;
+        let mut unique_counts = 0;
+        let mut singleton_counts = 0;
+        while let Some(r) = bam.records().next() {
+            let record = r.unwrap();
+            
+            let Some(r2) = bam.records().next() else {
+                continue
+            };
+            let record2 = r2.unwrap();
+    
+            if record.is_unmapped() || record2.is_unmapped(){
+                unmap_counts += 1;
+                continue 
+            }
+
+
+            let mapq1 = record.mapq();
+            let mapq2 = record2.mapq();
+            
+            if (mapq1 == 0) && (mapq2 == 0) {
+                multiple_counts += 1;
+            } else if (mapq1 == 0) | (mapq2 == 0) {
+                singleton_counts += 1;
+            } else {
+                unique_counts += 1;
+            }
+        }
+
+        (input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts)
+    }).collect::<Vec<_>>();;
+
+    
+    writeln!(writer, "file\tunmapped\tunique\tmultiple\tsingleton").unwrap();
+    for record in res {
+        
+        let (input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts) = record;
+        // basename of input_bam 
+        let input_bam = std::path::Path::new(input_bam);
+        let input_bam = input_bam.file_name().unwrap().to_str().unwrap();
+        writeln!(writer, "{}\t{}\t{}\t{}\t{}", 
+                    input_bam, unmap_counts, unique_counts, 
+                    multiple_counts, singleton_counts).unwrap();
+    }
+    
+
+}
+
+
+pub fn bamstat_porec(input_bams: &Vec<&String>, output: &String, threads: usize) {
+    let mut writer = common_writer(output);
+    let res = input_bams.par_iter().map(|input_bam| {
+        let mut bam = if *input_bam == &String::from("-") {
+            Reader::from_stdin().expect("Failed to read from stdin")
+        } else {
+            Reader::from_path(input_bam).expect("Failed to read from the provided path")
+        };
+
+        let header = Header::from_template(bam.header());
+        let header = HeaderView::from_header(&header);
+    
+        let _ = bam.set_threads(threads);
+        let mut unmap_counts = 0;
+        let mut multiple_counts = 0;
+        let mut unique_counts = 0;
+        let mut unique_q2_counts = 0;
+        while let Some(r) = bam.records().next() {
+            let record = r.unwrap();
+            
+            let Some(r2) = bam.records().next() else {
+                continue
+            };
+
+            if record.is_secondary() {
+                continue;
+            }
+        
+            if record.is_unmapped() {
+                unmap_counts += 1;
+                continue 
+            }
+
+            let mapq = record.mapq();
+            
+            if mapq == 0 {
+                multiple_counts += 1;
+            } else if mapq >= 1 {
+                unique_counts += 1;
+                if mapq >= 2 {
+                    unique_q2_counts += 1;
+                }
+            }
+
+            
+        }
+
+        (input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts)
+    }).collect::<Vec<_>>();;
+
+    
+    writeln!(writer, "file\tunmapped\tunique\tmultiple\tunique_q2").unwrap();
+    for record in res {
+        
+        let (input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts) = record;
+        // basename of input_bam 
+        let input_bam = std::path::Path::new(input_bam);
+        let input_bam = input_bam.file_name().unwrap().to_str().unwrap();
+        writeln!(writer, "{}\t{}\t{}\t{}\t{}", 
+                    input_bam, unmap_counts, unique_counts, 
+                    multiple_counts, unique_q2_counts).unwrap();
+    }
+    
+
+
+}
+
 
 pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
 

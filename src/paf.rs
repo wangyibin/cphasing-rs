@@ -122,25 +122,192 @@ impl ReadSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterReason { 
+    Pass, 
+    Singleton, 
+    LowMQ, 
+    Complex 
+}
+
+impl FilterReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            FilterReason::Pass      => PASS_STR,
+            FilterReason::Singleton => SINGLETON_STR,
+            FilterReason::LowMQ     => LOW_MQ_STR,
+            FilterReason::Complex   => COMPLEX_STR,
+        }
+    }
+    fn from_str(s: &str) -> Self {
+        match s {
+            PASS_STR      => FilterReason::Pass,
+            SINGLETON_STR => FilterReason::Singleton,
+            LOW_MQ_STR    => FilterReason::LowMQ,
+            COMPLEX_STR   => FilterReason::Complex,
+            _ => panic!("Unknown filter reason"),
+        }
+    }
+}
+
+
+// #[derive(Debug)]
+// pub struct Concatemer {
+//     pub records: Vec<PoreCRecord>,
+//     pub filter_reasons: Vec<String>,
+// }
+
+// impl Concatemer {
+
+//     pub fn new() -> Concatemer{
+//         Concatemer {
+//             records: Vec::new(),
+//             filter_reasons: Vec::new()
+//         }
+//     }
+
+//     pub fn with_capacity(capacity: usize) -> Concatemer {
+//         Concatemer {
+//             records: Vec::with_capacity(capacity),
+//             filter_reasons: Vec::with_capacity(capacity),
+//         }
+//     }
+
+//     pub fn push(&mut self, pcr: PoreCRecord) {
+//         self.filter_reasons.push(pcr.filter_reason.clone());
+//         self.records.push(pcr);
+        
+//     }
+
+//     pub fn clear(&mut self) {
+//         self.records.clear();
+//         self.filter_reasons.clear();
+//     }
+
+//     pub fn is_singleton(&self) -> bool {
+//         self.filter_reasons.iter().filter(|&x| *x == "pass").count() == 1
+//     }
+
+//     pub fn parse_singleton(&mut self) {
+//         if let Some(i) = self.records.iter().position(|r| r.filter_reason == "pass") {
+//             self.records[i].filter_reason = String::from("singleton");
+//             self.filter_reasons[i] = String::from("singleton");
+//         }
+//     }
+
+//     pub fn is_complex(&self, max_order: &u32 ) -> bool {
+//         let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
+//         if pass_count > *max_order as usize {
+//             true
+//         } else {
+//             false
+//         }
+//     }
+
+//     pub fn parse_complex(&mut self) {
+//         for (i, record) in self.records.iter_mut().enumerate() {
+//             if record.filter_reason == "pass" {
+//                 record.filter_reason = String::from("complex");
+//                 self.filter_reasons[i] = String::from("complex");
+//             }
+//         }
+//     }
+
+//     pub fn filter_digest(&mut self, interval_hash: &HashMap<String, Lapper<usize, u8>> ) {
+//         for (i, record) in self.records.iter_mut().enumerate() {
+//             let is_in_regions: bool =  record.is_in_regions(interval_hash);
+//             if is_in_regions {
+//                 if record.filter_reason == "pass" {
+//                     record.filter_reason = String::from("pass");
+//                     self.filter_reasons[i] = String::from("pass");
+//                 } else {
+//                     record.filter_reason = String::from("low_mq");
+//                     self.filter_reasons[i] = String::from("low_mq");
+//                 }
+              
+//             } else {
+//                 if record.filter_reason == "pass" {
+//                     record.filter_reason = String::from("low_mq");
+//                     self.filter_reasons[i] = String::from("low_mq");
+//                 }
+//             }
+//         }
+//     }
+
+//     pub fn filter_edges(&mut self, max_length: u64) {
+//         for (i, record) in self.records.iter_mut().enumerate() {
+//             if record.target_start < max_length || (record.target_length - record.target_end) < max_length {
+//                 record.filter_reason = String::from("low_mq");
+//                 self.filter_reasons[i] = String::from("low_mq");
+//             }
+//         }
+//     }
+
+//     pub fn stat(&self) -> HashMap<&str, u32> {
+//         let mut pass_count: u32 = 0;
+//         let mut singleton_count: u32 = 0;
+//         let mut low_mq_count: u32 = 0;
+//         let mut complex_count: u32 = 0;
+//         let mut stat_info: HashMap<&str, u32> = HashMap::new();
+
+
+//         for filter_reason in self.filter_reasons.iter() {
+//             if filter_reason == &String::from("pass") {
+//                 pass_count += 1;
+//             } else if filter_reason == &String::from("singleton") {
+//                 singleton_count +=1;
+//             } else if filter_reason == &String::from("low_mq") {
+//                 low_mq_count += 1;
+//             } else if filter_reason == &String::from("complex") {
+//                 complex_count += 1;
+//             } else {
+//                 panic!("Unknown filter reason.");
+//             }
+            
+//             stat_info.insert(&PASS_STR, pass_count);
+//             stat_info.insert(&SINGLETON_STR, singleton_count);
+//             stat_info.insert(&LOW_MQ_STR, low_mq_count);
+//             stat_info.insert(&COMPLEX_STR, complex_count);
+
+//         }
+//         stat_info
+//     }
+
+//     pub fn info(&self) -> &str {
+//         let stat_info = self.stat();
+
+//         if *stat_info.get("pass").unwrap_or(&0) >= 2 {
+//             return "pass";
+//         } else if *stat_info.get("low_mq").unwrap_or(&0) >=1 && self.records.len() > 1  {
+//             return "low_mq";
+//         } else if *stat_info.get("complex").unwrap_or(&0) >= 1 && self.records.len() > 1 {
+//             return "complex";
+//         } else {
+//            return "singleton";
+//         }
+//     }
+// }
+
+
 #[derive(Debug)]
 pub struct Concatemer {
-    pub records: Vec<PoreCRecord>,
-    pub filter_reasons: Vec<String>,
+    pub records:        Vec<PoreCRecord>,
+    pub filter_reasons: Vec<FilterReason>,
 }
 
 impl Concatemer {
-
-    pub fn new() -> Concatemer{
+    pub fn with_capacity(cap: usize) -> Concatemer {
         Concatemer {
-            records: Vec::new(),
-            filter_reasons: Vec::new()
+            records: Vec::with_capacity(cap),
+            filter_reasons: Vec::with_capacity(cap),
         }
     }
 
-    pub fn push(&mut self, pcr: PoreCRecord) {
-        self.filter_reasons.push(pcr.filter_reason.clone());
+    pub fn push(&mut self, mut pcr: PoreCRecord) {
+        let fr = FilterReason::from_str(&pcr.filter_reason);
+        self.filter_reasons.push(fr);
+        pcr.filter_reason = fr.as_str().to_string();
         self.records.push(pcr);
-        
     }
 
     pub fn clear(&mut self) {
@@ -149,112 +316,80 @@ impl Concatemer {
     }
 
     pub fn is_singleton(&self) -> bool {
-        self.filter_reasons.iter().filter(|&x| *x == "pass").count() == 1
+        self.filter_reasons.iter().filter(|&&r| r == FilterReason::Pass).count() == 1
     }
 
     pub fn parse_singleton(&mut self) {
-        // for (i, record) in self.records.iter_mut().enumerate() {
-        //     if record.filter_reason == "pass" {
-        //         record.filter_reason = String::from("singleton");
-        //         self.filter_reasons[i] = String::from("singleton");
-        //     }
-        // }
-
-        if let Some(i) = self.records.iter().position(|r| r.filter_reason == "pass") {
-            self.records[i].filter_reason = String::from("singleton");
-            self.filter_reasons[i] = String::from("singleton");
+        if let Some(i) = self.filter_reasons.iter().position(|&r| r == FilterReason::Pass) {
+            self.filter_reasons[i] = FilterReason::Singleton;
+            self.records[i].filter_reason = SINGLETON_STR.to_string();
         }
     }
 
-    pub fn is_complex(&self, max_order: &u32 ) -> bool {
-        let pass_count = self.filter_reasons.iter().filter(|&x| *x == "pass").count();
-        if pass_count > *max_order as usize {
-            true
-        } else {
-            false
-        }
+    pub fn is_complex(&self, max_order: u32) -> bool {
+        let cnt = self.filter_reasons.iter().filter(|&&r| r == FilterReason::Pass).count();
+        cnt > (max_order as usize)
     }
 
     pub fn parse_complex(&mut self) {
-        for (i, record) in self.records.iter_mut().enumerate() {
-            if record.filter_reason == "pass" {
-                record.filter_reason = String::from("complex");
-                self.filter_reasons[i] = String::from("complex");
+        for i in 0..self.filter_reasons.len() {
+            if self.filter_reasons[i] == FilterReason::Pass {
+                self.filter_reasons[i] = FilterReason::Complex;
+                self.records[i].filter_reason = COMPLEX_STR.to_string();
             }
         }
     }
 
-    pub fn filter_digest(&mut self, interval_hash: &HashMap<String, Lapper<usize, u8>> ) {
-        for (i, record) in self.records.iter_mut().enumerate() {
-            let is_in_regions: bool =  record.is_in_regions(interval_hash);
-            if is_in_regions {
-                if record.filter_reason == "pass" {
-                    record.filter_reason = String::from("pass");
-                    self.filter_reasons[i] = String::from("pass");
-                } else {
-                    record.filter_reason = String::from("low_mq");
-                    self.filter_reasons[i] = String::from("low_mq");
-                }
-              
+    pub fn filter_digest(&mut self, interval_hash: &HashMap<String, Lapper<usize, u8>>) {
+        for (i, r) in self.records.iter_mut().enumerate() {
+            let in_region = r.is_in_regions(interval_hash);
+            let new_fr = if in_region && self.filter_reasons[i] == FilterReason::Pass {
+                FilterReason::Pass
             } else {
-                if record.filter_reason == "pass" {
-                    record.filter_reason = String::from("low_mq");
-                    self.filter_reasons[i] = String::from("low_mq");
-                }
-            }
+                FilterReason::LowMQ
+            };
+            self.filter_reasons[i] = new_fr;
+            r.filter_reason = new_fr.as_str().to_string();
         }
     }
 
-    pub fn filter_edges(&mut self, max_length: u64) {
-        for (i, record) in self.records.iter_mut().enumerate() {
-            if record.target_start < max_length || (record.target_length - record.target_end) < max_length {
-                record.filter_reason = String::from("low_mq");
-                self.filter_reasons[i] = String::from("low_mq");
+    pub fn filter_edges(&mut self, max_len: u64) {
+        for (i, r) in self.records.iter_mut().enumerate() {
+            if r.target_start < max_len || (r.target_length - r.target_end) < max_len {
+                self.filter_reasons[i] = FilterReason::LowMQ;
+                r.filter_reason = LOW_MQ_STR.to_string();
             }
         }
     }
 
     pub fn stat(&self) -> HashMap<&str, u32> {
-        let mut pass_count: u32 = 0;
-        let mut singleton_count: u32 = 0;
-        let mut low_mq_count: u32 = 0;
-        let mut complex_count: u32 = 0;
-        let mut stat_info: HashMap<&str, u32> = HashMap::new();
-
-
-        for filter_reason in self.filter_reasons.iter() {
-            if filter_reason == &String::from("pass") {
-                pass_count += 1;
-            } else if filter_reason == &String::from("singleton") {
-                singleton_count +=1;
-            } else if filter_reason == &String::from("low_mq") {
-                low_mq_count += 1;
-            } else if filter_reason == &String::from("complex") {
-                complex_count += 1;
-            } else {
-                panic!("Unknown filter reason.");
+        let mut counts = [0u32; 4];
+        for &fr in &self.filter_reasons {
+            match fr {
+                FilterReason::Pass      => counts[0] += 1,
+                FilterReason::Singleton => counts[1] += 1,
+                FilterReason::LowMQ     => counts[2] += 1,
+                FilterReason::Complex   => counts[3] += 1,
             }
-            
-            stat_info.insert(&PASS_STR, pass_count);
-            stat_info.insert(&SINGLETON_STR, singleton_count);
-            stat_info.insert(&LOW_MQ_STR, low_mq_count);
-            stat_info.insert(&COMPLEX_STR, complex_count);
-
         }
-        stat_info
+        let mut m = HashMap::new();
+        m.insert(PASS_STR,      counts[0]);
+        m.insert(SINGLETON_STR, counts[1]);
+        m.insert(LOW_MQ_STR,    counts[2]);
+        m.insert(COMPLEX_STR,   counts[3]);
+        m
     }
 
     pub fn info(&self) -> &str {
-        let stat_info = self.stat();
-
-        if *stat_info.get("pass").unwrap_or(&0) >= 2 {
-            return "pass";
-        } else if *stat_info.get("low_mq").unwrap_or(&0) >=1 && self.records.len() > 1  {
-            return "low_mq";
-        } else if *stat_info.get("complex").unwrap_or(&0) >= 1 && self.records.len() > 1 {
-            return "complex";
+        let s = self.stat();
+        if s[PASS_STR] >= 2 {
+            PASS_STR
+        } else if s[LOW_MQ_STR] >= 1 && self.records.len() > 1 {
+            LOW_MQ_STR
+        } else if s[COMPLEX_STR] >= 1 && self.records.len() > 1 {
+            COMPLEX_STR
         } else {
-           return "singleton";
+            SINGLETON_STR
         }
     }
 }
@@ -273,6 +408,35 @@ impl PAFTable {
         Ok(rdr)
     }
 
+    pub fn parse2(&self) -> Result<impl Iterator<Item = PAFLine>, Box<dyn Error>> {
+        let  input = common_reader(&self.file);
+        let iter = input.lines()
+                    .filter_map(|l| {
+                        let line = l.ok().unwrap();
+                        if line.is_empty() || line.starts_with('#') {
+                            return None;
+                        }
+
+                        let mut cols = line.split('\t');
+                        Some(PAFLine{
+                            query:          cols.next().unwrap().to_owned(),
+                            query_length:   cols.next().unwrap().parse().ok().unwrap(),
+                            query_start:    cols.next().unwrap().parse().ok().unwrap(),
+                            query_end:      cols.next().unwrap().parse().ok().unwrap(),
+                            query_strand:   cols.next().unwrap().chars().next().unwrap(),
+                            target:         cols.next().unwrap().to_owned(),
+                            target_length:  cols.next().unwrap().parse().ok().unwrap(),
+                            target_start:   cols.next().unwrap().parse().ok().unwrap(),
+                            target_end:     cols.next().unwrap().parse().ok().unwrap(),
+                            match_n:        cols.next().unwrap().parse().ok().unwrap(),
+                            alignment_length: cols.next().unwrap().parse().ok().unwrap(),
+                            mapq:           cols.next().unwrap().parse().ok().unwrap(),
+                        })
+                    });
+
+        Ok(iter)
+    }
+
     pub fn paf2table(&self, bed: &String,
                      output: &String, min_quality: &u8, 
                      min_identity: &f32,  min_length: &u32,
@@ -282,6 +446,11 @@ impl PAFTable {
         
 
         type IvU8 = Interval<usize, u8>;
+        let min_quality = *min_quality;
+        let min_identity = *min_identity;
+        let min_length = *min_length;
+        let max_order = *max_order;
+        let max_edge_length = *max_edge_length;
     
         let is_filter_digest = if bed != "" { true } else { false };
        
@@ -293,41 +462,33 @@ impl PAFTable {
         
         let interval_hash = bed.to_interval_hash();
 
-        let parse_result = self.parse();
+        let parse_result = self.parse2();
         
         let mut rdr = match parse_result {
             Ok(v) => v,
             Err(error) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
         };
         
-        let writer = common_writer(output);
-        let mut wtr = csv::WriterBuilder::new()
-                            .has_headers(false)
-                            .delimiter(b'\t')
-                            .from_writer(writer);
+        let mut writer = common_writer(output);
+    
         
         let mut read_idx: u64 = 0;
         
         let mut filter_reason: &str = "";
-        let mut old_query: String = String::from("");
-        let mut concatemer: Concatemer  = Concatemer::new();
+        let mut old_query: Option<String> = None;
+        let init_cap = (max_order as usize) + 2;
+        let mut concatemer: Concatemer = Concatemer::with_capacity(init_cap);
         
         let mut read_mapping_count: u64 = 0;
         let mut read_pass_count: u64 = 0;
         let mut read_singleton_count: u64 = 0;
         let mut read_low_mq_count: u64 = 0;
         let mut read_complex_count: u64 = 0;
-        let is_filter_edges = *max_edge_length > 0;
-        for (line_num, line) in rdr.deserialize().enumerate() {
+        let is_filter_edges = max_edge_length > 0;
+        for (line_num, record) in rdr.enumerate() {
             // parse error to continue
-            let record: PAFLine = match line {
-                Ok(v) => v,
-                Err(error) => {
-                    log::warn!("Error: Could not parse input file: {:?} at line {}", self.file_name(), line_num);
-                    continue;
-                },
-            };
-            if record.query != old_query && old_query != String::from("") {
+            
+            if old_query.as_deref() != Some(&record.query) && old_query.is_some() {
                 read_idx += 1;  
                 
                 if is_filter_digest {
@@ -335,20 +496,20 @@ impl PAFTable {
                 }
 
                 if is_filter_edges {
-                    concatemer.filter_edges(*max_edge_length);
+                    concatemer.filter_edges(max_edge_length);
                 }
 
                 if concatemer.is_singleton() {
                     concatemer.parse_singleton();
                 }
                 
-                if concatemer.is_complex(&max_order) {
+                if concatemer.is_complex(max_order) {
                     concatemer.parse_complex();
                 }
 
                 for pcr in concatemer.records.iter() {
-                    if pcr.filter_reason == "pass" {
-                        wtr.serialize(&pcr).unwrap();
+                    if pcr.filter_reason == PASS_STR {
+                       writer.write_all(pcr.to_string().as_bytes()).unwrap();
                     }
                 }
                 
@@ -365,15 +526,19 @@ impl PAFTable {
             let length: u32 = record.query_end - record.query_start;
             let identity = record.match_n as f32 / record.alignment_length as f32;
             
-            if (&record.mapq < min_quality) || (&length < min_length) || (&identity < min_identity) {
-                filter_reason = "low_mq";
+            let fr = if record.mapq < min_quality
+                 || length   < min_length
+                 || identity < min_identity
+            {
+                LOW_MQ_STR
             } else {
-                filter_reason = "pass";
+                PASS_STR
+            };
+
+            if old_query.as_deref() != Some(&record.query) {
+                old_query = Some(record.query.clone());
             }
-
-            old_query = record.query.clone();
-
-            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, filter_reason.to_string());
+            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
             
             concatemer.push(pcr);
         }
@@ -383,8 +548,8 @@ impl PAFTable {
             concatemer.parse_singleton();
         }
         for pcr in concatemer.records.iter() {
-            if pcr.filter_reason == "pass" {
-                wtr.serialize(&pcr).unwrap();
+            if pcr.filter_reason == PASS_STR {
+                writer.write_all(pcr.to_string().as_bytes()).unwrap();
             }
         }
         match concatemer.info() {
@@ -436,7 +601,7 @@ impl PAFTable {
                 chromsize_map.insert(chr, size);
             }
         }
-
+        
         let mut coverage_diff_map: HashMap<String, BTreeMap<usize, i64>> = HashMap::new();
         for (chr, _) in chromsize_map.iter() {
             coverage_diff_map.insert(chr.clone(), BTreeMap::new());
