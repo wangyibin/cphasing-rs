@@ -325,7 +325,8 @@ impl KPruner {
                     } else {
                         (&contig_pair.Contig1, &contig_pair.Contig2)
                     };
-    
+                    // println!("{:?}", contig_pair);
+                
                     let (group1, group2) = if longer_group1 {
                         (&init_group2, &init_group1)
                     } else {
@@ -356,14 +357,16 @@ impl KPruner {
             
                         let mut tmp_contig_pair = ContigPair2::new(&group1[i], &group2[j]);
                         tmp_contig_pair.order();
-
+                        
                         if let Some(value) = contacts_data.get(&tmp_contig_pair) {
+                            // println!("{} {} {:?} {}", i, j, tmp_contig_pair, value);
                             *element = OrderedFloat(*value);
                         }
                     });
 
+                    // println!("{:?}", matrix);
                     let assignments = maximum_bipartite_matching(matrix);
-                
+                    // println!("{:?}", assignments);
                     if assignments[idx1] != idx2 {
                         is_weak = true;
                         break 'outer;

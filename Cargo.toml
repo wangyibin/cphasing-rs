@@ -36,12 +36,13 @@ flate2 = {version = "1.0.28", default-features = false}
 gzp = { version = "0.11.3"}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
-# indicatif = { version = "0.17.8", }
+indicatif = { version = "0.17.8" }
 jemallocator = { version = "0.5.4 " }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
 nthash = { version = "0.5.1" }
+memchr = { version = "2" }
 env_logger = { version = "0.10.0" }
 itertools = { version = "0.10.5"}
 indexmap = { version = "2.1.0" }

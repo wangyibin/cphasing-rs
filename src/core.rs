@@ -23,7 +23,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read as StdRead, Write};
 use std::error::Error;
 use std::result::Result;
 use std::path::{Path, PathBuf};
@@ -210,6 +210,15 @@ impl ContigPair3<'_> {
     }
 }
 
+
+pub fn is_gzip_file(file_path: &str) -> io::Result<bool> {
+    let mut file = File::open(file_path)?;
+    let mut magic_number = [0u8; 2];
+    file.read_exact(&mut magic_number)?;
+
+    Ok(magic_number == [0x1F, 0x8B])
+}
+
 // {parse_input, parse_output, common_reader, common_writer} learn from https://github.com/mrvollger/rustybam/blob/main/src/myio.rs
 pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 'static>> {
     let fp: Box<dyn BufRead + Send + 'static> = match path {
@@ -231,7 +240,7 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
     let suffix = Path::new(file).extension();
     let file_path = PathBuf::from(file);
 
-    if suffix == Some(OsStr::new("gz")) {
+    if suffix == Some(OsStr::new("gz")) && is_gzip_file(&file_path.to_string_lossy()).unwrap_or(false) {
         let fp = match File::open(&file_path) {
             Err(error) => panic!("No such of file `{}`: {}", file_path.display(), error),
             Ok(fp) => fp,

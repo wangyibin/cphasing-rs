@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::io::{ Write, BufReader, BufRead };
 use serde::{ Deserialize, Serialize};
 use rust_lapper::{Interval, Lapper};
+use rayon::prelude::*;
 
 use crate::bed::Bed3; 
 use crate::core::{ common_reader, common_writer };
@@ -362,6 +363,8 @@ impl Concatemer {
         }
     }
 
+    
+
     pub fn stat(&self) -> HashMap<&str, u32> {
         let mut counts = [0u32; 4];
         for &fr in &self.filter_reasons {
@@ -379,6 +382,66 @@ impl Concatemer {
         m.insert(COMPLEX_STR,   counts[3]);
         m
     }
+
+    pub fn process(
+        &mut self,
+        is_filter_digest: bool,
+        interval_hash: &HashMap<String, Lapper<usize, u8>>,
+        is_filter_edges: bool,
+        max_edge_length: u64,
+        max_order: u32,
+    ) -> &'static str {
+        // 第一次迭代：应用初始过滤器并计算 "pass" 的记录数
+        let mut pass_indices = Vec::new();
+        for (i, record) in self.records.iter_mut().enumerate() {
+            // 只处理初始状态为 Pass 的记录
+            if self.filter_reasons[i] != FilterReason::Pass {
+                continue;
+            }
+
+            // 应用过滤器，如果未通过则更新状态
+            if is_filter_digest && !record.is_in_regions(interval_hash) {
+                self.filter_reasons[i] = FilterReason::LowMQ;
+                continue;
+            }
+            if is_filter_edges && (record.target_start < max_edge_length || (record.target_length - record.target_end) < max_edge_length) {
+                self.filter_reasons[i] = FilterReason::LowMQ;
+                continue;
+            }
+
+            // 如果所有过滤器都通过，则记录其索引
+            pass_indices.push(i);
+        }
+
+        // 根据 "pass" 记录的数量决定最终状态
+        let pass_count = pass_indices.len();
+        let final_status = if pass_count == 0 {
+            // 如果没有通过的，检查是否有 low_mq，否则就是 singleton
+            if self.records.len() > 1 { LOW_MQ_STR } else { SINGLETON_STR }
+        } else if pass_count == 1 {
+            // 只有一个通过，标记为 singleton
+            self.filter_reasons[pass_indices[0]] = FilterReason::Singleton;
+            SINGLETON_STR
+        } else if pass_count > max_order as usize {
+            // 太多通过的，标记为 complex
+            for &idx in &pass_indices {
+                self.filter_reasons[idx] = FilterReason::Complex;
+            }
+            COMPLEX_STR
+        } else {
+            // 2 <= pass_count <= max_order，是有效的 pass
+            PASS_STR
+        };
+
+        // 第二次迭代（可选，但为了清晰）：更新所有记录的字符串理由
+        // 这一步可以与最终输出合并，但为了保持结构清晰，我们先这样做
+        for i in 0..self.records.len() {
+            self.records[i].filter_reason = self.filter_reasons[i].as_str().to_string();
+        }
+
+        final_status
+    }
+
 
     pub fn info(&self) -> &str {
         let s = self.stat();
@@ -437,7 +500,159 @@ impl PAFTable {
         Ok(iter)
     }
 
+    
     pub fn paf2table(&self, bed: &String,
+            output: &String, min_quality: &u8, 
+            min_identity: &f32,  min_length: &u32,
+            max_order: &u32, 
+            max_edge_length: &u64,
+        ) -> Result<(), Box<dyn Error>> {
+
+        type IvU8 = Interval<usize, u8>;
+        let min_quality = *min_quality;
+        let min_identity = *min_identity;
+        let min_length = *min_length;
+        let max_order = *max_order;
+        let max_edge_length = *max_edge_length;
+
+        let is_filter_digest = !bed.is_empty();
+        let bed = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
+        let interval_hash = bed.to_interval_hash();
+        let is_filter_edges = max_edge_length > 0;
+
+        let num_threads = 10;
+        log::info!("Using {} threads for processing.", num_threads);
+        let (sender, receiver) = bounded::<Vec<PoreCRecord>>(1000); // Channel for read groups
+        let (writer_sender, writer_receiver) = bounded::<String>(1000); // Channel for output strings
+
+        let mut handles = Vec::with_capacity(num_threads);
+
+        for _ in 0..num_threads {
+        let receiver = receiver.clone();
+        let writer_sender = writer_sender.clone();
+        let interval_hash = interval_hash.clone(); // Clone for thread
+
+        handles.push(thread::spawn(move || {
+        let init_cap = (max_order as usize) + 2;
+        let mut concatemer: Concatemer = Concatemer::with_capacity(init_cap);
+        let mut local_stats = (0, 0, 0, 0); // pass, singleton, low_mq, complex
+
+        while let Ok(records) = receiver.recv() {
+            for pcr in records {
+                concatemer.push(pcr);
+            }
+
+            let final_status = concatemer.process(
+                is_filter_digest,
+                &interval_hash,
+                is_filter_edges,
+                max_edge_length,
+                max_order,
+            );
+
+            let mut output_buffer = String::new();
+            for pcr in concatemer.records.iter() {
+                if pcr.filter_reason == PASS_STR {
+                    output_buffer.push_str(&pcr.to_string());
+                    output_buffer.push('\n');
+                }
+            }
+            if !output_buffer.is_empty() {
+                writer_sender.send(output_buffer).unwrap();
+            }
+            
+            match concatemer.info() {
+                PASS_STR => local_stats.0 += 1,
+                SINGLETON_STR => local_stats.1 += 1,
+                LOW_MQ_STR => local_stats.2 += 1,
+                COMPLEX_STR => local_stats.3 += 1,
+                _ => {},
+            }
+            concatemer.clear();
+        }
+            local_stats
+        }));
+        }
+        drop(writer_sender); // Drop the original sender for the writer
+
+        // Writer thread
+        let output_clone = output.clone();
+        let writer_handle = thread::spawn(move || {
+            let mut writer = common_writer(&output_clone);
+            while let Ok(data_string) = writer_receiver.recv() {
+                writer.write_all(data_string.as_bytes()).unwrap();
+            }
+        });
+
+        let mut rdr = self.parse2()?;
+        let mut old_query: Option<String> = None;
+        let mut current_read_records: Vec<PoreCRecord> = Vec::new();
+        let mut read_idx: u64 = 0;
+
+        for record in rdr {
+            let query_name = record.query.clone();
+
+            if old_query.as_deref() != Some(&query_name) && old_query.is_some() {
+                sender.send(current_read_records).unwrap();
+                current_read_records = Vec::new();
+                read_idx += 1;
+            }
+
+            let length: u32 = record.query_end - record.query_start;
+            let identity = if record.alignment_length > 0 { record.match_n as f32 / record.alignment_length as f32 } else { 0.0 };
+
+            let fr = if record.mapq < min_quality || length < min_length || identity < min_identity {
+                LOW_MQ_STR
+            } else {
+                PASS_STR
+            };
+
+            old_query = Some(query_name);
+            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
+                current_read_records.push(pcr);
+        }
+
+        // Send the last group
+        if !current_read_records.is_empty() {
+            sender.send(current_read_records).unwrap();
+            read_idx += 1;
+        }
+        drop(sender); 
+        let mut read_pass_count: u64 = 0;
+        let mut read_singleton_count: u64 = 0;
+        let mut read_low_mq_count: u64 = 0;
+        let mut read_complex_count: u64 = 0;
+
+        for handle in handles {
+        let stats = handle.join().unwrap();
+            read_pass_count += stats.0;
+            read_singleton_count += stats.1;
+            read_low_mq_count += stats.2;
+            read_complex_count += stats.3;
+        }
+        writer_handle.join().unwrap();
+
+        let mut summary: ReadSummary = ReadSummary::new();
+        summary.pass = read_pass_count;
+        summary.singleton = read_singleton_count;
+        summary.low_mq = read_low_mq_count;
+        summary.mapping = read_idx;
+        summary.complex = read_complex_count;
+       
+        let output_prefix = if output == "-" {
+            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+        } else {
+            Path::new(&output).with_extension("").to_str().unwrap().to_string()
+        };
+
+        summary.save(&format!("{}.read.summary", output_prefix));
+
+        log::info!("Successful output Pore-C table `{}`", output);
+        Ok(())
+    }
+
+
+    pub fn paf2table2(&self, bed: &String,
                      output: &String, min_quality: &u8, 
                      min_identity: &f32,  min_length: &u32,
                      max_order: &u32, 
@@ -815,3 +1030,6 @@ impl PAFTable {
 
     
 }
+
+
+   

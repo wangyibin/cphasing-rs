@@ -174,38 +174,72 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
 
 }
 
+// fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
+//     let mut query_start = 0;
+//     let mut query_end = 0;
+//     let mut query_pos = 0;
+//     let mut query_length = 0;
+//     for cigar in record.cigar().iter() {
+//         match cigar.char() {
+//             'M' | '=' | 'X' | 'I' => {
+//                 if query_start == 0 {
+//                     query_start = query_pos;
+//                 }
+//                 query_pos += cigar.len();
+//                 query_length += cigar.len();
+//                 query_end += cigar.len()
+//             }
+//             'S' | 'H' => {
+//                 if query_start == 0 {
+//                     query_start = query_pos + cigar.len();
+//                 }
+//                 query_pos += cigar.len();
+//                 query_length += cigar.len();
+//             }
+//             'D' | 'N' | 'P' => {
+
+//             }
+//             _ => {}
+//         }
+//     }
+//     // query_end = query_pos;
+//     query_end = query_start + query_end;
+
+//     (query_start, query_end, query_length)
+// }
+
 fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
-    let mut query_start = 0;
-    let mut query_end = 0;
-    let mut query_pos = 0;
-    let mut query_length = 0;
-    for cigar in record.cigar().iter() {
-        match cigar.char() {
-            'M' | '=' | 'X' | 'I' => {
-                if query_start == 0 {
-                    query_start = query_pos;
-                }
-                query_pos += cigar.len();
-                query_length += cigar.len();
-                query_end += cigar.len()
+    let mut qstart: u32 = 0;
+    let mut qend_used: u32 = 0;   
+    let mut qpos: u32 = 0;        
+    let mut qlen: u32 = 0;          
+    for op in record.cigar().iter() {
+        match op {
+            Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
+                if qstart == 0 { qstart = qpos; }
+                qpos += *l as u32;
+                qlen += *l as u32;
+                qend_used += *l as u32;
             }
-            'S' | 'H' => {
-                if query_start == 0 {
-                    query_start = query_pos + cigar.len();
-                }
-                query_pos += cigar.len();
-                query_length += cigar.len();
+            Cigar::Ins(l) => {
+                if qstart == 0 { qstart = qpos; }
+                qpos += *l as u32;
+                qlen += *l as u32;
+                qend_used += *l as u32;
             }
-            'D' | 'N' | 'P' => {
+            Cigar::SoftClip(l) | Cigar::HardClip(l) => {
+                if qstart == 0 { qstart = qpos + (*l as u32); }
+                qpos += *l as u32;
+                qlen += *l as u32;
+            }
+            Cigar::Del(_) | Cigar::RefSkip(_) | Cigar::Pad(_) => {
 
             }
             _ => {}
         }
     }
-    // query_end = query_pos;
-    query_end = query_start + query_end;
-
-    (query_start, query_end, query_length)
+    let qend = qstart + qend_used;
+    (qstart, qend, qlen)
 }
 
 pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary: bool) {
@@ -214,270 +248,236 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-    
+
     let header = Header::from_template(bam.header());
-    let header = HeaderView::from_header(&header);
-    let mut chromsizes = Vec::new();
-    
+    let hv = HeaderView::from_header(&header);
 
-    for tid in 0..header.target_count() {
-        let name = header.tid2name(tid);
-        let len = header.target_len(tid).unwrap();
-        let csr: ChromSizeRecord = ChromSizeRecord {
-            chrom: std::str::from_utf8(name).unwrap().to_string(), 
-            size: len
-        };
-        chromsizes.push(csr);
-    }
-
-    let chromsizes_db: HashMap<String, u64> = chromsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
-
-    let tid2name: HashMap<usize, String> = (0..header.target_count()).map(|tid| {
-        let name = header.tid2name(tid);
-        (tid as usize, std::str::from_utf8(name).unwrap().to_string())
-    }).collect();
+    let tnames: Vec<&str> = (0..hv.target_count())
+        .map(|tid| std::str::from_utf8(hv.tid2name(tid)).unwrap())
+        .collect();
+    let tlens: Vec<usize> = (0..hv.target_count())
+        .map(|tid| hv.target_len(tid).unwrap() as usize)
+        .collect();
 
     let _ = bam.set_threads(threads);
-    let mut idx = 0;
 
     let mut writer = common_writer(output);
-    
-    while let Some(r) = bam.records().next() {
-        let record = r.unwrap();
 
-        if record.is_unmapped() { 
+    for r in bam.records() {
+        let record = r.unwrap();
+        if record.is_unmapped() {
+            continue;
+        }
+        if record.is_secondary() && !is_secondary {
             continue;
         }
 
-        if record.is_secondary() & !is_secondary {
-            continue
-        }
-        let flag = if record.is_secondary() {
-            "tp:A:S"
-        } else {
-            "tp:A:P"
-        };
-
-        let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+        let flag = if record.is_secondary() { "tp:A:S" } else { "tp:A:P" };
         let strand = if record.is_reverse() { "-" } else { "+" };
-        
-        let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
 
-        for cigar in record.cigar().iter() {
-            let len = cigar.len() as i64;
-            match cigar.char() {
-                'M' | '=' | 'X' => {
-                    match_length += len;
-                    alignment_length += len;
-                    if cigar.char() == 'X' {
-                        mm += len;
-                    }
-                },
-                'D' => {
-                    deletion_length += len;
-                    alignment_length += len;
-                },
-                'I' => {
-                    insertion_length += len;
-                    alignment_length += len;
-                },
-                'N' | 'P' => {
-                    alignment_length += len;
-                },
+        let mut match_len: i64 = 0;
+        let mut del_len: i64 = 0;
+        let mut ins_len: i64 = 0;
+        let mut aln_len: i64 = 0;
+        for op in record.cigar().iter() {
+            match op {
+                Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
+                    let len = *l as i64;
+                    match_len += len;
+                    aln_len += len;
+                }
+                Cigar::Del(l) => {
+                    let len = *l as i64;
+                    del_len += len;
+                    aln_len += len;
+                }
+                Cigar::Ins(l) => {
+                    let len = *l as i64;
+                    ins_len += len;
+                    aln_len += len;
+                }
+                Cigar::RefSkip(l) | Cigar::Pad(l) => {
+                    aln_len += *l as i64;
+                }
                 _ => {}
             }
         }
 
-
         let nm: i64 = match record.aux(b"NM") {
-            Ok(value) => {
-                match value {
-                    Aux::U8(v) => v.try_into().unwrap(),
-                    Aux::U16(v) => v.try_into().unwrap(),
-                    Aux::U32(v) => v.try_into().unwrap(),
-                    Aux::I32(v) => v.try_into().unwrap(),
-                    _ => 0, 
-                }
-                
-            },
-            Err(e) => 0
+            Ok(Aux::U8(v)) => v as i64,
+            Ok(Aux::U16(v)) => v as i64,
+            Ok(Aux::U32(v)) => v as i64,
+            Ok(Aux::I32(v)) => v as i64,
+            _ => 0,
+        };
+        let ascore: i64 = match record.aux(b"AS") {
+            Ok(Aux::U8(v)) => v as i64,
+            Ok(Aux::U16(v)) => v as i64,
+            Ok(Aux::U32(v)) => v as i64,
+            Ok(Aux::I32(v)) => v as i64,
+            _ => 0,
         };
 
-        let _as: i64 =  match record.aux(b"AS") {
-            Ok(value) => {
-                match value {
-                    Aux::U8(v) => v.try_into().unwrap(),
-                    Aux::U16(v) => v.try_into().unwrap(),
-                    Aux::U32(v) => v.try_into().unwrap(),
-                    Aux::I32(v) => v.try_into().unwrap(),
-                    _ => 0, 
-                }
-                
-            },
-            Err(e) => 0
-        };
-
-        match_length = match_length - (nm - (insertion_length + deletion_length));
-
-        let as_string = format!("AS:i:{}", _as);
-        let nm_string = format!("NM:i:{}", nm);
+        match_len = match_len - (nm - (ins_len + del_len));
 
         let (qstart, qend, qlen) = get_query_start_end(&record);
-    
+
         let qname = std::str::from_utf8(record.qname()).unwrap();
-        let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
-        let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
+        let tid = record.tid() as usize;
+        let tname = tnames[tid];
+        let tlen = tlens[tid];
         let tstart = record.reference_start();
         let tend = record.reference_end();
         let mapq = record.mapq();
-        writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
-                qname, qlen, qstart, qend, strand, 
-                tname, tlen, tstart, tend, match_length, alignment_length, mapq,
-                nm_string, as_string, flag).unwrap();
 
-        idx += 1;
-
+        // PAF: qname qlen qstart qend strand tname tlen tstart tend mlen alen mapq NM AS flag
+        use std::io::Write;
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tNM:i:{}\tAS:i:{}\t{}",
+            qname, qlen, qstart, qend, strand,
+            tname, tlen, tstart, tend,
+            match_len, aln_len, mapq, nm, ascore, flag
+        ).unwrap();
     }
 
-
-    // let (sender, receiver) = bounded::<Vec<Record>>(10);
-    // let wtr = Arc::new(Mutex::new(writer));
-    // let mut handles = Vec::new();
-
-    // for _ in 0..8 {
-    //     let receiver = receiver.clone();
-    //     let chromsizes_db = chromsizes_db.clone();
-    //     let tid2name = tid2name.clone();
-    //     let wtr = Arc::clone(&wtr);
-        
-    //     handles.push(thread::spawn(move || {
-    //         let mut local_data: Vec<String> = Vec::new();
-
-        
-    //         while let Ok(records) = receiver.recv() {
-    //             for record in records {
-
-    //                 // let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
-    //                 let chrom = tid2name.get(&record.tid().try_into().unwrap()).unwrap().to_string();
-    //                 let strand = if record.is_reverse() { "-" } else { "+" };
-                    
-    //                 let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
-
-    //                 for cigar in record.cigar().iter() {
-    //                     let len = cigar.len() as i64;
-    //                     match cigar.char() {
-    //                         'M' | '=' | 'X' => {
-    //                             match_length += len;
-    //                             alignment_length += len;
-    //                             if cigar.char() == 'X' {
-    //                                 mm += len;
-    //                             }
-    //                         },
-    //                         'D' => {
-    //                             deletion_length += len;
-    //                             alignment_length += len;
-    //                         },
-    //                         'I' => {
-    //                             insertion_length += len;
-    //                             alignment_length += len;
-    //                         },
-    //                         'N' | 'P' => {
-    //                             alignment_length += len;
-    //                         },
-    //                         _ => {}
-    //                     }
-    //                 }
-
-
-    //                 let nm: i64 = match record.aux(b"NM") {
-    //                     Ok(value) => {
-    //                         match value {
-    //                             Aux::U8(v) => v.try_into().unwrap(),
-    //                             Aux::U16(v) => v.try_into().unwrap(),
-    //                             Aux::U32(v) => v.try_into().unwrap(),
-    //                             Aux::I32(v) => v.try_into().unwrap(),
-    //                             _ => 0, 
-    //                         }
-                            
-    //                     },
-    //                     Err(e) => 0
-    //                 };
-
-    //                 match_length = match_length - (nm - (insertion_length + deletion_length));
-
-
-    //                 let (qstart, qend, qlen) = get_query_start_end(&record);
-                
-    //                 let qname = std::str::from_utf8(record.qname()).unwrap();
-    //                 // let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
-    //                 let tname = tid2name.get(&record.tid().try_into().unwrap()).unwrap();
-    //                 let tlen = chromsizes_db.get(tname).unwrap().clone();
-    //                 // let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
-                    
-    //                 let tstart = record.reference_start();
-    //                 let tend = record.reference_end();
-    //                 let mapq = record.mapq();
-                    
-    //                 local_data.push(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
-    //                         qname, qlen, qstart, qend, strand, 
-    //                         tname, tlen, tstart, tend, match_length, alignment_length, mapq));
-    //             }
-    //         }
-
-    //         let mut wtr = wtr.lock().unwrap();
-    //         for line in local_data {
-    //             writeln!(wtr, "{}", line).unwrap();
-    //         }
-    //     }));
-
-    // }
-
-    // let batch_size = 1000;
-    // let mut batch = Vec::with_capacity(batch_size);
-    // let mut read_name: Vec<u8> = Vec::new();
-    // let mut previous_read_name: Vec<u8> = Vec::new();
-    // let mut i = 0;
-    // for r in bam.records() {
-    //     let record = r.unwrap();
-    //     if record.is_unmapped() { 
-    //         continue;
-    //     }
-
-    //     if record.is_secondary() & !is_secondary {
-    //         continue
-    //     }
-
-    //     read_name.clear();
-    //     read_name.extend_from_slice(record.qname());
-    //     i += 1;
-    //     if i == batch_size {
-
-    //         if read_name != previous_read_name {
-    //             sender.send(std::mem::take(&mut batch)).unwrap();
-    //             i = 0
-    //         } else {
-    //             i -= 1;
-    //         }
-    //     }
-
-    //     batch.push(record);
-    //     previous_read_name.clear();
-    //     std::mem::swap(&mut read_name, &mut previous_read_name);
-
-    // }    
-
-    // if batch.len() > 0 {
-    //     sender.send(std::mem::take(&mut batch)).unwrap();
-    // }
-
-    // drop(sender);
-    // for handle in handles {
-    //     handle.join().unwrap();
-    // }
-
     log::info!("Successfully output paf to {}", output);
-
 }
+
+// pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary: bool) {
+//     let mut bam = if input_bam == &String::from("-") {
+//         Reader::from_stdin().expect("Failed to read from stdin")
+//     } else {
+//         Reader::from_path(input_bam).expect("Failed to read from the provided path")
+//     };
+    
+//     let header = Header::from_template(bam.header());
+//     let header = HeaderView::from_header(&header);
+//     let mut chromsizes = Vec::new();
+    
+
+//     for tid in 0..header.target_count() {
+//         let name = header.tid2name(tid);
+//         let len = header.target_len(tid).unwrap();
+//         let csr: ChromSizeRecord = ChromSizeRecord {
+//             chrom: std::str::from_utf8(name).unwrap().to_string(), 
+//             size: len
+//         };
+//         chromsizes.push(csr);
+//     }
+
+//     let chromsizes_db: HashMap<String, u64> = chromsizes.iter().map(|x| (x.chrom.clone(), x.size)).collect();
+
+//     let tid2name: HashMap<usize, String> = (0..header.target_count()).map(|tid| {
+//         let name = header.tid2name(tid);
+//         (tid as usize, std::str::from_utf8(name).unwrap().to_string())
+//     }).collect();
+
+//     let _ = bam.set_threads(threads);
+//     let mut idx = 0;
+
+//     let mut writer = common_writer(output);
+    
+//     while let Some(r) = bam.records().next() {
+//         let record = r.unwrap();
+
+//         if record.is_unmapped() { 
+//             continue;
+//         }
+
+//         if record.is_secondary() & !is_secondary {
+//             continue
+//         }
+//         let flag = if record.is_secondary() {
+//             "tp:A:S"
+//         } else {
+//             "tp:A:P"
+//         };
+
+//         let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
+//         let strand = if record.is_reverse() { "-" } else { "+" };
+        
+//         let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
+
+//         for cigar in record.cigar().iter() {
+//             let len = cigar.len() as i64;
+//             match cigar.char() {
+//                 'M' | '=' | 'X' => {
+//                     match_length += len;
+//                     alignment_length += len;
+//                     if cigar.char() == 'X' {
+//                         mm += len;
+//                     }
+//                 },
+//                 'D' => {
+//                     deletion_length += len;
+//                     alignment_length += len;
+//                 },
+//                 'I' => {
+//                     insertion_length += len;
+//                     alignment_length += len;
+//                 },
+//                 'N' | 'P' => {
+//                     alignment_length += len;
+//                 },
+//                 _ => {}
+//             }
+//         }
+
+
+//         let nm: i64 = match record.aux(b"NM") {
+//             Ok(value) => {
+//                 match value {
+//                     Aux::U8(v) => v.try_into().unwrap(),
+//                     Aux::U16(v) => v.try_into().unwrap(),
+//                     Aux::U32(v) => v.try_into().unwrap(),
+//                     Aux::I32(v) => v.try_into().unwrap(),
+//                     _ => 0, 
+//                 }
+                
+//             },
+//             Err(e) => 0
+//         };
+
+//         let _as: i64 =  match record.aux(b"AS") {
+//             Ok(value) => {
+//                 match value {
+//                     Aux::U8(v) => v.try_into().unwrap(),
+//                     Aux::U16(v) => v.try_into().unwrap(),
+//                     Aux::U32(v) => v.try_into().unwrap(),
+//                     Aux::I32(v) => v.try_into().unwrap(),
+//                     _ => 0, 
+//                 }
+                
+//             },
+//             Err(e) => 0
+//         };
+
+//         match_length = match_length - (nm - (insertion_length + deletion_length));
+
+//         let as_string = format!("AS:i:{}", _as);
+//         let nm_string = format!("NM:i:{}", nm);
+
+//         let (qstart, qend, qlen) = get_query_start_end(&record);
+    
+//         let qname = std::str::from_utf8(record.qname()).unwrap();
+//         let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
+//         let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
+//         let tstart = record.reference_start();
+//         let tend = record.reference_end();
+//         let mapq = record.mapq();
+//         writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+//                 qname, qlen, qstart, qend, strand, 
+//                 tname, tlen, tstart, tend, match_length, alignment_length, mapq,
+//                 nm_string, as_string, flag).unwrap();
+
+//         idx += 1;
+
+//     }
+
+//     log::info!("Successfully output paf to {}", output);
+
+// }
 
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
     
@@ -673,7 +673,7 @@ pub fn bamstat_hic(input_bams: &Vec<&String>, output: &String, threads: usize) {
         }
 
         (input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts)
-    }).collect::<Vec<_>>();;
+    }).collect::<Vec<_>>();
 
     
     writeln!(writer, "file\tunmapped\tunique\tmultiple\tsingleton").unwrap();
@@ -740,7 +740,7 @@ pub fn bamstat_porec(input_bams: &Vec<&String>, output: &String, threads: usize)
         }
 
         (input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts)
-    }).collect::<Vec<_>>();;
+    }).collect::<Vec<_>>();
 
     
     writeln!(writer, "file\tunmapped\tunique\tmultiple\tunique_q2").unwrap();

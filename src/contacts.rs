@@ -149,7 +149,7 @@ impl Contacts {
             let mut ratio = 0.0;
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
             let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
-
+            println!("{} {}", count1, count2);
             if contig_pair.Contig1 == contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
@@ -166,8 +166,6 @@ impl Contacts {
                     }
                 };
             } else {
-                
-               
                 
                 let m1_log = match normalization_method   {
                     "none" => 0.0,
@@ -400,7 +398,8 @@ impl Contacts2 {
     }
 
     pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
-                    normalization_method: &String) -> HashMap<ContigPair2, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+                    normalization_method: &String,
+                ) -> HashMap<ContigPair2, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
@@ -409,17 +408,17 @@ impl Contacts2 {
 
         let mut data: HashMap<ContigPair2, f64> = self.records.par_iter(
             ).map(|record| {
-                let contig_pair = match record.chrom1 > record.chrom2 {
+                let mut contig_pair = match record.chrom1 > record.chrom2 {
                     true => ContigPair2::new(&record.chrom2, &record.chrom1),
                     false => ContigPair2::new(&record.chrom1, &record.chrom2)
                 };
-              
+                contig_pair.order();
                 let count = record.count;
 
                 (contig_pair, count)
             }).collect();
         
-        
+
         // get contig1 == contig2 data
         let cis_data = data.par_iter().filter(|(contig_pair, _)| {
             *contig_pair.Contig1 == *contig_pair.Contig2
@@ -427,7 +426,60 @@ impl Contacts2 {
             (contig_pair.Contig1, *count)
         }).collect::<HashMap<&String, f64>>();
 
+        let mut total_contacts: HashMap<&String, f64> = HashMap::new();
+        if normalization_method == "vc" || normalization_method == "tweight" || normalization_method == "hybrid" {
+            for (pair, count) in data.iter() {
+                if *pair.Contig1 != *pair.Contig2 {
+                    *total_contacts.entry(pair.Contig1).or_insert(0.0) += count;
+                    *total_contacts.entry(pair.Contig2).or_insert(0.0) += count;
+                }
+            }
+        }
+
+        let mut t_row_sums: HashMap<&String, f64> = HashMap::new();
+        if normalization_method == "tweight" {
+            // Create a temporary map for T[i,j] values to calculate row sums
+            let mut t_matrix_entries: HashMap<ContigPair2, f64> = HashMap::new();
+            for (pair, count) in data.iter() {
+                if *pair.Contig1 != *pair.Contig2 {
+                    let total1 = total_contacts.get(pair.Contig1).unwrap_or(&1.0);
+                    let total2 = total_contacts.get(pair.Contig2).unwrap_or(&1.0);
+                    if *total1 > 0.0 && *total2 > 0.0 {
+                        let t_value = count / (total1 * total2);
+                        t_matrix_entries.insert(pair.clone(), t_value);
+                    }
+                }
+            }
+            // Calculate T_row_sum for each contig
+            for (pair, t_value) in t_matrix_entries.iter() {
+                *t_row_sums.entry(pair.Contig1).or_insert(0.0) += t_value;
+                *t_row_sums.entry(pair.Contig2).or_insert(0.0) += t_value;
+            }
+        }
+
+        let mut scaled_cis: HashMap<&String, f64> = HashMap::new();
+        let mut scaled_total: HashMap<&String, f64> = HashMap::new();
+
+        if normalization_method == "hybrid" {
+            // 1. Calculate sum for scaling
+            let cis_sum: f64 = cis_data.values().sum();
+            let total_sum: f64 = total_contacts.values().sum();
+
+            // 2. Create scaled bias vectors
+            if cis_sum > 0.0 {
+                for (contig, count) in cis_data.iter() {
+                    scaled_cis.insert(contig, count / cis_sum);
+                }
+            }
+            if total_sum > 0.0 {
+                for (contig, count) in total_contacts.iter() {
+                    scaled_total.insert(contig, count / total_sum);
+                }
+            }
+        }
+
         let normalization_method = normalization_method.as_str();
+
         data.par_iter_mut().for_each(|(contig_pair, count)| {
             let mut ratio = 0.0;
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
@@ -469,13 +521,59 @@ impl Contacts2 {
 
                 
                 ratio = match count1 * count2 {
-                    0.0 => 0.0,
+                    -1.0 => 0.0,
                     _ => {
                         if normalization_method == "none" {
                             *count  
                         } 
                         else if normalization_method == "cis" {
-                            *count / ((count1 * count2).sqrt())
+                            *count / (((count1 + 1.0) * (count2 + 1.0)).sqrt())
+                        }
+                        else if normalization_method == "vc" {
+                            let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&0.0); // Use 1.0 to avoid division by zero
+                            let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&0.0);
+                            
+                            *count / ((total1 + 1.0) * (total2 + 1.0))
+                            
+                        }
+                        else if normalization_method == "hybrid" {
+                            let w_cis = 0.5;
+                            let w_total = 0.5;
+                            let pseudo_count = 1e-9; // Use a very small pseudo_count for scaled data
+    
+                            // Get the SCALED bias values
+                            let s_cis1 = scaled_cis.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                            let s_cis2 = scaled_cis.get(&contig_pair.Contig2).unwrap_or(&0.0);
+    
+                            let s_total1 = scaled_total.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                            let s_total2 = scaled_total.get(&contig_pair.Contig2).unwrap_or(&0.0);
+    
+                            // Calculate the hybrid bias score using SCALED values
+                            let bias1 = w_cis * s_cis1 + w_total * s_total1 + pseudo_count;
+                            let bias2 = w_cis * s_cis2 + w_total * s_total2 + pseudo_count;
+                            
+                            // The denominator is now a product of small, scaled numbers.
+                            // The raw count needs to be divided by this.
+                            if bias1 > 0.0 && bias2 > 0.0 {
+                                *count / (bias1 * bias2)
+                            } else {
+                                0.0
+                            }
+                        }
+                        else if normalization_method == "tweight" {
+                            let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&1.0);
+                            let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&1.0);
+                            let t_sum1 = t_row_sums.get(&contig_pair.Contig1).unwrap_or(&1.0);
+                            let t_sum2 = t_row_sums.get(&contig_pair.Contig2).unwrap_or(&1.0);
+        
+                            let bias1 = total1 * t_sum1;
+                            let bias2 = total2 * t_sum2;
+        
+                            if bias1 > 0.0 && bias2 > 0.0 {
+                                *count / (bias1 * bias2)
+                            } else {
+                                0.0
+                            }
                         }
                         else if normalization_method == "cis_unique" {
                             match m1_log * m2_log {
@@ -513,7 +611,7 @@ impl Contacts2 {
         
         });
 
-      
+
         data 
 
     }

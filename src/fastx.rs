@@ -676,7 +676,7 @@ impl Fastx {
         let mut cluster_map: HashMap<String, String> = HashMap::new();
         let mut groups = Vec::new();
         for line in reader.lines() {
-            let line = line?;
+            let line = line.unwrap();
             let line = line.trim();
             let line = line.split("\t").collect::<Vec<&str>>();
             let group = line[0].to_string();

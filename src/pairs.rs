@@ -503,7 +503,7 @@ impl Pairs {
                     if filter_mapq {
                         if record.len() >= 8 {
                             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                            if mapq <= min_quality {
+                            if mapq < min_quality {
                                 continue
                             }
                         }
@@ -593,7 +593,7 @@ impl Pairs {
                     if filter_mapq {
                         if record.len() >= 8 {
                             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                            if mapq <= min_quality {
+                            if mapq < min_quality {
                                 continue
                             }
                         }
@@ -698,7 +698,7 @@ impl Pairs {
                     if filter_mapq {
                         if record.len() >= 8 {
                             let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                            if mapq <= min_quality {
+                            if mapq < min_quality {
                                 continue
                             }
                         }
@@ -2259,8 +2259,6 @@ impl Pairs {
             }
         });
 
-
-
         let mut handles = vec![];
         for _ in 0..8 {
             let receiver = receiver.clone();
@@ -2269,9 +2267,14 @@ impl Pairs {
             handles.push(thread::spawn(move || {
                 while let Ok(records) = receiver.recv() {
                     let (chunk_id, _) = &records.get(0).unwrap();
-                    let _records = records.iter().map(|(_, record)| record.as_str()).collect::<Vec<&str>>();
-         
-                    let reader = Cursor::new(_records.join("\n"));
+                    // let _records = records.iter().map(|(_, record)| record.as_str()).collect::<Vec<&str>>();
+                    let filtered: Vec<&str> = records.iter().map(|(_, r)| r.as_str())
+                                                    .filter(|line| line.split('\t').take(8).count() >=8 ).collect(); 
+                    if filtered.is_empty() {
+                        log::warn!("Warning: chunk {} is empty after filtering, skipped, please check input pairs, it must contain mapq columns and >= 8 columns, you can directly input pairs.gz file", chunk_id);
+                        continue;
+                    }
+                    let reader = Cursor::new(filtered.join("\n"));
                     let mut df = CsvReader::new(reader)
                         .has_header(false)
                         .with_comment_prefix(Some("#"))
@@ -2302,8 +2305,6 @@ impl Pairs {
                             continue;
                         }
                     };
-                    
-
                     
                     {
                         let mut file = File::create(format!("{}/q0/{}.parquet", output, chunk_id)).unwrap();

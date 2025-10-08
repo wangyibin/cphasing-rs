@@ -95,6 +95,46 @@ fn main() {
             }
 
         }
+        Some(("methalign", submathes)) => {
+            use cphasing::methalign::parse_bam;
+            let input_bam = submathes.get_one::<String>("BAM").expect("required");
+            let fasta_opt: Option<String> = submathes
+                .get_one::<String>("FASTA")
+                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
+            let bedgraph_opt: Option<String> = submathes
+                .get_one::<String>("BEDGRAPH")
+                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
+            let match_score = submathes.get_one::<i32>("MATCH_SCORE").expect("error");
+            let ref_penalty = submathes.get_one::<i32>("REF_PENALTY").expect("error");
+            let read_penalty = submathes.get_one::<i32>("READ_PENALTY").expect("error");
+            let ref_prob_cutoff = submathes.get_one::<f64>("REF_PROB_CUTOFF").expect("error");
+            let prob_cutoff = submathes.get_one::<u8>("PROB_CUTOFF").expect("error");
+            let designate_mapq = submathes.get_one::<u8>("DESIGNATE_MAPQ").expect("error");
+            let is_set_y = submathes.get_one::<bool>("IS_SET_Y").expect("error");
+            let cpg = submathes.get_one::<bool>("CPG").expect("error");
+            let output_secondary = submathes.get_one::<bool>("OUTPUT_SECONDARY").expect("error");
+            let output_bam = submathes.get_one::<String>("OUTPUT").expect("error");
+            let threads = submathes.get_one::<usize>("THREADS").expect("error");
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+            
+            parse_bam(&input_bam, 
+                      &fasta_opt,
+                      &bedgraph_opt,
+                      *match_score,
+                      *ref_penalty,
+                      *read_penalty,
+                      *ref_prob_cutoff,
+                      *prob_cutoff,
+                      *designate_mapq,
+                      *is_set_y,
+                      *cpg,
+                      *output_secondary,
+                      &output_bam,
+                      *threads);
+        }
         Some(("alleles", sub_matches)) => {
 
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
@@ -687,11 +727,24 @@ fn main() {
             
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
+            let prefix: &str = prefix.strip_suffix(".pairs.pqs").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
             pt.paf2table(&bed, &table_output, min_quality, min_identity, 
                             min_length, max_order, max_edge).unwrap();
             let prt = PoreCTable::new(&table_output);
-            prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
+            if output.ends_with(".pqs") {
+                let output = if output == "-" {
+                    let output = table_output.strip_suffix(".porec.gz").unwrap_or(&table_output);
+                    format!("{}.pqs", output)
+                } else {
+                    output.to_string()
+                };
+                prt.to_pairs_pqs(&chromsizes, &output, 1000000, *min_quality, *min_order, *max_order as usize).unwrap();
+               
+               
+            } else {
+                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
+            }
 
         }
         Some(("pairs-downsample", sub_matches)) => {
@@ -1128,13 +1181,12 @@ fn main() {
         Some(("modfa", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
-            let min_score = sub_matches.get_one::<u32>("MIN_SCORE").expect("error");
-            let min_frac = sub_matches.get_one::<f32>("MIN_FRAC").expect("error");
-            let bed_fmt = sub_matches.get_one::<String>("BED_FORMAT").expect("error");
+            
+            let min_frac = sub_matches.get_one::<f64>("MIN_FRAC").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
-            modify_fasta(&input_fasta, &bed, *min_score, 
-                            *min_frac, &bed_fmt, &output).unwrap();
+            modify_fasta(&input_fasta, &bed, 
+                            *min_frac, &output).unwrap();
         }
 
         Some(("optimize", sub_matches)) => {

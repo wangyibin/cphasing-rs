@@ -326,3 +326,14 @@ impl Iterator for Box<dyn BedIterator> {
         (**self).next()
     }
 }
+
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BedGraph {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub score: f32,
+}
+
+

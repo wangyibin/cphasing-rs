@@ -554,7 +554,7 @@ impl PoreCTable {
             let record: PoreCRecord = match line {
                 Ok(v) => v,
                 Err(error) => {
-                    log::warn!("Could not parse line {}", i + 1);
+                    log::warn!("Could not parse line {}: {:?}", i + 1, error);
                     continue
                 },
             }; 

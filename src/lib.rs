@@ -12,6 +12,7 @@ pub mod cutsite;
 pub mod fastx;
 pub mod kprune;
 pub mod methy;
+pub mod methalign;
 pub mod mnd;
 pub mod optimize;
 pub mod paf;
