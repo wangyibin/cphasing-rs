@@ -23,3 +23,7 @@ auto-includes = false
 installers = []
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
+
+
+[package.metadata.dist.ci.github]
+linux_runner = "ubuntu-latest"
