@@ -91,30 +91,3 @@ lto = true
 inherits = "release"
 lto = true
 opt-level = "z" 
-
-# Config for 'dist'
-[workspace.metadata.dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "1.0.0-rc.1"
-# CI backends to support
-ci = "github"
-# The archive format to use for non-windows builds (defaults .tar.xz)
-unix-archive = ".tar.gz"
-
-binaries-in-root = true
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = [
-            #"aarch64-apple-darwin", 
-            "aarch64-unknown-linux-musl", 
-            "x86_64-unknown-linux-musl"
-            ]
-# Whether CI should trigger releases with dispatches instead of tag pushes
-dispatch-releases = true
-# Which phase dist should use to create the GitHub release
-github-release = "announce"
-# Whether to auto-include files like READMEs, LICENSEs, and CHANGELOGs (default true)
-auto-includes = false
-# The installers to generate for each app
-installers = []
-
-allow-dirty = ["ci"]
