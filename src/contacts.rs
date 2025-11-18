@@ -14,6 +14,7 @@ use rayon::prelude::*;
 use crate::alleles::{ AlleleTable2, AlleleHeader };
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair, ContigPair2 };
+use crate::count_re::CountRE;
 
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -149,7 +150,7 @@ impl Contacts {
             let mut ratio = 0.0;
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
             let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
-            println!("{} {}", count1, count2);
+
             if contig_pair.Contig1 == contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
@@ -399,13 +400,32 @@ impl Contacts2 {
 
     pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
                     normalization_method: &String,
+                    re_count: &Option<CountRE>
                 ) -> HashMap<ContigPair2, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+
+        let _re_count = if let Some(v) = re_count {
+          
+            let mut re_count = v.clone();
+            re_count.parse();
+            let _re_count = re_count.to_data();
+         
+            _re_count.into_iter()
+                .map(|(key, value)| (key, value as f64))
+                .collect::<HashMap<_, _>>()
+        } else {
+           HashMap::new()
+        };
+
+
+        let re_count: HashMap<&String, f64> = _re_count.iter()
+            .map(|(key, value)| (key, *value))
+            .collect();
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
         // let longest_re = re_count.values().max().unwrap();
         // let longest_re_square = (longest_re * longest_re) as f64;
-
+        
         let mut data: HashMap<ContigPair2, f64> = self.records.par_iter(
             ).map(|record| {
                 let mut contig_pair = match record.chrom1 > record.chrom2 {
@@ -417,6 +437,21 @@ impl Contacts2 {
 
                 (contig_pair, count)
             }).collect();
+    
+    
+        let normalization_method = match (re_count.len() == 0) {
+            true => {
+                log::info!("No RE counts provided, switching normalization method to '{}'", normalization_method);
+                normalization_method.clone()
+
+            },
+            false => {
+                log::info!("RE counts provided, using normalization method: {}", "re");
+                "re".to_string()
+            }
+
+        };
+        log::info!("Using normalization method: {}", normalization_method);
         
 
         // get contig1 == contig2 data
@@ -484,16 +519,25 @@ impl Contacts2 {
             let mut ratio = 0.0;
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
             let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
-
+            
             if *contig_pair.Contig1 == *contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
                     "cis" => {
+                        
                         match count1 * count2 {
                             0.0 => 0.0,
                             _ => *count / ((count1 * count2).sqrt())
                         }
                     },
+                    "re" => {
+                        let re1 = re_count.get(&contig_pair.Contig1).unwrap_or(&1.0);
+                        let re2 = re_count.get(&contig_pair.Contig2).unwrap_or(&1.0);
+                        match re1 * re2 {
+                            0.0 => 0.0,
+                            _ => *count / ((re1 * re2).sqrt())
+                        }
+                    }
                     _ => { 0.0
                         // let m1 = unique_min.get(&contig_pair.Contig1.to_string()).unwrap_or(&0.0);
                         // -(m1 + 1.0).log2()
@@ -528,6 +572,15 @@ impl Contacts2 {
                         } 
                         else if normalization_method == "cis" {
                             *count / (((count1 + 1.0) * (count2 + 1.0)).sqrt())
+                        }
+                        else if normalization_method == "re" {
+                            let re1 = re_count.get(&contig_pair.Contig1).unwrap_or(&1.0);
+                            
+                            let re2 = re_count.get(&contig_pair.Contig2).unwrap_or(&1.0);
+                            match re1 * re2 {
+                                0.0 => 0.0,
+                                _ => *count / ((re1 * re2).sqrt())
+                            }
                         }
                         else if normalization_method == "vc" {
                             let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&0.0); // Use 1.0 to avoid division by zero

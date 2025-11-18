@@ -64,11 +64,17 @@ impl Clm {
         for (cluster, contigs) in &cluster_map {
             for i in 0..contigs.len() {
                 for j in i+1..contigs.len() {
-                    let contig_pair = if contigs[i] > contigs[j]{
-                        ContigPair3::new(&contigs[j], &contigs[i])
+                    let (a, b) = if contigs[i] <= contigs[j] {
+                        (&contigs[i], &contigs[j])
                     } else {
-                        ContigPair3::new(&contigs[i], &contigs[j])
+                        (&contigs[j], &contigs[i])
                     };
+                    let contig_pair = ContigPair3::new(a, b);
+                    // let contig_pair = if contigs[i] > contigs[j]{
+                    //     ContigPair3::new(&contigs[j], &contigs[i])
+                    // } else {
+                    //     ContigPair3::new(&contigs[i], &contigs[j])
+                    // };
                  
                     cluster_paired_map.insert(contig_pair, cluster);
                 }
@@ -82,17 +88,38 @@ impl Clm {
         for (cluster, _) in &cluster_map {
             let file_name = format!("{}/{}.clm", output_dir, cluster);
             let writer = common_writer(&file_name);
-            writer_map.insert(&cluster, writer);
+            writer_map.insert(cluster, writer);
         }
-
+        fn strip_orient(s: &str) -> &str {
+            if let Some(last) = s.as_bytes().last() {
+                if *last == b'+' || *last == b'-' {
+                    return &s[..s.len() - 1];
+                }
+            }
+            s
+        }
         for line in reader.lines() {
             let line = line?;
             let mut iter = line.split_whitespace();
-            let contig1 = iter.next().unwrap();
-            let contig2 = iter.next().unwrap();
-            let contig1 = &contig1[..contig1.len() - 1];
-            let contig2 = &contig2[..contig2.len() - 1];
-            let contig_pair = ContigPair3::new(contig1, contig2);
+            // let contig1 = iter.next().unwrap();
+            // let contig2 = iter.next().unwrap();
+            // let contig1 = &contig1[..contig1.len() - 1];
+            // let contig2 = &contig2[..contig2.len() - 1];
+            let c1_raw = match iter.next() {
+                Some(x) => x,
+                None => continue,
+            };
+            let c2_raw = match iter.next() {
+                Some(x) => x,
+                None => continue,
+            };
+
+            let contig1 = strip_orient(c1_raw);
+            let contig2 = strip_orient(c2_raw);
+            // let contig_pair = ContigPair3::new(contig1, contig2);
+            let (a, b) = if contig1 <= contig2 { (contig1, contig2) } else { (contig2, contig1) };
+            let contig_pair = ContigPair3::new(a, b);
+
             let cluster = match cluster_paired_map.get(&contig_pair) {
                 Some(cluster) => cluster,
                 None => continue

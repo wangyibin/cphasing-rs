@@ -115,6 +115,16 @@ impl PoreCRecordPlus {
             self.filter_reason,
         )
     }
+    
+    pub fn write_to(&self, buf: &mut String) {
+        use std::fmt::Write as _;
+
+        let _ = write!(buf, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            self.read_idx, self.query_length, self.query_start, self.query_end, self.query_strand,
+            self.target, self.target_start, self.target_end, self.mapq, self.identity,
+            self.filter_reason
+        );
+    }
 
     pub fn is_in_regions(&self, interval_hash: &HashMap<String, Lapper<usize, u8>>) -> bool {
         let is_in_regions: bool = if let Some(interval) = interval_hash.get(&self.target) {
@@ -391,6 +401,25 @@ impl PoreCTable {
         let (sender, receiver) = bounded::<(usize, Vec<Concatemer>)>(100);
         let mut handles = vec![];
         
+
+        #[inline]
+        fn mid_u64(a: u64, b: u64) -> u64 {
+            a.saturating_add(b) / 2
+        }
+        #[inline]
+        fn mid_u32(a: u64, b: u64) -> u32 {
+            (a.saturating_add(b) / 2) as u32
+        }
+        #[inline]
+        fn enc_strand(c: char) -> i8 {
+            match c {
+                '+' => 1,
+                '-' => -1,
+                _ => 0,
+            }
+        }
+
+
         match max_contig_size {
             0..=4294967295 => {
                 for _ in 0..8 {
@@ -398,6 +427,7 @@ impl PoreCTable {
                     let output = output.clone();
                     handles.push(thread::spawn(move || {
                         while let Ok((chunk_id, records)) = receiver.recv() {
+                            
                             let mut read_idx_vec: Vec<u64> = Vec::new();
                             let mut chrom1_vec: Vec<String> = Vec::new();
                             let mut pos1_vec: Vec<u32> = Vec::new();

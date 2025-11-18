@@ -199,7 +199,23 @@ impl PQS {
 
             thread::spawn(move || {
                 while let Ok(df) = receiver.recv() {
-                    let df = df.collect().unwrap();
+                    let mut df = df.collect().unwrap();
+                    let need_cast = !matches!(df.column("chrom1").unwrap().dtype(), DataType::Categorical(_, _))
+                                || !matches!(df.column("chrom2").unwrap().dtype(), DataType::Categorical(_, _));
+                            if need_cast {
+                                df = df
+                                    .lazy()
+                                    .with_column(
+                                        col("chrom1")
+                                            .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                                    )
+                                    .with_column(
+                                        col("chrom2")
+                                            .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+                                    )
+                                    .collect()
+                                    .unwrap();
+                            }
                     let mut local_data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
                     let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
                     let rev_map1 = cat_col1.get_rev_map();
@@ -403,7 +419,7 @@ impl PQS {
                 .map(|(k, v)| (*k, *v / 2))
                 .collect(); 
     
-            let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
+            let writer = common_writer(format!("{}.split.contacts.gz", output_prefix.to_string()).as_str());
             let writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
                 if vec.len() < min_contacts as usize {
@@ -441,7 +457,7 @@ impl PQS {
             });
 
             log::info!("Successful output split contacts file `{}`", 
-                                &format!("{}.split.contacts", output_prefix.to_string()));
+                                &format!("{}.split.contacts.gz", output_prefix.to_string()));
 
             drop(split_contigsizes);
         }
@@ -1445,6 +1461,8 @@ impl PQS {
                         } else {
                             data.push(false);
                         }
+                    } else {
+                        data.push(false);
                     }
                 }
 

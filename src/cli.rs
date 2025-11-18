@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.1";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -59,6 +59,21 @@ pub fn cli() -> Command {
                         .default_value("paf")
                         .help("input format")
                         )
+                .arg(
+                    Arg::new("CONTACTS")
+                        .long("contacts")
+                        .short('c')
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
+                        .help("contacts file for pore-c or hi-c data")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                )
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -212,6 +227,14 @@ pub fn cli() -> Command {
                 .arg(arg!(<CONTACTS> "contacts"))
                 .arg(arg!(<PRUNETABLE> "output path of prune table"))
                 .arg(
+                    Arg::new("COUNTRE")
+                        .long("count-re")
+                        .short('c')
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
+                        .help("restriction enzyme count file")
+                )
+                .arg(
                     Arg::new("METHOD")
                         .long("method")
                         .short('m')
@@ -258,6 +281,14 @@ pub fn cli() -> Command {
                 .arg(arg!(<ALLELESTRANDTABLE> "allele table"))
                 .arg(arg!(<CONTACTS> "contacts"))
                 .arg(arg!(<PRUNETABLE> "output path of prune table"))
+                .arg(
+                    Arg::new("COUNTRE")
+                        .long("count-re")
+                        .short('c')
+                        .value_parser(value_parser!(String))
+                        .default_value("none")
+                        .help("restriction enzyme count file")
+                )
                 .arg(
                     Arg::new("METHOD")
                         .long("method")
@@ -716,17 +747,29 @@ pub fn cli() -> Command {
                         .default_value("0")
                 )
                 .arg(
+                    Arg::new("SECONDARY")
+                        .long("secondary")
+                        .action(ArgAction::SetTrue)
+                        .help("include secondary alignments")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
                         .default_value("-")
                         .help("output file, default is stdout"))
+                .arg_required_else_help(true),
 
         )
         .subcommand(
             Command::new("paf2porec")
-                .about("convert paf to pore-c table")
+                .about("convert paf to concatemer (con) table")
+                .alias("paf2concatemer")
+                .alias("paf2concat")
+                .alias("paf2pcon")
                 .alias("paf2table")
                 .arg(arg!(<PAF> "paf"))
                 .arg(
@@ -783,11 +826,21 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(u32))
                         .default_value("50")
                 )
+                .arg(
+                    Arg::new("SECONDARY")
+                        .long("secondary")
+                        .action(ArgAction::SetTrue)
+                        .help("include secondary alignments")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
                 .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("porec2pairs")
-                .about("convert pore-c table to pairs")
+                .about("convert concatemers (con) table to pairs")
+                .alias("concatemer2pairs")
+                .alias("con2pairs")
                 .alias("pore2pairs")
                 .alias("porec2pair")
                 .arg(arg!(<TABLE> "pore-c table"))
@@ -834,6 +887,8 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("porec-break")
                 .about("Break contigs at break points.")
+                .alias("concatemer-break")
+                .alias("con-break")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<BREAK_BED> "break points in bed format"))
                 .arg(
@@ -849,6 +904,9 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("porec-dup")
                 .about("Break contigs at break points.")
+                .alias("concatemer-dup")
+                .alias("con-dup")
+                .alias("porec-dup")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<COLLAPSED> "collapsed contigs list, two columns with raw contigs and dup contigs."))
                 .arg(
@@ -864,6 +922,8 @@ pub fn cli() -> Command {
         .subcommand(
             Command::new("porec-merge")
                 .about("Merge multiple pore-c table file into single file")
+                .alias("concatemer-merge")
+                .alias("con-merge")
                 .arg(
                     Arg::new("TABLES")
                         .action(ArgAction::Set)
@@ -881,7 +941,9 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("porec-intersect")
-                .about("According a bed file to intersection a pore-c table.")
+                .about("According a bed file to intersection a concatemer (con) table.")
+                .alias("concatemer-intersect")
+                .alias("con-intersect")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<BED> "3-columns bed file"))
                 .arg(
@@ -968,6 +1030,14 @@ pub fn cli() -> Command {
                         .default_value("50")
                         .help("max order of the concatemers")
                     )
+                .arg(
+                    Arg::new("SECONDARY")
+                        .long("secondary")
+                        .action(ArgAction::SetTrue)
+                        .help("include secondary alignments")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -1192,7 +1262,7 @@ pub fn cli() -> Command {
                         .long("output-depth")
                         .action(ArgAction::SetTrue)
                         .default_value("false")
-                        .help("Dont output split contacts."))
+                        .help("The path of ooutput depth."))
                 .arg(
                     Arg::new("BINSIZE")
                         .long("binsize")
@@ -1327,6 +1397,7 @@ pub fn cli() -> Command {
                     .long("secondary")
                     .short('s')
                     .value_parser(value_parser!(bool))
+                    .action(ArgAction::SetTrue)
                     .default_value("false")
                     .help("Is output secondary, default is false")
             )

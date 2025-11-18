@@ -6,6 +6,7 @@ use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
+use std::io::BufRead;
 use serde::{ Deserialize, Serialize };
 
 use crate::core::{ common_reader, common_writer };
@@ -18,6 +19,7 @@ pub struct CountReRecord {
     Length: u32,
 }
 
+#[derive(Debug, Clone)]
 pub struct CountRE {
     file: String,
     records: Vec<CountReRecord>,
@@ -47,18 +49,63 @@ impl BaseTable for CountRE {
 
 impl CountRE {
     pub fn parse(&mut self) {
-        let input = common_reader(&self.file);
-        let mut rdr = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .comment(Some(b'#'))
-            .has_headers(false)
-            .from_reader(input);
-
-        for result in rdr.deserialize() {
-            let record: CountReRecord = result.unwrap();
-            self.records.push(record);
+        let mut input = common_reader(&self.file);
+        for (line_number, line) in input.lines().enumerate() {
+            match line {
+                Ok(content) => {
+      
+                    if content.starts_with('#') {
+                        continue;
+                    }
+    
+        
+                    let fields: Vec<&str> = content.split('\t').collect();
+    
+                    if fields.len() != 3 {
+                        log::info!(
+                            "Skipping line {}: expected 3 fields, found {}",
+                            line_number + 1,
+                            fields.len()
+                        );
+                        continue;
+                    }
+    
+                    let contig = fields[0].to_string();
+                    let re_counts = match fields[1].parse::<u32>() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            log::info!(
+                                "Skipping line {}: invalid RECounts value '{}'",
+                                line_number + 1,
+                                fields[1]
+                            );
+                            continue;
+                        }
+                    };
+                    let length = match fields[2].parse::<u32>() {
+                        Ok(value) => value,
+                        Err(_) => {
+                            log::info!(
+                                "Skipping line {}: invalid Length value '{}'",
+                                line_number + 1,
+                                fields[2]
+                            );
+                            continue;
+                        }
+                    };
+    
+                    let record = CountReRecord {
+                        Contig: contig,
+                        RECounts: re_counts,
+                        Length: length,
+                    };
+                    self.records.push(record);
+                }
+                Err(e) => {
+                    log::info!("Failed to read line {}: {}", line_number + 1, e);
+                }
+            }
         }
-
     }
 
     pub fn from_hashmap(&mut self, counts: IndexMap<String, u64>, 

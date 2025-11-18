@@ -115,6 +115,7 @@ pub struct KPruner {
     pub contacts: Contacts2,
     // pub contacts_data: HashMap<ContigPair2<'a>, f64>,
     pub prunetable: PruneTable,
+    pub countre: Option<CountRE>,
     // pub contig_pairs: Vec<ContigPair2<'a>>,
     pub normalization_method: String,
     pub allelic_counts: u32,
@@ -125,8 +126,13 @@ pub struct KPruner {
 
 impl KPruner {
     pub fn new(alleletable: &String, contacts: &String, prunetable: &String,
+                    count_re: &Option<String>,
                     normalization_method: &String) -> KPruner {
         
+        let count_re = match count_re {
+            Some(v) => Some(CountRE::new(v)),
+            None => None,
+        };
         // let mut count_re = CountRE::new(count_re);
         // count_re.parse();
         let mut contacts = Contacts2::new(contacts);
@@ -144,6 +150,7 @@ impl KPruner {
             contacts: contacts,
             // contacts_data: contacts_data,
             prunetable: PruneTable::new(prunetable),
+            countre: count_re,
             // contig_pairs: contig_pairs,
             normalization_method: normalization_method.clone(),
             allelic_counts: 0,
@@ -226,13 +233,14 @@ impl KPruner {
         log::set_max_level(log::LevelFilter::Off);
         let unique_min = self.alleletable.header.to_unique_minimizer_density();
         log::set_max_level(log::LevelFilter::Info);
-        let mut contacts_data = self.contacts.to_data(&unique_min, &self.normalization_method);
+        let mut contacts_data = self.contacts.to_data(&unique_min, &self.normalization_method, 
+                                                    &self.countre);
 
         // filter contact data
         if !whitehash.is_empty() {
             contacts_data.retain(|x, y| whitehash.contains(x.Contig1) &&  whitehash.contains(x.Contig2));
         }
-        
+     
         let mut contig_pairs: Vec<&ContigPair2> = contacts_data.keys().collect();
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs();
 
@@ -419,58 +427,5 @@ impl KPruner {
         
     }
 
-    // pub fn prune(&mut self, method: &str, whitehash: &HashSet<&String>) {
-    //     log::info!("Using `{}` method to prune", method);
-
-    //     let allelic = self.allelic(whitehash);
-    //     // let potential_cross_allelic = self.potential_cross_allelic(whitehash);
-    //     // let potential_cross_allelic: HashSet<ContigPair> = HashSet::new();
-    //     let mut cross_allelic = self.cross_allelic(method, whitehash);
-        
-    //     let mut allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
-
-    //     for contig_pair in allelic.iter() {
-    //         let record = allelic_record_hashmap.get(contig_pair).unwrap();
-    //         let prune_record = PruneRecord {
-    //             contig1: contig_pair.Contig1.clone(),
-    //             contig2: contig_pair.Contig2.clone(),
-    //             mz1: record.mz1,
-    //             mz2: record.mz2,
-    //             mz_shared: record.mz_shared,
-    //             similarity: record.similarity,
-    //             allele_type: 0,
-    //         };
-    //         self.prunetable.records.push(prune_record);
-    //     }
-
-        
-
-    //     // for contig_pair in potential_cross_allelic.into_iter() {
-    //     //     let prune_record = PruneRecord {
-    //     //         contig1: contig_pair.Contig1.clone(),
-    //     //         contig2: contig_pair.Contig2.clone(),
-    //     //         mz1: 0,
-    //     //         mz2: 0,
-    //     //         mz_shared: 0,
-    //     //         similarity: 0.0,
-    //     //         allele_type: 1,
-    //     //     };
-    //     //     self.prunetable.records.push(prune_record);
-    //     // }
-
-    //     for contig_pair in cross_allelic.into_iter() {
-    //         let prune_record = PruneRecord {
-    //             contig1: contig_pair.Contig1.clone(),
-    //             contig2: contig_pair.Contig2.clone(),
-    //             mz1: 0,
-    //             mz2: 0,
-    //             mz_shared: 0,
-    //             similarity: 0.0,
-    //             allele_type: 1,
-    //         };
-    //         self.prunetable.records.push(prune_record);
-
-    //     }
-    // }
 }
 

@@ -17,8 +17,9 @@ use rayon::prelude::*;
 use crate::alleles::{ AlleleTable, AlleleRecord, AlleleStrandRecord, AlleleStrandTable };
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair, ContigPair2 };
+use crate::count_re::CountRE;
 use crate::contacts::{ Contacts, Contacts2 };
-
+    
 use crate::kprune::{ PruneRecord, PruneTable, maximum_bipartite_matching };
 
 
@@ -33,6 +34,7 @@ pub struct Pruner {
     pub allele_strand_table: AlleleStrandTable,
     // pub prunetable: PruneTable,
     pub contacts: Contacts2,
+    pub countre: Option<CountRE>,
     pub allcontigs: HashSet<String>,
     // pub contig1_to_contig2: HashMap<String, HashSet<String>>,
     // pub contacts_data: HashMap<ContigPair2<'a>, f64>,
@@ -46,6 +48,7 @@ impl Pruner {
     pub fn new(alleletable: &String, 
                     allele_strand_table: &String, 
                     contacts: &String, 
+                    count_re: &Option<String>,
                     // prunetable: &String, 
                     normalization_method: &String) -> Self {
         let mut contacts = Contacts2::new(contacts);
@@ -56,7 +59,10 @@ impl Pruner {
         let mut alleletable = AlleleTable::new(alleletable);
         alleletable.allele_records = alleletable.allele_records().unwrap();
         let mut allele_strand_table = AlleleStrandTable::new(allele_strand_table);
-       
+        let count_re = match count_re {
+            Some(v) => Some(CountRE::new(v)),
+            None => None,
+        };
         // let mut prunetable = PruneTable::new(prunetable);
         // let unique_min: HashMap<&String, f64> = HashMap::new();
         // let contacts_data = contacts.to_data(&unique_min, normalization_method);
@@ -67,6 +73,7 @@ impl Pruner {
             // prunetable: prunetable,
             contacts: contacts,
             allcontigs: allcontigs,
+            countre: count_re,
             // contig1_to_contig2: contig1_to_contig2,
             // contacts_data: contacts_data,
             normalization_method: normalization_method.clone(),
@@ -77,7 +84,8 @@ impl Pruner {
 
     pub fn prune(&mut self, whitehash: &HashSet<&String>, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
-        let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method);
+        let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method,
+                                                                    &self.countre);
 
         // self.allcontigs to sorted Vec 
         let mut allcontigs = self.allcontigs.iter().collect::<Vec<&String>>();
@@ -274,7 +282,8 @@ impl Pruner {
 
     pub fn kprune(&mut self, whitehash: &HashSet<&String>, method: &str, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
-        let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method);
+        let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method, 
+                                                            &self.countre);
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs(whitehash);
         if whitehash.len() > 0 {
             allelic_contig_pairs.retain(|x| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2))

@@ -183,6 +183,24 @@ impl fmt::Display for PairRecord {
     }
 }
 
+fn parse_pairs_line(line: &str) -> Option<(&str, &str, u64, &str, u64, &str, &str, u8)> {
+
+    let mut it = line.split('\t');
+    let c1 = it.next()?;
+    let c2 = it.next()?;
+    let c3 = it.next()?;
+    let c4 = it.next()?;
+    let c5 = it.next()?;
+    let c6 = it.next()?;
+    let c7 = it.next()?;
+    let c8 = it.next().unwrap_or("60"); 
+
+    let p1 = c3.parse::<u64>().ok()?;
+    let p2 = c5.parse::<u64>().ok()?;
+    let mq = c8.parse::<u8>().unwrap_or(60);
+    Some((c1, c2, p1, c4, p2, c6, c7, mq))
+}
+
 impl PairRecord {
     pub fn from_pore_c_pair(pair: Vec<&PoreCRecord>, readID: u64) -> PairRecord {
         // let (pair1, pair2) = (pair[0].clone(), pair[1].clone());
@@ -493,29 +511,21 @@ impl Pairs {
         for (id, record) in rdr.records().enumerate() {
             match record {
                 Ok(record) => {
-                    // let flag1 = match record[5].parse::<char>().unwrap() {
-                    //     '+' => 0,
-                    //     '-' => 16,
-                    //     _ => 0 
 
-                    // };
+                             
+                    let mapq = if record.len() >= 8 {
+                        record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default()
+                    } else {
+                        60
+                    };
 
-                    if filter_mapq {
-                        if record.len() >= 8 {
-                            let mapq = record.get(7).unwrap_or(&"60").parse::<u8>().unwrap_or_default();
-                            if mapq < min_quality {
-                                continue
-                            }
-                        }
+                    if filter_mapq && record.len() >= 8 && mapq < min_quality {
+                        continue;
                     }
+           
 
                     let flag1 = 65;
 
-                    // let flag2 = match record[6].parse::<char>().unwrap() {
-                    //     '+' => 0,
-                    //     '-' => 16,
-                    //     _ => 0 
-                    // };
                     let flag2 = 145;
                     {
                         let mut bam_record1 = Record::new();
@@ -545,7 +555,7 @@ impl Pairs {
                         bam_record2.set(record[0].as_bytes(), cigar, &[], &[]);
                         bam_record2.set_tid(bam_header_view.tid(record[3].as_bytes()).unwrap().try_into().unwrap());
                         bam_record2.set_pos(record[4].parse::<i64>().unwrap());
-                        bam_record2.set_mapq(60);
+                        bam_record2.set_mapq(mapq);
                         bam_record2.set_mtid(bam_header_view.tid(record[1].as_bytes()).unwrap().try_into().unwrap());
                         bam_record2.set_mpos(record[2].parse::<i64>().unwrap());
                         bam_record2.set_insert_size(0);
@@ -554,8 +564,8 @@ impl Pairs {
                         bam_record2.push_aux(b"RG", Aux::String("1")).unwrap();
                         bam_record2.push_aux(b"AS", Aux::U8(0)).unwrap();
                         bam_record2.push_aux(b"NM", Aux::U8(0)).unwrap();
-                        bam_record2.push_aux(b"MQ", Aux::U8(60)).unwrap();
-
+                        bam_record2.push_aux(b"MQ", Aux::U8(mapq)).unwrap();
+                        
                         wtr.write(&bam_record2).unwrap();
                     }
 
@@ -983,7 +993,7 @@ impl Pairs {
                 .collect(); 
 
             log::info!("Calculating the distance between split contigs");
-            let writer = common_writer(format!("{}.split.contacts", output_prefix.to_string()).as_str());
+            let writer = common_writer(format!("{}.split.contacts.gz", output_prefix.to_string()).as_str());
             let mut writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
                 if vec.len() < min_contacts as usize {
@@ -1023,7 +1033,7 @@ impl Pairs {
             });
 
             log::info!("Successful output split contacts file `{}`", 
-                                &format!("{}.split.contacts", output_prefix.to_string()));
+                                &format!("{}.split.contacts.gz", output_prefix.to_string()));
 
             drop(split_contigsizes);
         }
@@ -2177,6 +2187,275 @@ impl Pairs {
     }
 
     pub fn to_pqs(&mut self, chunksize: usize, output: &String) {
+        use polars::prelude::*;
+        use polars::prelude::ParquetCompression;
+        use crate::pqs::_README as _readme; 
+        use crate::pqs::_METADATA;
+        let parse_result = self.parse2();
+    
+        let mut rdr = match parse_result {
+            Ok(r) => r,
+            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+        };
+    
+        let pair_header = self.header.clone().to_string();
+        let contigsizes = &self.header.chromsizes;
+    
+        let max_contig_size = contigsizes.iter().map(|x| x.size).max().unwrap();
+        let pos_dtype = match max_contig_size {
+            0..=4294967295 => DataType::UInt32,
+            _ => DataType::UInt64,
+        };
+        let pos_dtype_string = match max_contig_size {
+            0..=4294967295 => "UInt32",
+            _ => "UInt64",
+        };
+    
+        let _ = std::fs::create_dir_all(output);
+        let _ = std::fs::create_dir_all(format!("{}/q0", output));
+        let _ = std::fs::create_dir_all(format!("{}/q1", output));
+    
+        let mut wtr = common_writer(format!("{}/_contigsizes", output).as_str());
+        for record in contigsizes {
+            writeln!(wtr, "{}", record).unwrap();
+        }
+        wtr.flush().unwrap();
+    
+        let create_date_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut wtr = common_writer(format!("{}/_metadata", output).as_str());
+        let mut _metadata = _METADATA.to_string();
+        _metadata = _metadata.replace("REPLACE", &create_date_time);
+        _metadata = _metadata.replace("CHUNKSIZE", &chunksize.to_string());
+        _metadata = _metadata.replace("pos_type_lower", pos_dtype_string.to_lowercase().as_str());
+        _metadata = _metadata.replace("pos_type", pos_dtype_string);
+        writeln!(wtr, "{}", _metadata).unwrap();
+        wtr.flush().unwrap();
+    
+        let mut wtr = common_writer(format!("{}/_readme", output).as_str());
+        writeln!(wtr, "{}", _readme).unwrap();
+        wtr.flush().unwrap();
+    
+
+        let (sender, receiver) = bounded::<Vec<(u32, String)>>(2048);
+    
+
+        let producer_handle = thread::spawn(move || {
+            let mut batch: Vec<(u32, String)> = Vec::with_capacity(chunksize);
+            let mut chunk_id = 0;
+            for record in rdr.lines() {
+                match record {
+                    Ok(record) => {
+                        if record.starts_with('#') {
+                            continue;
+                        }
+                        batch.push((chunk_id, record));
+                        if batch.len() >= chunksize {
+                            sender.send(std::mem::take(&mut batch)).unwrap();
+                            chunk_id += 1;
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("Error: Could not parse record: {:?}", e);
+                        continue;
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                sender.send(batch).unwrap();
+            }
+        });
+    
+ 
+        let workers: usize = 8;
+    
+        let mut handles = vec![];
+        for _ in 0..workers {
+            let receiver = receiver.clone();
+            let output = output.clone();
+            let pos_dtype = pos_dtype.clone();
+            handles.push(thread::spawn(move || {
+                while let Ok(records) = receiver.recv() {
+                    if records.is_empty() {
+                        continue;
+                    }
+                    let chunk_id = records[0].0;
+    
+
+                    let mut n_rows = 0usize;
+                    for (_, line) in &records {
+                        if bytecount::count(line.as_bytes(), b'\t') >= 7 {
+                            n_rows += 1;
+                        }
+                    }
+                    if n_rows == 0 {
+                        log::warn!("Warning: chunk {} is empty after filtering (need >=8 columns)", chunk_id);
+                        continue;
+                    }
+    
+            
+                    let mut read_idx: Vec<String> = Vec::with_capacity(n_rows);
+                    let mut chrom1: Vec<String> = Vec::with_capacity(n_rows);
+                    let mut chrom2: Vec<String> = Vec::with_capacity(n_rows);
+                    let mut strand1: Vec<String> = Vec::with_capacity(n_rows);
+                    let mut strand2: Vec<String> = Vec::with_capacity(n_rows);
+                    let mut mapq: Vec<u8> = Vec::with_capacity(n_rows);
+    
+                    match pos_dtype {
+                        DataType::UInt32 => {
+                            let mut pos1: Vec<u32> = Vec::with_capacity(n_rows);
+                            let mut pos2: Vec<u32> = Vec::with_capacity(n_rows);
+                            let mut dropped = 0usize;
+
+                            for (_, line) in &records {
+                                if bytecount::count(line.as_bytes(), b'\t') < 7 { dropped +=1; continue; }
+                                if let Some((r,ch1,p1,ch2,p2,s1,s2,mq)) = parse_pairs_line(line) {
+                                    if p1 > u32::MAX as u64 || p2 > u32::MAX as u64 {
+                                        dropped +=1;
+                                        continue;
+                                    }
+                                    read_idx.push(r.to_string());
+                                    chrom1.push(ch1.to_string());
+                                    chrom2.push(ch2.to_string());
+                                    strand1.push(s1.to_string());
+                                    strand2.push(s2.to_string());
+                                    pos1.push(p1 as u32);
+                                    pos2.push(p2 as u32);
+                                    mapq.push(mq);
+                                } else {
+                                    dropped += 1;
+                                }
+                            }
+    
+                            if read_idx.is_empty() {
+                                log::warn!("Warning: chunk {} contains no valid rows", chunk_id);
+                                continue;
+                            }
+    
+                            let mut df = DataFrame::new(vec![
+                                Series::new("read_idx", read_idx),
+                                Series::new("chrom1", chrom1),
+                                Series::new("pos1", pos1),
+                                Series::new("chrom2", chrom2),
+                                Series::new("pos2", pos2),
+                                Series::new("strand1", strand1),
+                                Series::new("strand2", strand2),
+                                Series::new("mapq", mapq),
+                            ]).unwrap();
+                            
+                            let mut df = df
+                                .lazy()
+                                .with_columns([
+                                    col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                ])
+                                .collect()
+                                .unwrap();
+                            
+                            {
+                                let path = format!("{}/q0/{}.parquet", output, chunk_id);
+                                let mut file = File::create(path).unwrap();
+                                ParquetWriter::new(&mut file)
+                                    // .with_compression(ParquetCompression::Zstd(Some(1)))
+                                    // .with_compression(ParquetCompression::Uncompressed) // 或 Snappy
+                                    .finish(&mut df).unwrap();
+                            }
+            
+                            {
+                                let mask = df.column("mapq").unwrap().u8().unwrap().gt_eq(1);
+                                let mut df_filtered = df.filter(&mask).unwrap();
+                                if df_filtered.height() > 0 {
+                                    let path = format!("{}/q1/{}.parquet", output, chunk_id);
+                                    let mut file = File::create(path).unwrap();
+                                    ParquetWriter::new(&mut file)
+                                        // .with_compression(ParquetCompression::Uncompressed)
+                                        .finish(&mut df_filtered).unwrap();
+                                }
+                            }
+                        }
+                        _ => {
+                            let mut pos1: Vec<u64> = Vec::with_capacity(n_rows);
+                            let mut pos2: Vec<u64> = Vec::with_capacity(n_rows);
+                            let mut dropped = 0usize;
+
+                            for (_, line) in &records {
+                                if bytecount::count(line.as_bytes(), b'\t') < 7 { dropped +=1; continue; }
+                                if let Some((r,ch1,p1,ch2,p2,s1,s2,mq)) = parse_pairs_line(line) {
+                                    read_idx.push(r.to_string());
+                                    chrom1.push(ch1.to_string());
+                                    chrom2.push(ch2.to_string());
+                                    strand1.push(s1.to_string());
+                                    strand2.push(s2.to_string());
+                                    pos1.push(p1);
+                                    pos2.push(p2);
+                                    mapq.push(mq);
+                                } else {
+                                    dropped +=1;
+                                }
+                            }
+                        
+    
+                            if read_idx.is_empty() {
+                                log::warn!("Warning: chunk {} contains no valid rows", chunk_id);
+                                continue;
+                            }
+    
+                            let mut df = DataFrame::new(vec![
+                                Series::new("read_idx", read_idx),
+                                Series::new("chrom1", chrom1),
+                                Series::new("pos1", pos1),
+                                Series::new("chrom2", chrom2),
+                                Series::new("pos2", pos2),
+                                Series::new("strand1", strand1),
+                                Series::new("strand2", strand2),
+                                Series::new("mapq", mapq),
+                            ]).unwrap();
+                            let mut df = df
+                                .lazy()
+                                .with_columns([
+                                    col("chrom1").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("chrom2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("strand1").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                    col("strand2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
+                                ])
+                                .collect()
+                                .unwrap();
+                            
+                            {
+                                let path = format!("{}/q0/{}.parquet", output, chunk_id);
+                                let mut file = File::create(path).unwrap();
+                                ParquetWriter::new(&mut file)
+                                    // .with_compression(ParquetCompression::Zstd(Some(1)))
+                                    // .with_compression(ParquetCompression::Uncompressed) // 或 Snappy
+                                    .finish(&mut df).unwrap();
+                            }
+    
+                            {
+                                let mask = df.column("mapq").unwrap().u8().unwrap().gt_eq(1);
+                                let mut df_filtered = df.filter(&mask).unwrap();
+                                if df_filtered.height() > 0 {
+                                    let path = format!("{}/q1/{}.parquet", output, chunk_id);
+                                    let mut file = File::create(path).unwrap();
+                                    ParquetWriter::new(&mut file)
+                                        // .with_compression(ParquetCompression::Uncompressed)
+                                        .finish(&mut df_filtered).unwrap();
+                                }
+                               
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+    
+        producer_handle.join().unwrap();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    pub fn to_pqs2(&mut self, chunksize: usize, output: &String) {
         use polars::prelude::*;
         use crate::pqs::_README as _readme; 
         use crate::pqs::_METADATA;

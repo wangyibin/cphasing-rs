@@ -3,6 +3,8 @@
 use std::io::BufReader;
 use std::io::BufRead;
 use std::path::Path;
+use cphasing::contacts;
+use cphasing::count_re;
 use indexmap::IndexMap;
 use rayon::ThreadPoolBuilder;
 use cphasing::alleles::AllelesFasta;
@@ -40,10 +42,14 @@ use std::io::Write;
 use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 use jemallocator::Jemalloc;
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
 
 fn main() {
 
@@ -78,13 +84,20 @@ fn main() {
             use cphasing::realign::read_paf;
             let input = sub_matches.get_one::<String>("PAF").expect("required");
             let import_format = sub_matches.get_one::<String>("FORMAT").expect("error");
+            // let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
+            let contacts = if let Some(c) = sub_matches.get_one::<String>("CONTACTS") {
+                Some(c.to_string())
+            } else {
+                None
+            };
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             check_program("minimap2");
             match import_format.as_str() {
                 "bam" => {
-                    read_bam(&input, *min_mapq, &output);
+                    read_bam(&input, *min_mapq, &output, *threads, contacts);
                 }
                 "paf" => {
                     read_paf(&input, *min_mapq, &output);
@@ -160,8 +173,11 @@ fn main() {
             
             let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
-            // let count_re = sub_matches.get_one::<String>("COUNT_RE").expect("required");
+            
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let count_re_opt: Option<String> = sub_matches
+                .get_one::<String>("COUNTRE")
+                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
@@ -170,7 +186,7 @@ fn main() {
 
             assert!(method == "fast" || method == "precise" || method == "greedy", 
                      "method must be in ['fast', 'precise', 'greedy']");
-        
+     
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -197,21 +213,8 @@ fn main() {
             if first_cluster != "none" {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
-                // for line in reader.lines() {
-                //     let line = line.unwrap();
-                //     // split tab
-                //     let mut line = line.split("\t");
-                //     let group = line.next().unwrap().to_string();
-                //     let count = line.next().unwrap().to_string();
-                //     // split next with space
-                //     let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
-                   
-                //     let contigs: HashSet<String> = contigs.par_iter().map(|x| x.to_string()).collect();
-                //     if whitehash.len() > 0 {
-                //         let contigs: HashSet<String> = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
-                //     }
-                //     first_cluster_hashmap.insert(group, contigs);
-                // }
+              
+
                 let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
                 lines.into_par_iter().for_each(|line| {
                     // split tab
@@ -236,17 +239,13 @@ fn main() {
             let first_cluster_hashmap = first_cluster_hashmap.clone();
 
             let mut writer = common_writer(&prunetable);
-            // let mut wtr = csv::WriterBuilder::new()
-            //     .delimiter(b'\t')
-            //     .has_headers(false)
-            //     .from_writer(writer);
 
             if first_cluster != "none" {
             
                 log::set_max_level(log::LevelFilter::Off);
                 let mut kpruners: HashMap<String, KPruner> = first_cluster_hashmap
                             .keys().map(|x| (x.to_string(), KPruner::new(
-                                &alleletable, &contacts, &prunetable,
+                                &alleletable, &contacts, &prunetable, &count_re_opt,
                                 normalization_method))).collect();
                 
                 for (k, v) in first_cluster_hashmap {
@@ -273,7 +272,7 @@ fn main() {
                 log::info!("Cross-allelic counts: {}", cross_allelic_counts);
                 
             } else {
-                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, normalization_method);
+                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, &count_re_opt, normalization_method);
                 kpruner.prune(&method.as_str(), &whitehash2, &mut writer);
                 // kpruner.prunetable.write(&mut wtr);
             }
@@ -288,6 +287,9 @@ fn main() {
             let allele_strand_table = sub_matches.get_one::<String>("ALLELESTRANDTABLE").expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let count_re_opt: Option<String> = sub_matches
+                .get_one::<String>("COUNTRE")
+                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
@@ -359,6 +361,7 @@ fn main() {
                 let mut pruners: HashMap<String, Pruner> = first_cluster_hashmap
                             .keys().map(|x| (x.to_string(), Pruner::new(
                                 &alleletable,  &allele_strand_table, &contacts,
+                                &count_re_opt,
                                 normalization_method))).collect();
                 
                 for (k, v) in first_cluster_hashmap {
@@ -390,6 +393,7 @@ fn main() {
                 
             } else {
                 let mut pruner = Pruner::new(&alleletable, &allele_strand_table, &contacts, 
+                                                    &count_re_opt,
                                                  normalization_method);
                 match method {
                         "fast" => {
@@ -607,7 +611,7 @@ fn main() {
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
             let _output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            cut_site(fastq.to_string(), pattern.as_bytes(), "-".to_string()).unwrap();
+            cut_site(fastq.to_string(), pattern.as_bytes(), _output.clone()).unwrap();
         }
         Some(("paf2depth", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
@@ -615,12 +619,13 @@ fn main() {
             let window_size = sub_matches.get_one::<usize>("WINSIZE").expect("error");
             let mut step_size = sub_matches.get_one::<usize>("STEPSIZE").expect("error");
             let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let pt = PAFTable::new(&paf);
             if *step_size == 0 {
                 step_size = window_size;
             } 
-            pt.to_depth(&chromsizes, *window_size, *step_size, *min_mapq, &output).unwrap();
+            pt.to_depth(&chromsizes, *window_size, *step_size, *min_mapq, *secondary, &output).unwrap();
 
         }
         Some(("paf2porec", sub_matches)) => {
@@ -635,11 +640,11 @@ fn main() {
             let max_edge = sub_matches.get_one::<u64>("MAX_EDGE").expect("error");
             // let min_order = sub_matches.get_one::<u32>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
-
+            let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let pt = PAFTable::new(&paf);
 
             pt.paf2table(bed, output, min_quality, min_identity, 
-                            min_length, max_order, max_edge).unwrap();
+                            min_length, max_order, max_edge, *secondary).unwrap();
 
         }
         Some(("porec2pairs", sub_matches)) => {
@@ -654,11 +659,16 @@ fn main() {
 
             if output.ends_with(".pqs") {
                 let output = if output == "-" {
-                    let output = table.strip_suffix(".porec.gz").unwrap_or(&table);
+                    let output = table.strip_suffix(".porec.gz").unwrap_or(&table).strip_suffix(".con.gz").unwrap_or(&table).strip_suffix(".concatemer.gz").unwrap_or(&table);
                     format!("{}.pqs", output)
                 } else {
                     output.to_string()
                 };
+                
+                if Path::new(&output).exists() {
+                    log::info!("Output directory {} already exists. Removing it first.", output);
+                    std::fs::remove_dir_all(&output).unwrap();
+                }
                 prt.to_pairs_pqs(&chromsizes, &output, *chunksize, *min_quality, *min_order, *max_order).unwrap();
             } else {
                 prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
@@ -721,6 +731,7 @@ fn main() {
             let max_edge = sub_matches.get_one::<u64>("MAX_EDGE").expect("error");
             let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
+            let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let pt = PAFTable::new(&paf);
@@ -730,15 +741,19 @@ fn main() {
             let prefix: &str = prefix.strip_suffix(".pairs.pqs").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
             pt.paf2table(&bed, &table_output, min_quality, min_identity, 
-                            min_length, max_order, max_edge).unwrap();
+                            min_length, max_order, max_edge, *secondary).unwrap();
             let prt = PoreCTable::new(&table_output);
             if output.ends_with(".pqs") {
                 let output = if output == "-" {
-                    let output = table_output.strip_suffix(".porec.gz").unwrap_or(&table_output);
+                    let output = table_output.strip_suffix(".porec.gz").unwrap_or(&table_output).strip_suffix(".con.gz").unwrap_or(&table_output).strip_suffix(".concatemer.gz").unwrap_or(&table_output);
                     format!("{}.pqs", output)
                 } else {
                     output.to_string()
                 };
+                if Path::new(&output).exists() {
+                    log::info!("Output directory {} already exists. Removing it first.", output);
+                    std::fs::remove_dir_all(&output).unwrap();
+                }
                 prt.to_pairs_pqs(&chromsizes, &output, 1000000, *min_quality, *min_order, *max_order as usize).unwrap();
                
                
@@ -785,6 +800,10 @@ fn main() {
                 let p = PQS::new(&first_file);
                 match p.is_pqs() {
                     true => {
+                        if Path::new(&output).exists() {
+                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            std::fs::remove_dir_all(&output).unwrap();
+                        }
                         let _ = merge_pqs(files, &output);
                     },
                     false => {
@@ -811,6 +830,10 @@ fn main() {
                 let mut p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
+                        if Path::new(&output).exists() {
+                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            std::fs::remove_dir_all(&output).unwrap();
+                        }
                         let _ = p.break_contigs(&break_bed, &output);
                     },
                     false => {
@@ -837,6 +860,10 @@ fn main() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
+                        if Path::new(&output).exists() {
+                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            std::fs::remove_dir_all(&output).unwrap();
+                        }
                         let _ = p.dup(&collapsed_list, 123, &output);
                     },
                     false => {
@@ -1035,6 +1062,11 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut pairs = Pairs::new(&pairs);
+            // if path of output existed, remove it first
+            if Path::new(&output).exists() {
+                log::info!("Output path {} existed, removing it first.", output);
+                std::fs::remove_dir_all(&output).unwrap();
+            }
             pairs.to_pqs(*chunksize, &output);
         }
         Some(("pairs2bam", sub_matches)) => {
@@ -1130,6 +1162,10 @@ fn main() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
+                        if Path::new(&output).exists() {
+                            log::info!("Output path {} existed, removing it first.", output);
+                            std::fs::remove_dir_all(&output).unwrap();
+                        }
                         let _ = p.intersect(&bed, *invert, *min_quality, &output);
                     },
                     false => {
@@ -1207,3 +1243,4 @@ fn main() {
         },
     }
 }
+
