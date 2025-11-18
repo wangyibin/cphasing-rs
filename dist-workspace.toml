@@ -25,5 +25,6 @@ installers = []
 allow-dirty = ["ci"]
 
 
-[package.metadata.dist.ci.github]
-linux_runner = "ubuntu-latest"
+[dist.github-custom-runners]
+aarch64-unknown-linux-musl = "ubuntu-latest"
+x86_64-unknown-linux-musl = "ubuntu-latest"
