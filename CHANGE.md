@@ -1,3 +1,6 @@
+## [v0.2.1] - 20251119
+- Used in CPhasing v0.2.7.beta.r304
+
 ## [v0.2.0] - 20250327
 - First release to the public, which is used in CPhasing v0.2.6.r297
 
