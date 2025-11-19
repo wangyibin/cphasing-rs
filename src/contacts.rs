@@ -401,7 +401,7 @@ impl Contacts2 {
     pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
                     normalization_method: &String,
                     re_count: &Option<CountRE>
-                ) -> HashMap<ContigPair2, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+                ) -> HashMap<ContigPair2<'_>, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
 
         let _re_count = if let Some(v) = re_count {
           

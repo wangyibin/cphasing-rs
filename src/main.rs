@@ -3,8 +3,6 @@
 use std::io::BufReader;
 use std::io::BufRead;
 use std::path::Path;
-use cphasing::contacts;
-use cphasing::count_re;
 use indexmap::IndexMap;
 use rayon::ThreadPoolBuilder;
 use cphasing::alleles::AllelesFasta;
@@ -43,13 +41,16 @@ use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
 
-#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-use jemallocator::Jemalloc;
+// #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+// use jemallocator::Jemalloc;
 
-#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+// #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+// #[global_allocator]
+// static GLOBAL: Jemalloc = Jemalloc;
+
+use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
-
 
 fn main() {
 

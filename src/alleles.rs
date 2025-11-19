@@ -219,7 +219,7 @@ impl AlleleTable2 {
         Ok(records)
     }
     
-    pub fn get_allelic_contig_pairs(&self) -> HashSet<ContigPair2> {
+    pub fn get_allelic_contig_pairs(&self) -> HashSet<ContigPair2<'_>> {
         let mut contig_pairs: HashSet<ContigPair2> = HashSet::new();
         let mut records = &self.allele_records;
         // sort records by mz_shared in ascending order
@@ -295,7 +295,7 @@ impl AlleleTable2 {
 
     // }
 
-    pub fn get_allelic_record_by_contig_pairs(&self) -> HashMap<ContigPair2, &AlleleRecord2> {
+    pub fn get_allelic_record_by_contig_pairs(&self) -> HashMap<ContigPair2<'_>, &AlleleRecord2> {
         let mut data: HashMap<ContigPair2, &AlleleRecord2> = HashMap::new();
         let records = &self.allele_records;
         for record in records {
@@ -458,7 +458,7 @@ impl AlleleStrandTable {
 
     }
 
-    pub fn get_info(&self) -> HashMap<ContigPair2, &AlleleStrandRecord> {
+    pub fn get_info(&self) -> HashMap<ContigPair2<'_>, &AlleleStrandRecord> {
 
         let mut data: HashMap<ContigPair2, &AlleleStrandRecord> = HashMap::new();
         
@@ -559,7 +559,7 @@ impl AlleleTable {
         data
     }
 
-    pub fn get_allelic_contig_pairs(&self, whitehash: &HashSet<&String>) -> HashSet<ContigPair2> {
+    pub fn get_allelic_contig_pairs(&self, whitehash: &HashSet<&String>) -> HashSet<ContigPair2<'_>> {
         let mut contig_pairs: HashSet<ContigPair2> = HashSet::new();
         
         for record in &self.allele_records {

@@ -711,8 +711,8 @@ impl PAFTable {
 
         let num_threads = 10;
         log::info!("Using {} threads for processing.", num_threads);
-        let (sender, receiver) = bounded::<Vec<PoreCRecord>>(8192); // Channel for read groups
-        let (writer_sender, writer_receiver) = bounded::<String>(8192); // Channel for output strings
+        let (sender, receiver) = bounded::<Vec<PoreCRecord>>(8192); 
+        let (writer_sender, writer_receiver) = bounded::<String>(8192); 
 
         let mut handles = Vec::with_capacity(num_threads);
         // let prof = std::sync::Arc::new(Prof::new());
@@ -721,7 +721,7 @@ impl PAFTable {
         for _ in 0..num_threads {
             let receiver: Receiver<Vec<PoreCRecord>> = receiver.clone();
             let writer_sender = writer_sender.clone();
-            let interval_hash = interval_hash.clone(); // Clone for thread
+            let interval_hash = interval_hash.clone();
             // let prof_cl = prof.clone();
 
             handles.push(thread::spawn(move || {

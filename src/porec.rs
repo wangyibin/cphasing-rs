@@ -456,14 +456,14 @@ impl PoreCTable {
                             }
         
                             let df = DataFrame::new(vec![
-                                Series::new("read_idx", read_idx_vec),
-                                Series::new("chrom1", chrom1_vec),
-                                Series::new("pos1", pos1_vec),
-                                Series::new("chrom2", chrom2_vec),
-                                Series::new("pos2", pos2_vec),
-                                Series::new("strand1", strand1_vec),
-                                Series::new("strand2", strand2_vec),
-                                Series::new("mapq", mapq_vec),
+                                Series::new("read_idx".into(), read_idx_vec).into(),
+                                Series::new("chrom1".into(), chrom1_vec).into(),
+                                Series::new("pos1".into(), pos1_vec).into(),
+                                Series::new("chrom2".into(), chrom2_vec).into(),
+                                Series::new("pos2".into(), pos2_vec).into(),
+                                Series::new("strand1".into(), strand1_vec).into(),
+                                Series::new("strand2".into(), strand2_vec).into(),
+                                Series::new("mapq".into(), mapq_vec).into(),
                             ]).unwrap();
         
                             let mut df = df.lazy().with_column(
@@ -529,14 +529,14 @@ impl PoreCTable {
                             }
         
                             let df = DataFrame::new(vec![
-                                Series::new("read_idx", read_idx_vec),
-                                Series::new("chrom1", chrom1_vec),
-                                Series::new("pos1", pos1_vec),
-                                Series::new("chrom2", chrom2_vec),
-                                Series::new("pos2", pos2_vec),
-                                Series::new("strand1", strand1_vec),
-                                Series::new("strand2", strand2_vec),
-                                Series::new("mapq", mapq_vec),
+                                Series::new("read_idx".into(), read_idx_vec).into(),
+                                Series::new("chrom1".into(), chrom1_vec).into(),
+                                Series::new("pos1".into(), pos1_vec).into(),
+                                Series::new("chrom2".into(), chrom2_vec).into(),
+                                Series::new("pos2".into(), pos2_vec).into(),
+                                Series::new("strand1".into(), strand1_vec).into(),
+                                Series::new("strand2".into(), strand2_vec).into(),
+                                Series::new("mapq".into(), mapq_vec).into(),
                             ]).unwrap();
         
                             let mut df = df.lazy().with_column(

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.1";
+const VERSION: &str = "0.2.2";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -906,7 +906,6 @@ pub fn cli() -> Command {
                 .about("Break contigs at break points.")
                 .alias("concatemer-dup")
                 .alias("con-dup")
-                .alias("porec-dup")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<COLLAPSED> "collapsed contigs list, two columns with raw contigs and dup contigs."))
                 .arg(

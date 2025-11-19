@@ -152,8 +152,10 @@ impl PQS {
         use hashbrown::HashMap;
         use std::fmt::Write;
 
-
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", threads));
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", threads));
+        }
+        
         let min_mapq = min_quality as u32;
     
         let output_prefix = if output.ends_with(".gz") {
@@ -602,7 +604,10 @@ impl PQS {
 
     pub fn to_mnd(&self, min_quality: u8, output: &String) -> anyResult<()> {
         enable_string_cache();
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
+        }
+        
         let min_mapq = min_quality as u32;
         // get prefix of parquet_dir
         let output_prefix = if output.ends_with(".gz") {
@@ -676,7 +681,10 @@ impl PQS {
 
     pub fn to_contacts(&self, min_contacts: u32, min_quality: u8, output: &String) -> anyResult<()> {
         use hashbrown::HashMap;
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 4));
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 4));
+        }
+        
         let min_mapq = min_quality as u32;
        
         let files = if min_mapq == 0 {
@@ -802,7 +810,7 @@ impl PQS {
                             }
                             
 
-                            Ok(Some(Series::new("count1", vec)))
+                            Ok(Some(Series::new("count1".into(), vec).into()))
                         },
                         GetOutput::from_type(DataType::UInt32)
                     ).alias("count")
@@ -847,9 +855,12 @@ impl PQS {
 
     pub fn to_depth(&self, binsize: u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap;
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
+        }
+        
         let min_mapq = min_quality as u32;
-        let mut files = if min_mapq == 0 {
+        let files = if min_mapq == 0 {
             collect_parquet_files(format!("{}/q0", self.file).as_str())
         } else {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
@@ -1048,7 +1059,7 @@ impl PQS {
         let bed = Bed4::new(break_bed);
         let interval_hash = bed.to_interval_hash();
         let breaked_contigs = interval_hash.keys().map(|x| x.clone()).collect::<Vec<String>>();
-        let breaked_series = Series::new("contig", breaked_contigs);
+        let breaked_series = Series::new("contig".into(), breaked_contigs);
 
 
         let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
@@ -1310,7 +1321,7 @@ impl PQS {
                     "mapq" => mapq_vec
                 ].unwrap();
 
-                let data = Series::new("break", data);
+                let data = Series::new("break".into(), data);
                 let df = df.filter(
                     data.bool().unwrap()
                 ).unwrap()
@@ -1368,9 +1379,12 @@ impl PQS {
 
     pub fn intersect(&self, hcr_bed: &String, invert: bool,
                     min_mapq: u8, output: &String) -> anyResult<()> {
-
-        std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
-        enable_string_cache();   
+        
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
+ 
+        }
+        enable_string_cache();  
         let bed = Bed3::new(hcr_bed);
         let interval_hash = bed.to_interval_hash();
         
@@ -1466,7 +1480,7 @@ impl PQS {
                     }
                 }
 
-                let data = Series::new("intersect", data);
+                let data = Series::new("intersect".into(), data);
                 
                 let mut df = df.filter(
                     data.bool().unwrap()
@@ -1631,8 +1645,8 @@ impl PQS {
                 
                 }
 
-                let chrom1_series = Series::new("chrom1", chrom1_vec);
-                let chrom2_series = Series::new("chrom2", chrom2_vec);
+                let chrom1_series = Series::new("chrom1".into(), chrom1_vec);
+                let chrom2_series = Series::new("chrom2".into(), chrom2_vec);
                 
                 df.with_column(chrom1_series).unwrap();
                 df.with_column(chrom2_series).unwrap();

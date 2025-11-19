@@ -2171,7 +2171,7 @@ impl Pairs {
                 writeln!(wtr, "{}", record).unwrap();
                 continue;
             }
-            let random_number: f64 = rng.gen();
+            let random_number: f64 = rng.r#gen();
             if random_number < percent {
                 output_counts += 1;
                 if (output_counts > n) && (p == 0.0) {
@@ -2332,14 +2332,14 @@ impl Pairs {
                             }
     
                             let mut df = DataFrame::new(vec![
-                                Series::new("read_idx", read_idx),
-                                Series::new("chrom1", chrom1),
-                                Series::new("pos1", pos1),
-                                Series::new("chrom2", chrom2),
-                                Series::new("pos2", pos2),
-                                Series::new("strand1", strand1),
-                                Series::new("strand2", strand2),
-                                Series::new("mapq", mapq),
+                                Series::new("read_idx".into(), read_idx).into(),
+                                Series::new("chrom1".into(), chrom1).into(),
+                                Series::new("pos1".into(), pos1).into(),
+                                Series::new("chrom2".into(), chrom2).into(),
+                                Series::new("pos2".into(), pos2).into(),
+                                Series::new("strand1".into(), strand1).into(),
+                                Series::new("strand2".into(), strand2).into(),
+                                Series::new("mapq".into(), mapq).into(),
                             ]).unwrap();
                             
                             let mut df = df
@@ -2402,14 +2402,14 @@ impl Pairs {
                             }
     
                             let mut df = DataFrame::new(vec![
-                                Series::new("read_idx", read_idx),
-                                Series::new("chrom1", chrom1),
-                                Series::new("pos1", pos1),
-                                Series::new("chrom2", chrom2),
-                                Series::new("pos2", pos2),
-                                Series::new("strand1", strand1),
-                                Series::new("strand2", strand2),
-                                Series::new("mapq", mapq),
+                                Series::new("read_idx".into(), read_idx).into(),
+                                Series::new("chrom1".into(), chrom1).into(),
+                                Series::new("pos1".into(), pos1).into(),
+                                Series::new("chrom2".into(), chrom2).into(),
+                                Series::new("pos2".into(), pos2).into(),
+                                Series::new("strand1".into(), strand1).into(),
+                                Series::new("strand2".into(), strand2).into(),
+                                Series::new("mapq".into(), mapq).into(),
                             ]).unwrap();
                             let mut df = df
                                 .lazy()
@@ -2455,161 +2455,161 @@ impl Pairs {
         }
     }
 
-    pub fn to_pqs2(&mut self, chunksize: usize, output: &String) {
-        use polars::prelude::*;
-        use crate::pqs::_README as _readme; 
-        use crate::pqs::_METADATA;
-        let parse_result = self.parse2();
+    // pub fn to_pqs2(&mut self, chunksize: usize, output: &String) {
+    //     use polars::prelude::*;
+    //     use crate::pqs::_README as _readme; 
+    //     use crate::pqs::_METADATA;
+    //     let parse_result = self.parse2();
 
         
-        let mut rdr = match parse_result {
-            Ok(r) => r,
-            Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
-        };
+    //     let mut rdr = match parse_result {
+    //         Ok(r) => r,
+    //         Err(e) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
+    //     };
 
-        let pair_header = self.header.clone().to_string();
+    //     let pair_header = self.header.clone().to_string();
 
-        let contigsizes = &self.header.chromsizes;
+    //     let contigsizes = &self.header.chromsizes;
 
-        let max_contig_size = contigsizes.iter().map(|x| x.size).max().unwrap();
+    //     let max_contig_size = contigsizes.iter().map(|x| x.size).max().unwrap();
         
-        let pos_dtype = match max_contig_size {
-            0..=4294967295 => DataType::UInt32,
-            _ => DataType::UInt64,
-        };
+    //     let pos_dtype = match max_contig_size {
+    //         0..=4294967295 => DataType::UInt32,
+    //         _ => DataType::UInt64,
+    //     };
 
-        let pos_dtype_string = match max_contig_size {
-            0..=4294967295 => "UInt32",
-            _ => "UInt64",
-        };
-
-
-        let _ = std::fs::create_dir_all(output);
-        let _ = std::fs::create_dir_all(format!("{}/q0", output));
-        let _ = std::fs::create_dir_all(format!("{}/q1", output));
+    //     let pos_dtype_string = match max_contig_size {
+    //         0..=4294967295 => "UInt32",
+    //         _ => "UInt64",
+    //     };
 
 
-        let mut wtr = common_writer(format!("{}/_contigsizes", output).as_str());
-        for record in contigsizes {
-            writeln!(wtr, "{}", record).unwrap();
-        }
-        wtr.flush().unwrap();   
+    //     let _ = std::fs::create_dir_all(output);
+    //     let _ = std::fs::create_dir_all(format!("{}/q0", output));
+    //     let _ = std::fs::create_dir_all(format!("{}/q1", output));
 
-        let create_date_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let mut wtr = common_writer(format!("{}/_metadata", output).as_str());
-        let mut _metadata = _METADATA.to_string();
-        _metadata = _metadata.replace("REPLACE", &create_date_time);
-        _metadata = _metadata.replace("CHUNKSIZE", &chunksize.to_string());
-        _metadata = _metadata.replace("pos_type_lower", pos_dtype_string.to_lowercase().as_str());
-        _metadata = _metadata.replace("pos_type", pos_dtype_string);
-        writeln!(wtr, "{}", _metadata).unwrap();
-        wtr.flush().unwrap();
+
+    //     let mut wtr = common_writer(format!("{}/_contigsizes", output).as_str());
+    //     for record in contigsizes {
+    //         writeln!(wtr, "{}", record).unwrap();
+    //     }
+    //     wtr.flush().unwrap();   
+
+    //     let create_date_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    //     let mut wtr = common_writer(format!("{}/_metadata", output).as_str());
+    //     let mut _metadata = _METADATA.to_string();
+    //     _metadata = _metadata.replace("REPLACE", &create_date_time);
+    //     _metadata = _metadata.replace("CHUNKSIZE", &chunksize.to_string());
+    //     _metadata = _metadata.replace("pos_type_lower", pos_dtype_string.to_lowercase().as_str());
+    //     _metadata = _metadata.replace("pos_type", pos_dtype_string);
+    //     writeln!(wtr, "{}", _metadata).unwrap();
+    //     wtr.flush().unwrap();
         
-        let mut wtr = common_writer(format!("{}/_readme", output).as_str());
-        writeln!(wtr, "{}", _readme).unwrap();
-        wtr.flush().unwrap();
+    //     let mut wtr = common_writer(format!("{}/_readme", output).as_str());
+    //     writeln!(wtr, "{}", _readme).unwrap();
+    //     wtr.flush().unwrap();
 
 
-        let (sender, receiver) = bounded::<Vec<(u32, String)>>(100);   
+    //     let (sender, receiver) = bounded::<Vec<(u32, String)>>(100);   
 
-        let producer_handle = thread::spawn(move || {
-            let mut batch: Vec<(u32, String)> = Vec::with_capacity(chunksize);
-            let mut chunk_id = 0;
-            for record in rdr.lines() {
-                match record {
-                    Ok(record) => {
-                        if record.starts_with("#") {
-                            continue;
-                        }
-                        batch.push((chunk_id, record));
-                        if batch.len() >= chunksize {
-                            sender.send(std::mem::take(&mut batch)).unwrap();
-                            chunk_id += 1;
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("Error: Could not parse record: {:?}", e);
-                        continue;
-                    }
-                }
-            }
-            if !batch.is_empty() {
-                sender.send(batch).unwrap();
-            }
-        });
+    //     let producer_handle = thread::spawn(move || {
+    //         let mut batch: Vec<(u32, String)> = Vec::with_capacity(chunksize);
+    //         let mut chunk_id = 0;
+    //         for record in rdr.lines() {
+    //             match record {
+    //                 Ok(record) => {
+    //                     if record.starts_with("#") {
+    //                         continue;
+    //                     }
+    //                     batch.push((chunk_id, record));
+    //                     if batch.len() >= chunksize {
+    //                         sender.send(std::mem::take(&mut batch)).unwrap();
+    //                         chunk_id += 1;
+    //                     }
+    //                 },
+    //                 Err(e) => {
+    //                     log::warn!("Error: Could not parse record: {:?}", e);
+    //                     continue;
+    //                 }
+    //             }
+    //         }
+    //         if !batch.is_empty() {
+    //             sender.send(batch).unwrap();
+    //         }
+    //     });
 
-        let mut handles = vec![];
-        for _ in 0..8 {
-            let receiver = receiver.clone();
-            let output = output.clone();
-            let pos_dtype = pos_dtype.clone();
-            handles.push(thread::spawn(move || {
-                while let Ok(records) = receiver.recv() {
-                    let (chunk_id, _) = &records.get(0).unwrap();
-                    // let _records = records.iter().map(|(_, record)| record.as_str()).collect::<Vec<&str>>();
-                    let filtered: Vec<&str> = records.iter().map(|(_, r)| r.as_str())
-                                                    .filter(|line| line.split('\t').take(8).count() >=8 ).collect(); 
-                    if filtered.is_empty() {
-                        log::warn!("Warning: chunk {} is empty after filtering, skipped, please check input pairs, it must contain mapq columns and >= 8 columns, you can directly input pairs.gz file", chunk_id);
-                        continue;
-                    }
-                    let reader = Cursor::new(filtered.join("\n"));
-                    let mut df = CsvReader::new(reader)
-                        .has_header(false)
-                        .with_comment_prefix(Some("#"))
-                        .with_separator(b'\t')
-                        .truncate_ragged_lines(true)
-                        .finish()
-                        .unwrap()
-                        .lazy()
-                        .select(
-                            vec![
-                                col("column_1").alias("read_idx"),
-                                col("column_2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom1"),
-                                col("column_3").cast(pos_dtype.clone()).alias("pos1"),
-                                col("column_4").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom2"),
-                                col("column_5").cast(pos_dtype.clone()).alias("pos2"),
-                                col("column_6").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand1"),
-                                col("column_7").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand2"),
-                                col("column_8").cast(DataType::UInt8).alias("mapq"),
+    //     let mut handles = vec![];
+    //     for _ in 0..8 {
+    //         let receiver = receiver.clone();
+    //         let output = output.clone();
+    //         let pos_dtype = pos_dtype.clone();
+    //         handles.push(thread::spawn(move || {
+    //             while let Ok(records) = receiver.recv() {
+    //                 let (chunk_id, _) = &records.get(0).unwrap();
+    //                 // let _records = records.iter().map(|(_, record)| record.as_str()).collect::<Vec<&str>>();
+    //                 let filtered: Vec<&str> = records.iter().map(|(_, r)| r.as_str())
+    //                                                 .filter(|line| line.split('\t').take(8).count() >=8 ).collect(); 
+    //                 if filtered.is_empty() {
+    //                     log::warn!("Warning: chunk {} is empty after filtering, skipped, please check input pairs, it must contain mapq columns and >= 8 columns, you can directly input pairs.gz file", chunk_id);
+    //                     continue;
+    //                 }
+    //                 let reader = Cursor::new(filtered.join("\n"));
+    //                 let mut df = CsvReader::new(reader)
+    //                     .has_header(false)  
+    //                     .with_comment_prefix(Some("#"))
+    //                     .with_separator(b'\t')
+    //                     .truncate_ragged_lines(true)
+    //                     .finish()
+    //                     .unwrap()
+    //                     .lazy()
+    //                     .select(
+    //                         vec![
+    //                             col("column_1").alias("read_idx"),
+    //                             col("column_2").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom1"),
+    //                             col("column_3").cast(pos_dtype.clone()).alias("pos1"),
+    //                             col("column_4").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("chrom2"),
+    //                             col("column_5").cast(pos_dtype.clone()).alias("pos2"),
+    //                             col("column_6").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand1"),
+    //                             col("column_7").cast(DataType::Categorical(None, CategoricalOrdering::Physical)).alias("strand2"),
+    //                             col("column_8").cast(DataType::UInt8).alias("mapq"),
         
-                            ]
-                        );
+    //                         ]
+    //                     );
                     
                 
-                    let mut df_collected = match df.clone().collect() {
-                        Ok(df) => df,
-                        Err(e) => {
-                            log::warn!("Error: Could not collect dataframe: {:?}, skipped", e);
-                            continue;
-                        }
-                    };
+    //                 let mut df_collected = match df.clone().collect() {
+    //                     Ok(df) => df,
+    //                     Err(e) => {
+    //                         log::warn!("Error: Could not collect dataframe: {:?}, skipped", e);
+    //                         continue;
+    //                     }
+    //                 };
                     
-                    {
-                        let mut file = File::create(format!("{}/q0/{}.parquet", output, chunk_id)).unwrap();
-                        ParquetWriter::new(&mut file).finish(&mut df.clone().collect().unwrap()).unwrap();
-                    }
+    //                 {
+    //                     let mut file = File::create(format!("{}/q0/{}.parquet", output, chunk_id)).unwrap();
+    //                     ParquetWriter::new(&mut file).finish(&mut df.clone().collect().unwrap()).unwrap();
+    //                 }
                     
 
-                    let mut file = File::create(format!("{}/q1/{}.parquet", output, chunk_id)).unwrap();
-                    let mask = df_collected.column("mapq").unwrap().gt_eq(1).unwrap();
-                    let mut df_filtered = df_collected.filter(&mask).unwrap();
+    //                 let mut file = File::create(format!("{}/q1/{}.parquet", output, chunk_id)).unwrap();
+    //                 let mask = df_collected.column("mapq").unwrap().gt_eq(1).unwrap();
+    //                 let mut df_filtered = df_collected.filter(&mask).unwrap();
 
-                    ParquetWriter::new(&mut file).finish(&mut df_filtered).unwrap();
+    //                 ParquetWriter::new(&mut file).finish(&mut df_filtered).unwrap();
  
-                }
+    //             }
 
-            }));
-        }
+    //         }));
+    //     }
 
-        producer_handle.join().unwrap();
+    //     producer_handle.join().unwrap();
 
-        for handle in handles {
-            handle.join().unwrap();
-        }
+    //     for handle in handles {
+    //         handle.join().unwrap();
+    //     }
             
 
-    }
+    // }
 
     pub fn split(&mut self, chunksize: usize) {
         let parse_result = self.parse2();

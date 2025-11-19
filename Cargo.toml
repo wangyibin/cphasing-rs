@@ -1,7 +1,7 @@
 [package]
 name = "cphasing"
-version = "0.2.1"
-edition = "2021"
+version = "0.2.2"
+edition = "2024"
 license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
 repository = "https://github.com/wangyibin/cphasing-rs"
@@ -28,50 +28,51 @@ bio = { version = "1.5.0" }
 bytecount = "0.6.2"
 clap = { version = "4.4.10" }
 chrono = { version = "0.4.24" }
-crossbeam = "0.8.2"
-crossbeam-channel = "0.5.8"
-csv = { version = "1.1.6" }
+crossbeam = "0.8.4"
+crossbeam-channel = "0.5.15"
+csv = { version = "1.4.0" }
 # concorde_rs = "0.1.1"
 # dashmap = { version = "5.5.3", features = ["serde"] }
-flate2 = {version = "1.0.28", default-features = false}
-gzp = { version = "0.11.3"}
+flate2 = {version = "1.1.5", default-features = false}
+gzp = { version = "2.0.1"}
 lazy_static = { version = "1.4.0" }
 log = { version = "0.4.17" }
 indicatif = { version = "0.17.8" }
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-jemallocator = { version = "0.5.4 " }
+#jemallocator = { version = "0.5.4 " }
+tikv-jemallocator = { version = "*" }
 ndarray = { version = "0.15.6" }
 no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
 nthash = { version = "0.5.1" }
 memchr = { version = "2" }
 env_logger = { version = "0.10.0" }
-itertools = { version = "0.10.5"}
-indexmap = { version = "2.10.0" }
-ordered-float = { version = "4.0", default-features = false }
+itertools = { version = "0.14.0"}
+indexmap = { version = "2.12.0" }
+ordered-float = { version = "5.1.0", default-features = false }
 # scan_fmt = { version = "0.2.6" }
-pathfinding = { version = "4.3.2" }
+pathfinding = { version = "4.14.0" }
 # parquet = { version = "54.0" }
-polars = { version = "0.39.0", features = [ "csv", "parquet", "lazy", "dtype-full",] }
+polars = { version = "0.49.1", features = [ "csv", "parquet", "lazy", "dtype-full"] }
 # petgraph = { version = "0.6" }
 rand = { version = "0.8.5"}
-rayon = { version = "1.8.0" }
+rayon = { version = "1.11.0" }
 rdxsort = { version = "0.3.0" }
 # rdst = { version = "0.20.14" }
 regex = { version = "1.9" }
 rust-lapper = { version = "1.1.0"}
-rust-htslib = { version = "0.49.0", default-features = false }
+rust-htslib = { version = "0.51.0", default-features = false }
 # rust-seq2kminmers = { version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"]}
 statrs = "0.17.1"
 seq_io = { version = "0.4.0-alpha.0" }
-smallvec = { version = "1.13.2" }
+smallvec = { version = "1.15.1" }
 # string-interner = { version = "0.17" }
 tempfile = { version = "3.8.0" }
-twox-hash = { version = "1.6.2" }
+twox-hash = { version = "2.1.2" }
 # tokio = { version = "1", features = ["full"] }
 walkdir = "2.3.2"
-hashbrown = { version = "0.14.3", features = ["raw", "rayon"] }
+hashbrown = { version = "0.14.5", features = ["rayon"] }
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))'.dependencies]
 #hashbrown = { version = "0.14.3", features=["rayon" ]}
