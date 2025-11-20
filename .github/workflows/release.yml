@@ -138,7 +138,11 @@ jobs:
       - name: Install dependencise of musl tool
         if: ${{ join(matrix.targets, '-') == 'x86_64-unknown-linux-musl' }}
         run: |
-          sudo apt-get install -y musl-tools musl-dev
+          sudo apt-get install -y musl-tools musl-dev cmake clang 
+          sudo ln -sf /usr/bin/musl-gcc /usr/bin/x86_64-linux-musl-g++
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> $GITHUB_ENV
+          echo "CXX_x86_64_unknown_linux_musl=musl-gcc" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C target-feature=-crt-static" >> $GITHUB_ENV
 
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
