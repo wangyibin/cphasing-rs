@@ -1,3 +1,6 @@
+## [v0.2.2] - 20251120
+- Switch cargo version from 1.81 to 1.91, which increased the performance of software
+
 ## [v0.2.1] - 20251119
 - Used in CPhasing v0.2.7.beta.r304
 
