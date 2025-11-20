@@ -138,7 +138,7 @@ jobs:
       - name: Install dependencise of musl tool
         if: ${{ join(matrix.targets, '-') == 'x86_64-unknown-linux-musl' }}
         run: |
-          sudo apt-get intsall -y musl-tools musl-dev
+          sudo apt-get install -y musl-tools musl-dev
 
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
