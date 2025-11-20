@@ -15,6 +15,5 @@ tar xzvf cphasing-x86_64-unknown-linux-musl.tar.gz
 git clone https://github.com/wangyibin/cphasing-rs.git
 
 cd cphasing-rs
-cargo build --release 
-
+pixi run install
 ```
