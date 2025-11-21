@@ -82,6 +82,7 @@ block-aligner = { version = "0.5", features = ["simd_neon"] }
 [profile.release]
 opt-level = 'z'
 lto = true
+codegen-units = 1
 strip = "symbols"
 
 # The profile that 'dist' will build with
@@ -90,3 +91,4 @@ inherits = "release"
 lto = true
 opt-level = "z" 
 strip = "symbols"
+codegen-units = 1
