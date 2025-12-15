@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.2";
+const VERSION: &str = "0.2.3";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -361,6 +361,7 @@ pub fn cli() -> Command {
                         .default_value("-")
                         .help("output file, default is stdout")
                 )
+                .arg_required_else_help(true),
 
         )
         .subcommand(
@@ -377,6 +378,23 @@ pub fn cli() -> Command {
                         .help("output dir, default splitclm")
                         .value_parser(value_parser!(String))
                         .default_value("./"))
+                        .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("splitcontacts")
+                .alias("split-contacts")
+                .about("Split contacts by the cluster file.")
+                .arg(arg!(<CONTACTS> "contacts file"))
+                .arg(arg!(<CLUSTER> "cluster"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .help("output dir, default splitclm")
+                        .value_parser(value_parser!(String))
+                        .default_value("./"))
+                .arg_required_else_help(true)
+                
         )
         .subcommand(
             Command::new("splitfastq")
@@ -1669,17 +1687,75 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("optimize")
-            .hide(true)
-            .about("optimize contigs (developing)")
-            .arg(arg!(<SCORE> "score"))
-            .arg(
-                Arg::new("OUTPUT")
-                    .long("output")
-                    .short('o')
-                    .value_parser(value_parser!(String))
-                    .default_value("-")
-                        .help("output file, default is stdout"))
-            .arg_required_else_help(true),
-      )
+                .about("optimize contigs order and orientation.")
+                .arg(arg!(<COUNTRE> "count RE file of single cluster"))
+                .arg(arg!(<SPLITCONTACTS> "split contacts file"))
+                .arg(
+                    Arg::new("MUTATION")
+                        .long("mutabp")
+                        .short('m')
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.2")
+                        .help("mutation probability in GA")
+                )
+                .arg(
+                    Arg::new("NGEN")
+                        .long("ngen")
+                        .short('n')
+                        .value_parser(value_parser!(usize))
+                        .default_value("5000")
+                        .help("Maximum number of generations in GA")
+                )
+                .arg(
+                    Arg::new("NPOP")
+                        .long("npop")
+                        .short('p')
+                        .value_parser(value_parser!(usize))
+                        .default_value("100")
+                        .help("Population size in GA")
+                )
+                .arg(
+                    Arg::new("RESUME")
+                        .long("resume")
+                        .short('r')
+                        .action(ArgAction::SetTrue)
+                        .help("resume from previous run")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
+                .arg(
+                    Arg::new("SEED")
+                        .long("seed")
+                        .short('s')
+                        .value_parser(value_parser!(u64))
+                        .default_value("42")
+                        .help("random seed of GA")
+
+                )
+                .arg(
+                    Arg::new("SKIPGA")
+                        .long("skipga")
+                        .action(ArgAction::SetTrue)
+                        .help("skip genetic algorithm and")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
+                .arg(
+                    Arg::new("RUNLKH")
+                        .long("runlkh")
+                        .action(ArgAction::SetTrue)
+                        .help("run LKH optimization")
+                        .value_parser(value_parser!(bool))
+                        .default_value("false")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("10")
+                        .help("number of threads"))
+                .arg_required_else_help(true),
+        )
         
 }

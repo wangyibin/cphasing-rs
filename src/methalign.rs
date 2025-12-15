@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
 use anyhow::Result as anyResult;
 use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use noodles::bed::record;

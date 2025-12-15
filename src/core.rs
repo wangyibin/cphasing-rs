@@ -1,8 +1,7 @@
 #![allow(non_snake_case)]
+#![allow(unused)]
+#![allow(unused_imports)]
 use anyhow::Result as anyResult;
-// use async_compression::tokio::bufread::GzipDecoder;
-// use tokio::io::TBufReader;
-
 use bio::io::fastq;
 use flate2::read;
 use flate2::write::GzEncoder;
@@ -10,14 +9,14 @@ use gzp::deflate::{Gzip, Mgzip};
 use gzp::{ZBuilder, Compression};
 use gzp::{par::compress::{ParCompress, ParCompressBuilder}};
 use gzp::{par::decompress::ParDecompressBuilder};
-use rust_htslib::bam::{
-    self, 
-    record::Aux, record::Cigar, 
-    record::CigarStringView,
-    Header, HeaderView,
-    Read, Reader, Record,
-    Writer, 
-};
+// use rust_htslib::bam::{
+//     self, 
+//     record::Aux, record::Cigar, 
+//     record::CigarStringView,
+//     Header, HeaderView,
+//     Read, Reader, Record,
+//     Writer, 
+// };
 use std::env;
 use std::io::prelude::*;
 use std::borrow::Cow;

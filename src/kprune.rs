@@ -140,8 +140,8 @@ impl KPruner {
       
         let mut alleletable = AlleleTable2::new(alleletable);
         alleletable.allele_records = alleletable.allele_records().unwrap();
-        
-        
+        alleletable.header = alleletable.parse_header().unwrap();
+         
         // let contacts_data = contacts.to_data(&unique_min, normalization_method);
         // let contig_pairs: Vec<ContigPair2> = contacts_data.keys().cloned().collect();
     
@@ -233,8 +233,10 @@ impl KPruner {
         log::set_max_level(log::LevelFilter::Off);
         let unique_min = self.alleletable.header.to_unique_minimizer_density();
         log::set_max_level(log::LevelFilter::Info);
+
+        let length_hash = &self.alleletable.header.contigsizes; 
         let mut contacts_data = self.contacts.to_data(&unique_min, &self.normalization_method, 
-                                                    &self.countre);
+                                                    &self.countre, Some(length_hash));
 
         // filter contact data
         if !whitehash.is_empty() {

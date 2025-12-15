@@ -198,6 +198,31 @@ impl AlleleTable2 {
         
         Ok(rdr)
     }
+    
+    pub fn parse_header(&self) -> anyResult<AlleleHeader> {
+        let mut header = AlleleHeader::new();
+        let input = common_reader(&self.file);
+        let reader = BufReader::new(input);
+
+        for result in reader.lines() {
+            let line = result?;
+            if !line.starts_with("#") {
+                break;
+            }
+            let line_vec = line.strip_prefix("#").unwrap().split(" ").collect::<Vec<&str>>();
+            let contig = line_vec[0].to_string();
+            let size = line_vec[1].parse::<u64>().unwrap();
+            let min = line_vec[2].parse::<u64>().unwrap();
+            let unique_min = line_vec[3].parse::<u64>().unwrap();
+            header.header.push(contig.clone());
+            header.contigsizes.insert(contig.clone(), size);
+            header.contigs.insert(contig.clone());
+            header.minimizer.insert(contig.clone(), min);
+            header.unique_minimizer.insert(contig.clone(), unique_min);
+        }
+
+        Ok(header)
+    }
 
     pub fn allele_records(&self) -> anyResult<Vec<AlleleRecord2>> {
         let parse_result = self.parse();

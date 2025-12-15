@@ -623,7 +623,7 @@ impl PQS {
         };
 
 
-        let mut results = files.into_par_iter().map(|file| {
+        let results = files.into_par_iter().map(|file| {
             let mut df = LazyFrame::scan_parquet(file,  ScanArgsParquet::default()).unwrap();
 
             if min_mapq > 1 {
@@ -851,6 +851,175 @@ impl PQS {
 
         Ok(())
        
+    }
+
+    pub fn to_split_contacts(&self, min_contacts: u32, split_num: u32, min_quality: u8, output: &String) {
+        use hashbrown::HashMap;
+        unsafe {
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 4));
+        }
+        
+        let min_mapq = min_quality as u32;
+       
+        let files = if min_mapq == 0 {
+            collect_parquet_files(format!("{}/q0", self.file).as_str())
+        } else {
+            collect_parquet_files(format!("{}/q1", self.file).as_str())
+        };
+
+        let contigsize_file = format!("{}/_contigsizes", self.file);
+        let reader = common_reader(&contigsize_file);
+        let mut contigsizes = HashMap::new();
+        for record in reader.lines() {
+            let record = record.unwrap();
+            let record = record.split("\t").collect::<Vec<&str>>();
+            let contig = record.get(0).unwrap().to_string();
+            let size = record.get(1).unwrap().parse::<u32>().unwrap();
+                contigsizes.insert(contig, size);
+        }
+
+        let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+        let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
+        let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
+
+        let (sender, receiver) = bounded::<LazyFrame>(100);
+        let data = Arc::new(Mutex::new(HashMap::new()));
+
+        let consumer_handles: Vec<_> = (0..8).map(|_| {
+            let receiver = receiver.clone();
+            let data = Arc::clone(&data);
+            let contig_idx = contig_idx.clone();
+
+            thread::spawn(move || {
+                
+                while let Ok(df) = receiver.recv() {
+                    let df = df.collect().unwrap();
+                    let mut local_data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
+                    let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+                    let rev_map1 = cat_col1.get_rev_map();
+    
+                    let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+                    let rev_map2 = cat_col2.get_rev_map();
+    
+                    let nrows = df.height();
+    
+                    for idx in 0..nrows {
+                        let row = df.get(idx).unwrap();
+                        let chrom1 = match row.get(0) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+                        let chrom2 = match row.get(1) {
+                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
+                            _ => None
+                        };
+    
+
+                        let pos1 = match row.get(2) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        let pos2 = match row.get(3) {
+                            Some(AnyValue::List(v)) => Some(v),
+                            _ => None
+                        };
+    
+                        if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+                            let chrom1 = rev_map1.get(*chrom1);
+                            let chrom2 = rev_map2.get(*chrom2);
+                            let chrom1 = contig_idx.get(chrom1).unwrap();
+                            let chrom2 = contig_idx.get(chrom2).unwrap();
+                            
+                            let mut vec: Vec<SmallIntVec> = Vec::new();
+
+                            for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
+                                vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
+                            }
+                            
+                            local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+                        }
+                    }
+
+                    let mut data = data.lock().unwrap();
+                    for (key, value) in local_data {
+                        data.entry(key).or_insert(Vec::new()).extend(value);
+                    }
+             
+                }
+            })
+        }).collect();
+
+        for file in files.into_iter() {
+            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+                Ok(df) => df,
+                Err(e) => {
+                    log::warn!("Empty file: {:?}", file);
+                    continue
+                }
+            };
+
+            let df = if min_mapq > 1 {
+                df.filter(col("mapq").gt_eq(min_mapq))
+            } else {
+                df
+            };
+
+            let result = df.group_by(["chrom1", "chrom2"])
+                .agg(&[col("pos1"), col("pos2")]);
+
+            sender.send(result).unwrap();
+
+        }
+
+        drop(sender);
+        for handle in consumer_handles {
+            handle.join().unwrap();
+        }
+        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+        log::info!("Calculating the split contacts");
+
+        let writer = common_writer(output.as_str());
+        let writer = Arc::new(Mutex::new(writer));
+        
+        data.par_iter().for_each(|(cp, vec)| {
+            let (c1, c2) = cp;
+            let size1 = idx_sizes.get(c1).unwrap();
+            let size2 = idx_sizes.get(c2).unwrap();
+            let name1 = idx_contig.get(c1).unwrap();
+            let name2 = idx_contig.get(c2).unwrap();
+
+            let split_size1 = if *size1 > split_num { *size1 / split_num } else { 1 };
+            let split_size2 = if *size2 > split_num { *size2 / split_num } else { 1 };
+
+            let mut contact_hash = HashMap::new();
+            
+            for pair in vec {
+                let p1 = pair[0];
+                let p2 = pair[1];
+                
+
+                let idx1 = (p1 / split_size1).min(split_num - 1);
+                let idx2 = (p2 / split_size2).min(split_num - 1);
+                
+                *contact_hash.entry((idx1, idx2)).or_insert(0) += 1;
+            }
+            
+            let mut buffer = Vec::with_capacity(contact_hash.len());
+            contact_hash.iter().for_each(|((idx1, idx2), count)| {
+                if count >= &min_contacts {
+                    buffer.push(format!("{}_{}\t{}_{}\t{}\n", name1, idx1, name2, idx2, count));
+                }
+            });
+            
+            let buffer = buffer.join("");
+            let mut writer = writer.lock().unwrap();
+            writer.write_all(buffer.as_bytes()).unwrap();
+
+        });
+
+        log::info!("Successful output split contacts file `{}`", output);
     }
 
     pub fn to_depth(&self, binsize: u32, min_quality: u8, output: &String) {
@@ -1593,7 +1762,7 @@ impl PQS {
             let mut rng2 = StdRng::from_seed(seed_array2);
             file_chunk.iter().for_each(|file| {
                 
-                let mut df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
+                let df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
                 let mut df = df.collect().unwrap();
 
                 let cat_col = df.column("chrom1").unwrap().categorical().unwrap();

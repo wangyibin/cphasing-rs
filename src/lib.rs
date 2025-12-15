@@ -14,7 +14,6 @@ pub mod kprune;
 pub mod methy;
 pub mod methalign;
 pub mod mnd;
-pub mod optimize;
 pub mod paf;
 pub mod paf2;
 pub mod pairs;
@@ -23,6 +22,9 @@ pub mod prune;
 pub mod pqs;
 pub mod realign;
 pub mod scaffolding;
+pub mod order;
+pub mod orientation;
+pub mod splitcontacts;
 pub mod simulation;
 pub mod sketch;
 

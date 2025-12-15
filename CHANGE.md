@@ -1,3 +1,7 @@
+## [v0.2.3] - 20251207
+## New features
+- `optimize`, add optimize module similar to the `allhic optimize`
+
 ## [v0.2.2] - 20251120
 - Switch cargo version from 1.81 to 1.91, which increased the performance of software
 

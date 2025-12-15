@@ -400,7 +400,8 @@ impl Contacts2 {
 
     pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
                     normalization_method: &String,
-                    re_count: &Option<CountRE>
+                    re_count: &Option<CountRE>,
+                    lengths: Option<&HashMap<String, u64>>
                 ) -> HashMap<ContigPair2<'_>, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
 
         let _re_count = if let Some(v) = re_count {
@@ -519,7 +520,12 @@ impl Contacts2 {
             let mut ratio = 0.0;
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
             let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
-            
+            let (len1, len2) = if let Some(lens) = lengths {
+                (*lens.get(contig_pair.Contig1).unwrap_or(&0),
+                 *lens.get(contig_pair.Contig2).unwrap_or(&0))
+            } else {
+                (0, 0)
+            };
             if *contig_pair.Contig1 == *contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
@@ -588,6 +594,17 @@ impl Contacts2 {
                             
                             *count / ((total1 + 1.0) * (total2 + 1.0))
                             
+                            
+                        }
+                        else if normalization_method == "vc_sqrt" {
+                            let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&0.0);
+                            let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&0.0);
+                           
+                            if *total1 > 0.0 && *total2 > 0.0 {
+                                *count / ((total1 * total2).sqrt())
+                            } else {
+                                0.0
+                            }
                         }
                         else if normalization_method == "hybrid" {
                             let w_cis = 0.5;
@@ -634,20 +651,30 @@ impl Contacts2 {
                                 _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log)
                             }
                         }
+                        else if normalization_method == "cis_density" {
+                            if len1 > 0 && len2 > 0 {
+                                let l1 = len1 as f64;
+                                let l2 = len2 as f64;
+                                let cap = 50000.0; 
+                                let eff_l1 = if l1 > cap { cap } else { l1 };
+                                let eff_l2 = if l2 > cap { cap } else { l2 };
+
+                                let d1 = (count1 + 1.0) / (eff_l1 + 1000.0); 
+                                let d2 = (count2 + 1.0) / (eff_l2 + 1000.0);
+                                
+                                
+                                *count / (d1 * d2).sqrt()
+                            } else {
+                                *count / (((count1 + 1.0) * (count2 + 1.0)).sqrt())
+                            }
+                        }
+
                         else {
                             *count
                         }
+
+
                     }
-                    // _ => *count / ((count1) * (count2)).sqrt(),
-                    // _ => *count,
-                    //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
-                    // _ => match m1_log * m2_log {
-                    //     0.0 => 0.0,
-                    //     _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
-
-                    // }
-
-
                 
                 };
             }

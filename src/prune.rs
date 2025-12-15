@@ -84,8 +84,9 @@ impl Pruner {
 
     pub fn prune(&mut self, whitehash: &HashSet<&String>, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
+        let length_hash: HashMap<String, u64> = HashMap::new();
         let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method,
-                                                                    &self.countre);
+                                                                    &self.countre, Some(&length_hash));
 
         // self.allcontigs to sorted Vec 
         let mut allcontigs = self.allcontigs.iter().collect::<Vec<&String>>();
@@ -282,8 +283,9 @@ impl Pruner {
 
     pub fn kprune(&mut self, whitehash: &HashSet<&String>, method: &str, writer: &mut Box<dyn Write + Send> ) {
         let unique_min: HashMap<String, f64> = HashMap::new();
+        let length_hash: HashMap<String, u64> = HashMap::new();
         let contact_data = self.contacts.to_data(&unique_min, &self.normalization_method, 
-                                                            &self.countre);
+                                                            &self.countre, Some(&length_hash));
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs(whitehash);
         if whitehash.len() > 0 {
             allelic_contig_pairs.retain(|x| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2))

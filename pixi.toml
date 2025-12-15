@@ -31,7 +31,6 @@ libclang = ">=14.0,<15.0"
 llvmdev = ">=14.0.6,<19"
 cxx-compiler = ">=1.9.0,<2"
 
-
 [feature.build.target.linux-aarch64.dependencies]
 clang = ">=14.0.0,<15.0"
 

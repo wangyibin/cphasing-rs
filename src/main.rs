@@ -23,8 +23,6 @@ use cphasing::count_re::CountRE;
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
-use cphasing::optimize::ContigScoreTable;
-use cphasing::optimize::SimulatedAnnealing;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::{ Pairs, merge_pairs };
 use cphasing::porec::{
@@ -35,6 +33,9 @@ use cphasing::pqs::{ PQS, merge_pqs };
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec,
         simulate_hic };
+use cphasing::order::*;
+use cphasing::orientation::*;
+use cphasing::splitcontacts::*;
 use std::collections::{ HashMap, HashSet };
 use std::io::Write; 
 use chrono::Local;
@@ -444,6 +445,14 @@ fn main() {
             
             let clm = Clm::new(&input_clm);
             clm.split_clm(&cluster_file, &output_dir).unwrap();
+
+        }
+        Some(("splitcontacts", sub_matches)) => {
+            let input_contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
+            let cluster_file = sub_matches.get_one::<String>("CLUSTER").expect("required");
+            let output_dir = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            
+            let _ = split_contacts_by_clusters(&input_contacts, &cluster_file, &output_dir);
 
         }
         Some(("splitfastq", sub_matches)) => {
@@ -940,8 +949,7 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         if *split_num > 1 {
-                            log::error!("Current version does not support split contacts for PQS file.");
-                            // let _ = p.to_split_contacts(*min_contacts, *split_num, *min_quality, &output);
+                            let _ = p.to_split_contacts(*min_contacts, *split_num, *min_quality, &output);
                         } else {
                             let _ = p.to_contacts(*min_contacts, *min_quality, &output);
                         }
@@ -1137,6 +1145,10 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            if output.ends_with(".pqs") {
+                log::error!("Output for bam2pairs cannot be .pqs format.");
+                std::process::exit(1);
+            }
             bam2pairs(&bam, *min_quality, &output, *threads);
 
         }
@@ -1227,17 +1239,154 @@ fn main() {
         }
 
         Some(("optimize", sub_matches)) => {
-            let score = sub_matches.get_one::<String>("SCORE").expect("required");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            use rand::rngs::SmallRng;
+            use rand::SeedableRng;
+            use rand::prelude::SliceRandom;
+            use hashbrown::HashMap;
+        
+            let split_contacts = sub_matches.get_one::<String>("SPLITCONTACTS").expect("required");
+            let count_re = sub_matches.get_one::<String>("COUNTRE").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let mutation_rate = sub_matches.get_one::<f64>("MUTATION").expect("error");
 
-            let cst = ContigScoreTable::new(&score);
-            let co = cst.read();
-            let mut sa = SimulatedAnnealing::new(co, 2000.0, 0.9999, 0.01, 100000000);
-            let best = sa.run();
+            let ngen = sub_matches.get_one::<usize>("NGEN").expect("error");
+            let npop = sub_matches.get_one::<usize>("NPOP").expect("error");
+            let resume = sub_matches.get_one::<bool>("RESUME").expect("error");
+            let seed = sub_matches.get_one::<u64>("SEED").expect("error");
+            let skip_ga = sub_matches.get_one::<bool>("SKIPGA").expect("error");
+            let run_lkh = sub_matches.get_one::<bool>("RUNLKH").expect("error");
 
-            best.save(&output);
+            let _output = Path::new(&count_re)
+                            .file_stem()
+                            .unwrap()
+                            .to_str()
+                            .unwrap();
+            let output = Path::new(_output).with_extension("tour");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
+            let mut count_re = CountRE::new(&count_re);
+            count_re.parse();
+
+            let contigsizes = count_re.to_lengths();
+            
+            let initial_contigs = contigsizes.keys().cloned().collect::<Vec<String>>();
+            
+            let mut contigsizes_idx: IndexMap<usize, usize> = IndexMap::new();
+            let mut contig2idx: HashMap<String, usize> = HashMap::new();
+            let mut idx2contig: HashMap<usize, String> = HashMap::new();
+            for (i, contig) in initial_contigs.iter().enumerate() {
+                let size = contigsizes.get(contig).unwrap();
+                contigsizes_idx.insert(i, (*size).try_into().unwrap());
+                contig2idx.insert(contig.clone(), i);
+                idx2contig.insert(i, contig.clone());
+            }
+
+            let white_list = contig2idx.keys().cloned().collect::<HashSet<String>>();
+            let mut split_contacts = SplitContacts::read_from_file(&split_contacts, Some(&white_list)).unwrap();
+          
+            let contacts_map = split_contacts.to_contacts(&contig2idx);
+            let num_contigs = contigsizes_idx.len();
+            let mut contacts_vec: Vec<HashMap<usize, u32>> = vec![HashMap::new(); num_contigs];
+            for (&(u, v), &weight) in contacts_map.iter() {
+                
+                contacts_vec[u].insert(v, weight as u32);
+                contacts_vec[v].insert(u, weight as u32);
+            }
+            let signs = vec![true; contigsizes_idx.len()];
+            let mut tour = Tour {
+                contigs: contigsizes_idx.keys().cloned().collect(),
+                signs: signs
+            };
+
+            if *resume && Path::new(&output).exists() {
+                log::info!("Resume optimization from existing output directory: {}", output.display());
+                // mv output to output.sav
+               
+                let input_tour = common_reader(&output.to_str().unwrap());
+                // read the last line of the file
+                let reader = BufReader::new(input_tour);
+                let last_line = reader.lines().last().unwrap().unwrap();
+                let _tour: Vec<String> = last_line
+                                        .split_whitespace()
+                                        .map(|x| x.parse::<String>().unwrap())
+                                        .collect();
+                
+                // get signs and contigs from tour : tig1+, tig2-, ...
+                let mut initial_tour: Vec<usize> = Vec::new();
+                let mut signs = Vec::new();
+                for contig in _tour.iter() {
+                    let (contig, sign) = if contig.ends_with('+') {
+                        (&contig[..contig.len()-1], true)
+                    } else if contig.ends_with('-') {
+                        (&contig[..contig.len()-1], false)
+                    } else {
+                        (contig.as_str(), true)
+                    };
+                    let contig_idx = contig2idx.get(contig).unwrap();
+                    initial_tour.push(*contig_idx);
+                    signs.push(sign);
+                } 
+
+                log::info!("Backup previous to {}.sav", output.display());
+                std::fs::rename(&output, format!("{}.sav", output.display())).unwrap();
+
+                
+                tour = Tour {
+                    contigs: initial_tour,
+                    signs: vec![true; num_contigs],
+                };
+                
+            } else {
+                log::info!("Starting optimization with random tour.");
+                let mut rng = SmallRng::seed_from_u64(*seed);
+                tour.contigs.shuffle(&mut rng);
+            }
+
+            
+            let mut tour = run_hybrid(
+                &tour,
+                contigsizes_idx, 
+                contacts_vec, 
+                *mutation_rate,
+                *npop, 
+                *ngen, 
+                1,
+                *run_lkh,
+                !*skip_ga,
+                *resume,
+                *seed,
+                threads.clone()
+            );
+            // let matrix = ContactMatrix::new(&contigsizes_idx, contacts_vec);
+            // let mut tour = run_lkh_optimizer_dual_node(
+            //     &tour,
+            //     contigsizes_idx.clone(), 
+            //     &matrix,
+            //     &split_contacts,
+            //     &contig2idx,
+            //     10,
+            //     *seed,
+            // );
+            split_contacts.normalize_by_cis();
+            let detailed_matrix = DetailedContactMatrix::new(split_contacts.to_detailed_contact_matrix(&contig2idx));
+
+            robust_orient_contigs(&mut tour, &detailed_matrix, 10);
+
+            let mut writer = common_writer(output.to_str().unwrap());
+
+            for (i, &idx) in tour.contigs.iter().enumerate() {
+                let name = &idx2contig[&idx];
+                let sign = if tour.signs[i] { "+" } else { "-" };
+                write!(writer, "{}{} ", name, sign).unwrap();
+            }
+            writeln!(writer).unwrap();
 
         }
+
         _ => {
             let input_arg = matches.subcommand().unwrap().0; 
             eprintln!("No such subcommand: {}", input_arg);

@@ -130,8 +130,8 @@ impl CountRE {
         data
     }
 
-    pub fn to_lengths(&self) -> HashMap<String, u32> {
-        let mut data: HashMap<String, u32> = HashMap::new();
+    pub fn to_lengths(&self) -> IndexMap<String, u32> {
+        let mut data: IndexMap<String, u32> = IndexMap::new();
         for record in &self.records {
             data.insert(record.Contig.clone(), record.Length);
         } 
