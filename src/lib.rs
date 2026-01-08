@@ -15,7 +15,6 @@ pub mod methy;
 pub mod methalign;
 pub mod mnd;
 pub mod paf;
-pub mod paf2;
 pub mod pairs;
 pub mod porec;
 pub mod prune;

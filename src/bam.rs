@@ -527,6 +527,14 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
             continue 
         }
 
+        if record.is_secondary() || record.is_supplementary() || record.is_duplicate() || record.is_quality_check_failed() {
+            continue;
+        }
+        if record2.is_secondary() || record2.is_supplementary() || record2.is_duplicate() || record2.is_quality_check_failed() {
+            continue;
+        }
+
+
         if record.mapq() < min_mapq || record2.mapq() < min_mapq {
             continue
         }

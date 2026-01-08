@@ -671,26 +671,221 @@ impl Fastx {
     }
 
 
+    // pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
+    //     // let reader = common_reader(cluster_file);
+    //     // let mut cluster_map: HashMap<String, String> = HashMap::new();
+    //     // let mut groups = Vec::new();
+    //     // for line in reader.lines() {
+    //     //     let line = line.unwrap();
+    //     //     let line = line.trim();
+    //     //     let line = line.split("\t").collect::<Vec<&str>>();
+    //     //     let group = line[0].to_string();
+    //     //     groups.push(group.clone());
+
+    //     //     let contigs = line[2].split(" ").collect::<Vec<&str>>();
+    //     //     for contig in contigs {
+
+    //     //         cluster_map.insert(contig.to_string(), group.clone());
+    //     //     }
+    //     // }
+
+    //     // let reader = common_reader(&self.file);
+    //     // let reader = bio::io::fasta::Reader::new(reader);
+    //     // let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
+    //     // for group in groups {
+    //     //     let writer = common_writer(&format!("{}.contigs.fasta", group));
+    //     //     writer_map.insert(group, writer);
+    //     // }
+
+    //     // let trim_threshold = trim_length * 3;
+
+    //     // for result in reader.records() {
+    //     //     let record = match result {
+    //     //         Ok(record) => record,
+    //     //         Err(e) => {
+    //     //             log::error!("Error reading record: {}", e);
+    //     //             continue
+    //     //         }
+    //     //     };
+    //     //     let id = record.id();
+            
+    //     //     if let Some(cluster) = cluster_map.get(id) {
+    //     //         if let Some(writer) = writer_map.get_mut(cluster) {
+    //     //             let mut seq = record.seq();
+    //     //             let length = seq.len();
+    //     //             if length <= 0 {
+    //     //                 continue;
+    //     //             }
+    //     //             if length > trim_threshold {
+    //     //                 seq = &seq[trim_length..length - trim_length];
+    //     //             }
+    //     //             if seq.len() <= 0 {
+    //     //                 continue;
+    //     //             }
+    //     //             let seq_str = std::str::from_utf8(&seq).unwrap();
+    //     //             writer.write_all(format!(">{}\n{}\n", id, seq_str).as_bytes()).unwrap();
+    //     //         }
+    //     //     }
+    //     // }
+
+    //     let reader = common_reader(cluster_file);
+      
+    //     let mut cluster_map: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+    //     let mut groups = HashSet::new(); // Use HashSet to avoid duplicates
+
+    //     for line in reader.lines() {
+    //         let line = line.unwrap();
+    //         let line = line.trim();
+    //         if line.is_empty() { continue; }
+    //         let parts = line.split("\t").collect::<Vec<&str>>();
+    //         if parts.len() < 3 { continue; }
+            
+    //         let group = parts[0].to_string();
+    //         groups.insert(group.clone());
+
+    //         let contigs = parts[2].split(" ").collect::<Vec<&str>>();
+    //         for contig in contigs {
+              
+    //             if let Some(idx) = contig.rfind('|') {
+    //                 let raw_id = &contig[..idx];
+    //                 let range_part = &contig[idx+1..];
+    //                 if let Some(sep_idx) = range_part.find('_') {
+    //                     let start_str = &range_part[..sep_idx];
+    //                     let end_str = &range_part[sep_idx+1..];
+    //                     if let (Ok(start), Ok(end)) = (start_str.parse::<usize>(), end_str.parse::<usize>()) {
+    //                         cluster_map.entry(raw_id.to_string())
+    //                             .or_insert_with(Vec::new)
+    //                             .push((group.clone(), start, end));
+    //                     }
+    //                 }
+    //             } else {
+                  
+    //                 cluster_map.entry(contig.to_string())
+    //                     .or_insert_with(Vec::new)
+    //                     .push((group.clone(), 0, usize::MAX));
+    //             }
+    //         }
+    //     }
+
+    //     let reader = common_reader(&self.file);
+    //     let reader = bio::io::fasta::Reader::new(reader);
+    //     let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
+    //     for group in groups {
+    //         let writer = common_writer(&format!("{}.contigs.fasta", group));
+    //         writer_map.insert(group, writer);
+    //     }
+
+    //     let trim_threshold = trim_length * 3;
+
+    //     for result in reader.records() {
+    //         let record = match result {
+    //             Ok(record) => record,
+    //             Err(e) => {
+    //                 log::error!("Error reading record: {}", e);
+    //                 continue
+    //             }
+    //         };
+    //         let id = record.id();
+            
+    //         if let Some(targets) = cluster_map.get(id) {
+    //             let full_seq = record.seq();
+    //             let full_len = full_seq.len();
+
+    //             for (group, req_start, req_end) in targets {
+    //                 if let Some(writer) = writer_map.get_mut(group) {
+                        
+    //                     let mut start = *req_start;
+    //                     let mut end = *req_end;
+
+                       
+    //                     if end == usize::MAX {
+    //                         end = full_len;
+    //                     }
+
+                        
+    //                     if start >= full_len { continue; }
+    //                     if end > full_len { end = full_len; }
+    //                     if start >= end { continue; }
+
+    //                     let slice_len = end - start;
+    //                     if slice_len > trim_threshold {
+    //                         if start < trim_length {
+    //                             start += trim_length;
+    //                         }
+                           
+    //                         if slice_len > trim_threshold {
+        
+    //                             let mut effective_end = end;
+    //                             if (effective_end - start) > trim_threshold {
+    //                                  effective_end -= trim_length;
+    //                             }
+    //                             end = effective_end;
+    //                         }
+    //                     }
+    //                     if start >= end { continue; }
+
+    //                     let seq_slice = &full_seq[start..end];
+    //                     let seq_str = std::str::from_utf8(seq_slice).unwrap();
+                        
+                    
+    //                     let header = if *req_end == usize::MAX {
+    //                         id.to_string()
+    //                     } else {
+    //                         format!("{}|{}_{}", id, start, end)
+    //                     };
+
+    //                     writer.write_all(format!(">{}\n{}\n", header, seq_str).as_bytes()).unwrap();
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
     pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
         let reader = common_reader(cluster_file);
-        let mut cluster_map: HashMap<String, String> = HashMap::new();
-        let mut groups = Vec::new();
+        
+        let mut cluster_map: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+        let mut groups = HashSet::new(); // Use HashSet to avoid duplicates
+
         for line in reader.lines() {
             let line = line.unwrap();
             let line = line.trim();
-            let line = line.split("\t").collect::<Vec<&str>>();
-            let group = line[0].to_string();
-            groups.push(group.clone());
+            if line.is_empty() { continue; }
+            let parts = line.split("\t").collect::<Vec<&str>>();
+            if parts.len() < 3 { continue; }
+            
+            let group = parts[0].to_string();
+            groups.insert(group.clone());
 
-            let contigs = line[2].split(" ").collect::<Vec<&str>>();
+            let contigs = parts[2].split(" ").collect::<Vec<&str>>();
             for contig in contigs {
-
-                cluster_map.insert(contig.to_string(), group.clone());
+                
+                if let Some(idx) = contig.rfind('|') {
+                    let raw_id = &contig[..idx];
+                    let range_part = &contig[idx+1..];
+                    if let Some(sep_idx) = range_part.find('_') {
+                        let start_str = &range_part[..sep_idx];
+                        let end_str = &range_part[sep_idx+1..];
+                        if let (Ok(start), Ok(end)) = (start_str.parse::<usize>(), end_str.parse::<usize>()) {
+                            cluster_map.entry(raw_id.to_string())
+                                .or_insert_with(Vec::new)
+                                .push((group.clone(), start, end));
+                        }
+                    }
+                } else {
+                    
+                    cluster_map.entry(contig.to_string())
+                        .or_insert_with(Vec::new)
+                        .push((group.clone(), 0, usize::MAX));
+                }
             }
         }
 
-        let reader = common_reader(&self.file);
-        let reader = bio::io::fasta::Reader::new(reader);
+        // Wrap cluster_map in Arc for parallel access
+        let cluster_map = Arc::new(cluster_map);
+
         let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
         for group in groups {
             let writer = common_writer(&format!("{}.contigs.fasta", group));
@@ -699,28 +894,77 @@ impl Fastx {
 
         let trim_threshold = trim_length * 3;
 
-        for result in reader.records() {
-            let record = match result {
-                Ok(record) => record,
-                Err(e) => {
-                    log::error!("Error reading record: {}", e);
-                    continue
-                }
-            };
-            let id = record.id();
-            
-            if let Some(cluster) = cluster_map.get(id) {
-                if let Some(writer) = writer_map.get_mut(cluster) {
-                    let mut seq = record.seq();
-                    let length = seq.len();
-                    if length > trim_threshold {
-                        seq = &seq[trim_length..length - trim_length];
+        // Use seq_io for parallel processing
+        let reader = common_reader(&self.file);
+        let reader = FastxReader::new(reader);
+
+        read_process_fastx_records(
+            reader,
+            4, // threads
+            2, // queue size
+            |record, buffer: &mut Vec<(String, String)>| { // Worker thread: Process and Format
+                buffer.clear();
+                let id = match record.id() {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                
+                if let Some(targets) = cluster_map.get(id) {
+                    let full_seq = record.seq();
+                    let full_len = full_seq.len();
+
+                    for (group, req_start, req_end) in targets {
+                        let mut start = *req_start;
+                        let mut end = *req_end;
+
+                        if end == usize::MAX {
+                            end = full_len;
+                        }
+
+                        if start >= full_len { continue; }
+                        if end > full_len { end = full_len; }
+                        if start >= end { continue; }
+
+                        let slice_len = end - start;
+                        if slice_len > trim_threshold {
+                            if start < trim_length {
+                                start += trim_length;
+                            }
+                            
+                            if slice_len > trim_threshold {
+                                let mut effective_end = end;
+                                if (effective_end - start) > trim_threshold {
+                                        effective_end -= trim_length;
+                                }
+                                end = effective_end;
+                            }
+                        }
+                        if start >= end { continue; }
+
+                        let seq_slice = &full_seq[start..end];
+                        let seq_str = String::from_utf8_lossy(seq_slice);
+                        
+                        let header = if *req_end == usize::MAX {
+                            id.to_string()
+                        } else {
+                            format!("{}|{}_{}", id, start, end)
+                        };
+
+                        // Format the output string here in parallel
+                        let output = format!(">{}\n{}\n", header, seq_str);
+                        buffer.push((group.clone(), output));
                     }
-                    let seq_str = std::str::from_utf8(&seq).unwrap();
-                    writer.write_all(format!(">{}\n{}\n", id, seq_str).as_bytes()).unwrap();
                 }
+            },
+            |_, buffer: &mut Vec<(String, String)>| { // Main thread: Write to files
+                for (group, content) in buffer.iter() {
+                    if let Some(writer) = writer_map.get_mut(group) {
+                        writer.write_all(content.as_bytes()).unwrap();
+                    }
+                }
+                None::<()>
             }
-        }
+        ).unwrap();
 
         Ok(())
     }

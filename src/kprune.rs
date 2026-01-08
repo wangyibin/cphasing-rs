@@ -137,10 +137,12 @@ impl KPruner {
         // count_re.parse();
         let mut contacts = Contacts2::new(contacts);
         contacts.parse();
-      
+        
+        log::set_max_level(log::LevelFilter::Off);
         let mut alleletable = AlleleTable2::new(alleletable);
         alleletable.allele_records = alleletable.allele_records().unwrap();
         alleletable.header = alleletable.parse_header().unwrap();
+        log::set_max_level(log::LevelFilter::Info);
          
         // let contacts_data = contacts.to_data(&unique_min, normalization_method);
         // let contig_pairs: Vec<ContigPair2> = contacts_data.keys().cloned().collect();

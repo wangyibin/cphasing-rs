@@ -128,6 +128,54 @@ impl PAFLine {
         }
         fields.join("\t")
     }
+
+    fn score(&self) -> i32 {
+        for t in &self.tags {
+            if t.starts_with("AS:i:") {
+                if let Ok(v) = t[5..].parse::<i32>() {
+                    return v;
+                }
+            }
+        }
+        self.match_n as i32
+    }
+}
+
+
+fn parse_paf_line_from_str(line: &str) -> Option<PAFLine> {
+    let mut it = line.split('\t');
+    let query = it.next()?.to_string();
+    let query_length = it.next()?.parse::<u32>().ok()?;
+    let query_start = it.next()?.parse::<u32>().ok()?;
+    let query_end = it.next()?.parse::<u32>().ok()?;
+    let query_strand = it.next()?.chars().next().unwrap_or('+');
+    let target = it.next()?.to_string();
+    let target_length = it.next()?.parse::<u64>().ok()?;
+    let target_start = it.next()?.parse::<u64>().ok()?;
+    let target_end = it.next()?.parse::<u64>().ok()?;
+    let match_n = it.next()?.parse::<u32>().ok()?;
+    let alignment_length = it.next()?.parse::<u32>().ok()?;
+    let mapq = it.next()?.parse::<u8>().ok()?;
+    let cigar = it.next()?.to_string();
+
+    let tags: Vec<String> = it.map(|s| s.to_string()).collect();
+
+    Some(PAFLine {
+        query,
+        query_length,
+        query_start,
+        query_end,
+        query_strand,
+        target,
+        target_length,
+        target_start,
+        target_end,
+        match_n,
+        alignment_length,
+        mapq,
+        cigar,
+        tags,
+    })
 }
 
 
@@ -181,6 +229,12 @@ impl PAFReadUnit {
     }
 }
 
+impl Default for PAFReadUnit {
+    fn default() -> Self {
+        PAFReadUnit::new()
+    }
+}
+
 pub struct PAFAlignmentUnit {
     Primary: Vec<PAFLine>,
     Secondary: Vec<Vec<PAFLine>>,
@@ -217,176 +271,189 @@ impl PAFAlignmentUnit {
         self.Primary[0].query.clone()
     }
 
-    fn rescue(&mut self, mapq: u8) {
-        // count map quality >= 1 {"target1": 2, "target2": 1}
-        
-        let mut high_mapq: HashMap<String, u32> = HashMap::new();
-        let mut high_high_mapq: HashMap<String, u32> = HashMap::new();
-        for r in &self.Primary {
-            let target = r.target.clone();
-            if r.mapq >= mapq {
-                let count = high_mapq.entry(target.clone()).or_insert(0);
-                *count += 1;
-            }
+    // fn rescue(&mut self, mapq: u8) {
+    //     let mut anchor_counts: HashMap<String, u32> = HashMap::new();
+    //     for r in &self.Primary {
+    //         if r.mapq >= mapq {
+    //             anchor_counts.entry(r.target.clone()).and_modify(|c| *c += 1).or_insert(1);
+    //         }
+    //     }
+    //     if anchor_counts.is_empty() {
+    //         return;
+    //     }
 
-            if r.mapq > 1 {
-                let count = high_high_mapq.entry(target).or_insert(0);
-                *count += 1;
+    //     if anchor_counts.is_empty() {
+    //         return;
+    //     }
+
+    //     let best_anchor = anchor_counts.into_iter()
+    //         .max_by_key(|entry| entry.1)
+    //         .map(|(k, _)| k)
+    //         .unwrap();
+
+    //     let prim_scores: Vec<i32> = self.Primary.iter().map(|p| p.score()).collect();
+    //     let prim_idents: Vec<f32> = self.Primary
+    //         .iter()
+    //         .map(|p| {
+    //             if p.alignment_length > 0 {
+    //                 p.match_n as f32 / p.alignment_length as f32
+    //             } else {
+    //                 0.0
+    //             }
+    //         })
+    //         .collect();
+        
+    //     for idx in 0..self.Primary.len() {
+    //         // short-circuit
+    //         if self.Primary[idx].mapq >= mapq { continue; }
+    //         let p_score = prim_scores[idx];
+    //         let p_identity = prim_idents[idx];
+
+    //         // candidate: 0 means keep primary (maybe just raise mapq), >0 means index in secondary +1
+    //         let mut best_cand_idx: Option<usize> = None;
+    //         let mut best_cand_score = i32::MIN;
+
+    //         // if primary already on best_anchor, prefer it
+    //         if self.Primary[idx].target == best_anchor {
+    //             best_cand_idx = Some(0);
+    //             best_cand_score = p_score;
+    //         }
+
+    //         // search secondaries
+    //         let s_list = &self.Secondary[idx];
+    //         for (i, s) in s_list.iter().enumerate() {
+    //             if s.target != best_anchor { continue; }
+    //             let s_score = s.score();
+    //             let s_identity = if s.alignment_length > 0 { s.match_n as f32 / s.alignment_length as f32 } else { 0.0 };
+    //             if (s_score as f32) >= (p_score as f32) && s_identity >= (p_identity * 0.90) {
+    //                 if best_cand_idx.is_none() || s_score > best_cand_score {
+    //                     best_cand_score = s_score;
+    //                     best_cand_idx = Some(i + 1);
+    //                 }
+    //             }
+    //         }
+
+    //         if let Some(cidx) = best_cand_idx {
+    //             if cidx == 0 {
+    //                 // keep primary, just boost mapq modestly
+    //                 self.Primary[idx].mapq = std::cmp::min(mapq, 10);
+    //             } else {
+    //                 // move chosen secondary into primary position to avoid clone
+    //                 // remove chosen secondary (swap_remove to avoid shifting many elements)
+    //                 let s_cand = self.Secondary[idx].swap_remove(cidx - 1);
+    //                 let mut new_p = s_cand; // moved ownership
+    //                 new_p.mapq = std::cmp::min(mapq, 10);
+    //                 // fix tp tag in-place if exists
+    //                 for t in new_p.tags.iter_mut() {
+    //                     if t.starts_with("tp:A:") {
+    //                         *t = "tp:A:P".to_string();
+    //                     }
+    //                 }
+    //                 // replace primary (move)
+    //                 self.Primary[idx] = new_p;
+    //             }
+    //         }
+    //     }
+    // }
+    fn rescue(&mut self, mapq: u8) {
+        let mut anchor_counts: HashMap<&str, u32> = HashMap::with_capacity(8);
+        
+        for r in &self.Primary {
+            if r.mapq >= mapq {
+                *anchor_counts.entry(&r.target).or_insert(0) += 1;
             }
         }
-        
-
-        if high_mapq.len() == 0 {
+    
+        if anchor_counts.is_empty() {
             return;
         }
 
-        {
-        for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
-            if p.mapq > 1 {
-                continue;
-            }
-
-            let mut res: HashSet<String> = HashSet::new();
-            let mut res_record_idx: HashMap<String, usize> = HashMap::new();
-            let target = p.target.clone();
+        let best_anchor = anchor_counts.iter()
+            .max_by_key(|&(_, count)| count)
+            .map(|(k, _)| k.to_string())
+            .unwrap();
     
-            if high_high_mapq.contains_key(&target) {
-                res_record_idx.insert(target.clone(), 0);
-                res.insert(target);
-            }
-
-            for (j, r) in s.iter().enumerate() {
-                let target = r.target.clone();
-                if high_high_mapq.contains_key(&target) {
-                    res_record_idx.insert(target.clone(), j+1);
-                    res.insert(target);
-                }
-            }
-
-            let mut max_target = String::new();
-            if res.len() == 0 {
-                continue;
-            } else if res.len() == 1 {
-                let target = res.iter().next().unwrap();
-                max_target = target.clone();
-            } else {
-                // max in res 
-                let mut max = 0;
-                for target in res {
-                    let count = high_mapq.get(&target).unwrap();
-                    if *count > max {
-                        max = *count;
-                        max_target = target;
-                    }
-                }
         
+        for idx in 0..self.Primary.len() {
+            if self.Primary[idx].mapq >= mapq { continue; }
+            let (p_score, p_identity, is_target_best) = {
+                let p = &self.Primary[idx];
+                let score = p.score();
+                let ident = if p.alignment_length > 0 {
+                    p.match_n as f32 / p.alignment_length as f32
+                } else {
+                    0.0
+                };
+                (score, ident, p.target == best_anchor)
+            }; 
+    
+            let mut best_cand_idx: Option<usize> = None;
+            let mut best_cand_score = i32::MIN;
+    
+            if is_target_best {
+                best_cand_idx = Some(0);
+                best_cand_score = p_score;
             }
 
-            let record_idx = res_record_idx.get(&max_target).unwrap();
-
-            high_mapq.entry(max_target).and_modify(|x| *x += 1);
-            if record_idx == &0 {
-                p.mapq = 1;
-            } else {
-                let mut new_record = PAFLine::from(&s[*record_idx - 1]);
-                // println!("{:?}", p);
-                // println!("{:?}", new_record);
-                new_record.mapq = 2;
-                new_record.tags = new_record.tags.iter().map(|x| {
-                    if x.starts_with("tp:A:") {
-                        "tp:A:P".to_string()
-                    } else {
-                        x.to_string()
+            let s_list = &self.Secondary[idx];
+            for (i, s) in s_list.iter().enumerate() {
+               
+                if s.target != best_anchor { continue; }
+                
+                let s_score = s.score();
+                let s_identity = if s.alignment_length > 0 { 
+                    s.match_n as f32 / s.alignment_length as f32 
+                } else { 
+                    0.0 
+                };
+    
+                if (s_score as f32) >= (p_score as f32) && s_identity >= (p_identity * 0.90) {
+                    if best_cand_idx.is_none() || s_score > best_cand_score {
+                        best_cand_score = s_score;
+                        best_cand_idx = Some(i + 1);
                     }
-                }).collect();
-                *p = new_record;
-            
+                }
+            }
+    
+            if let Some(cidx) = best_cand_idx {
+                if cidx == 0 {
+                    self.Primary[idx].mapq = mapq.min(10); 
+                } else {
+                    let mut new_p = self.Secondary[idx].swap_remove(cidx - 1);
+                    new_p.mapq = mapq.min(10);
+                    
+                    for t in new_p.tags.iter_mut() {
+                        if t.starts_with("tp:A:") {
+                            
+                            *t = String::from("tp:A:P"); 
+                            break; 
+                        }
+                    }
+
+                    self.Primary[idx] = new_p;
+                }
             }
         }
-
-        
-        for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
-            if p.mapq >= mapq {
-                continue;
-            }
-
-            let mut res: HashSet<String> = HashSet::new();
-            let mut res_record_idx: HashMap<String, usize> = HashMap::new();
-            let target = p.target.clone();
+    }
     
-            if high_mapq.contains_key(&target) {
-                res_record_idx.insert(target.clone(), 0);
-                res.insert(target);
-            }
-
-            for (j, r) in s.iter().enumerate() {
-                let target = r.target.clone();
-                if high_mapq.contains_key(&target) {
-                    res_record_idx.insert(target.clone(), j+1);
-                    res.insert(target);
-                }
-            }
-
-            let mut max_target = String::new();
-            if res.len() == 0 {
-                continue;
-            } else if res.len() == 1 {
-                let target = res.iter().next().unwrap();
-                max_target = target.clone();
-            } else {
-                // max in res 
-                let mut max = 0;
-                for target in res {
-                    let count = high_mapq.get(&target).unwrap();
-                    if *count > max {
-                        max = *count;
-                        max_target = target;
-                    }
-                }
-            }
-            
-            let record_idx = res_record_idx.get(&max_target).unwrap();
-            if record_idx == &0 {
-                p.mapq = 1;
-            } else {
-                let mut new_record = PAFLine::from(&s[*record_idx - 1]);
-                new_record.mapq = 1;
-                new_record.tags = new_record.tags.iter().map(|x| {
-                    if x.starts_with("tp:A:") {
-                        "tp:A:P".to_string()
-                    } else {
-                        x.to_string()
-                    }
-                }).collect();
-                *p = new_record;
-            }
-
-    }
-    }
-    }
-
 }
 
 
-pub fn parse_paf_read_unit(read_unit: &PAFReadUnit) -> PAFAlignmentUnit {
+pub fn parse_paf_read_unit(read_unit: &mut PAFReadUnit) -> PAFAlignmentUnit {
     let mut idx: u64 = 0;
     let mut au = PAFAlignmentUnit::new();
-    for r in &read_unit.data {
-        let read_id = r.query.clone();
-        
+    for r in read_unit.data.drain(..) {
 
         if !r.is_secondary() {
-            au.add_primary(r.clone());
+            au.add_primary(r);
             idx += 1;
         } else {
             if idx == 0 {
-                log::warn!("Secondary alignment `{:?}` could not found primary, \
-                            skipped.\
-                            The input bam should be sorted by read name.", read_id);
+                log::warn!("Secondary alignment missing primary, skipped.");
                 continue;
             }
             let idx2 = idx - 1;
-            au.add_secondary(r.clone(), idx2 as usize);
+            au.add_secondary(r, idx2 as usize);
         }
         
     }
@@ -394,62 +461,415 @@ pub fn parse_paf_read_unit(read_unit: &PAFReadUnit) -> PAFAlignmentUnit {
 }
 
 
+fn process_paf_batch_with_rayon(batch: Vec<(usize, Vec<PAFLine>)>, mapq: u8) -> Vec<PAFLine> {
+    batch
+        .into_par_iter()
+        .map(|(_, records)| {
+            let mut ru = PAFReadUnit { data: records };
+            let mut au = parse_paf_read_unit(&mut ru);
+            au.rescue(mapq);
+            au.Primary
+        })
+        .flatten()
+        .collect()
+}
+
+// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
+//     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+//     use std::time::Duration;
+
+//     let paf = PAFTable::new(input_paf);
+//     let parse_result = paf.parse();
+//     let rdr = match parse_result {
+//         Ok(v) => v,
+//         Err(_) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
+//     };
+
+//     // channel for serialized output bytes
+//     let (wtx, wrx) = crossbeam_channel::bounded::<Vec<u8>>(4096);
+//     let out_path = output.clone();
+//     let writer_handle = std::thread::spawn(move || {
+//         let wtr = common_writer(&out_path);
+//         let mut writer = std::io::BufWriter::new(wtr);
+//         while let Ok(buf) = wrx.recv() {
+//             let _ = writer.write_all(&buf);
+//         }
+//         let _ = writer.flush();
+//     });
+
+//     let chunksize: usize = 50_000; 
+//     let mut batch: Vec<(usize, Vec<PAFLine>)> = Vec::with_capacity(4);
+//     let mut records_to_process: Vec<PAFLine> = Vec::with_capacity(128);
+//     let mut previous_read_id = String::new();
+//     let mut idx: usize = 0;
+//     let mut total_reads: u64 = 0;
+//     let mut total_unmapped: u64 = 0;
+
+
+//     let pending = Arc::new(AtomicUsize::new(0));
+//     let send_arc = Arc::new(wtx);
+
+//     for line in rdr.lines() {
+//         let line = match line { Ok(l) => l, Err(_) => continue };
+//         if line.is_empty() { continue; }
+
+//         let paf_line = match parse_paf_line_from_str(&line) {
+//             Some(p) => p,
+//             None => continue,
+//         };
+
+//         if paf_line.target == "*" {
+//             total_unmapped += 1;
+//             total_reads += 1;
+//             continue;
+//         }
+
+//         let read_id = &paf_line.query;
+//         if previous_read_id.is_empty() {
+//             previous_read_id = read_id.clone();
+//         }
+
+//         if read_id != &previous_read_id {
+//             batch.push((idx, std::mem::take(&mut records_to_process)));
+//             records_to_process = Vec::with_capacity(128);
+
+//             if batch.len() >= chunksize {
+//                 let to_proc = std::mem::take(&mut batch);
+//                 let send = send_arc.clone();
+//                 let pend = pending.clone();
+//                 pend.fetch_add(1, Ordering::SeqCst);
+//                 rayon::spawn_fifo(move || {
+//                     let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 200);
+//                     for (_, records) in to_proc {
+//                         let mut ru = PAFReadUnit { data: records };
+//                         let mut au = parse_paf_read_unit(&mut ru); // consumes records
+//                         au.rescue(mapq);
+//                         for r in au.Primary {
+//                             let s = r.to_string();
+//                             outbuf.extend_from_slice(s.as_bytes());
+//                             outbuf.push(b'\n');
+//                         }
+//                     }
+//                     let _ = send.send(outbuf);
+//                     pend.fetch_sub(1, Ordering::SeqCst);
+//                 });
+//             }
+
+//             idx += 1;
+//             total_reads += 1;
+//             previous_read_id = read_id.clone();
+//         }
+
+//         records_to_process.push(paf_line);
+//     }
+
+//     if !records_to_process.is_empty() {
+//         batch.push((idx, std::mem::take(&mut records_to_process)));
+//     }
+//     if !batch.is_empty() {
+//         let to_proc = std::mem::take(&mut batch);
+//         let send = send_arc.clone();
+//         let pend = pending.clone();
+//         pend.fetch_add(1, Ordering::SeqCst);
+//         rayon::spawn_fifo(move || {
+//             let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 200);
+//             for (_, records) in to_proc {
+//                 let mut ru = PAFReadUnit { data: records };
+//                 let mut au = parse_paf_read_unit(&mut ru);
+//                 au.rescue(mapq);
+//                 for r in au.Primary {
+//                     let s = r.to_string();
+//                     outbuf.extend_from_slice(s.as_bytes());
+//                     outbuf.push(b'\n');
+//                 }
+//             }
+//             let _ = send.send(outbuf);
+//             pend.fetch_sub(1, Ordering::SeqCst);
+//         });
+//     }
+
+//     loop {
+//         if pending.load(Ordering::SeqCst) == 0 { break; }
+//         std::thread::sleep(Duration::from_millis(50));
+//     }
+
+//     drop(send_arc);
+//     let _ = writer_handle.join();
+
+//     log::info!("Processed reads: {}, unmapped: {}", total_reads, total_unmapped);
+// }
+
 pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-    let paf = PAFTable::new(input_paf);
-    let parse_result = paf.parse();
-    let rdr = match parse_result {
-        Ok(v) => v,
-        Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
-    };
+    use std::sync::{Arc, atomic::{AtomicUsize, AtomicU64, Ordering}};
+    use std::time::Duration;
+    use std::io::BufRead;
 
-    let mut total_reads: u64 = 0;
-    let mut total_alignments: u64 = 0;
-    let mut total_unmapped: u64 = 0;
-    let mut old_read_id = String::from("");
-
-    let wtr = common_writer(output);
-    let mut writer = BufWriter::new(wtr);
+    let rdr = common_reader(&input_paf);
+    let (wtx, wrx) = crossbeam_channel::bounded::<Vec<u8>>(100_000);
+    let out_path = output.clone();
     
-    let mut read_unit = PAFReadUnit::new();
+    let writer_handle = std::thread::spawn(move || {
+        let wtr = common_writer(&out_path);
+        let mut writer = std::io::BufWriter::new(wtr);
+        while let Ok(buf) = wrx.recv() {
+            let _ = writer.write_all(&buf);
+        }
+        let _ = writer.flush();
+    });
 
-    for line in rdr.lines() {
-        let fields: Vec<String> = line.unwrap().split('\t').map(|x| x.to_string()).collect();
-        
-        assert!(fields.len() > 12, "Error: PAF file should have at least 12 columns");
-        let paf_line: PAFLine = PAFLine::new(fields);
+    
+    let chunksize: usize = 10_000; 
+    let mut batch: Vec<Vec<String>> = Vec::with_capacity(chunksize);
+    let mut records_to_process: Vec<String> = Vec::with_capacity(128);
+    
+    let mut previous_read_id = String::new();
+    
+    let total_reads = Arc::new(AtomicU64::new(0));
+    let total_unmapped = Arc::new(AtomicU64::new(0));
+    let pending = Arc::new(AtomicUsize::new(0));
+    let send_arc = Arc::new(wtx);
 
-        if paf_line.target == "*" {
-            total_unmapped += 1;
-            total_reads += 1;
-            continue;
+    for line_res in rdr.lines() {
+        let line = match line_res { Ok(l) => l, Err(_) => continue };
+        if line.is_empty() { continue; }
+
+
+        let tab_pos = line.find('\t');
+        let read_id = match tab_pos {
+            Some(pos) => &line[..pos],
+            None => continue,
+        };
+
+        if previous_read_id.is_empty() {
+            previous_read_id = read_id.to_string();
         }
 
-        let read_id = paf_line.query.clone();
+        if read_id != previous_read_id {
+            batch.push(std::mem::take(&mut records_to_process));
+            records_to_process = Vec::with_capacity(128); 
 
-        if old_read_id != paf_line.query {
-            if old_read_id != "" {
-                let mut au = parse_paf_read_unit(&read_unit);
-                au.rescue(mapq);
-                for r in au.Primary {
+            if batch.len() >= chunksize {
+                let to_proc = std::mem::take(&mut batch);
+                let send = send_arc.clone();
+                let pend = pending.clone();
+                let t_reads = total_reads.clone();
+                let t_unmapped = total_unmapped.clone();
+
+                pend.fetch_add(1, Ordering::SeqCst);
+
+                rayon::spawn_fifo(move || {
+                    let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 300);
                     
-                    writer.write(r.to_string().as_bytes()).unwrap();
-                    writer.write(b"\n").unwrap();
-                }
+                    for raw_lines in to_proc {
+                        let mut parsed_records: Vec<PAFLine> = Vec::with_capacity(raw_lines.len());
+                        let mut local_unmapped = 0;
+                        
+                        for raw_line in raw_lines {
+                             if let Some(p) = parse_paf_line_from_str(&raw_line) {
+                                 if p.target == "*" {
+                                     local_unmapped += 1;
+                                 } else {
+                                     parsed_records.push(p);
+                                 }
+                             }
+                        }
+                        
+                        t_reads.fetch_add(1, Ordering::Relaxed);
+                        if local_unmapped > 0 && parsed_records.is_empty() {
+                             t_unmapped.fetch_add(1, Ordering::Relaxed);
+                             continue; 
+                        }
+
+                        let mut ru = PAFReadUnit { data: parsed_records };
+                        if !ru.data.is_empty() {
+                            let mut au = parse_paf_read_unit(&mut ru);
+                            au.rescue(mapq);
+                            for r in au.Primary {
+                                let s = r.to_string();
+                                outbuf.extend_from_slice(s.as_bytes());
+                                outbuf.push(b'\n');
+                            }
+                        }
+                    }
+                    let _ = send.send(outbuf);
+                    pend.fetch_sub(1, Ordering::SeqCst);
+                });
             }
 
-            total_reads += 1;
-            read_unit.clear();
-            read_unit.data.push(paf_line);
-        } else {
-            read_unit.data.push(paf_line);
+            previous_read_id = read_id.to_string(); 
         }
 
-        old_read_id = read_id;
-
-        
-
+        records_to_process.push(line);
     }
+
+ 
+    loop {
+        if pending.load(Ordering::SeqCst) == 0 { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    drop(send_arc);
+    let _ = writer_handle.join();
+
+    log::info!("Processed reads: {}, unmapped: {}", total_reads.load(Ordering::Relaxed), total_unmapped.load(Ordering::Relaxed));
 }
+// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
+//     let paf = PAFTable::new(input_paf);
+//     let parse_result = paf.parse();
+//     let rdr = match parse_result {
+//         Ok(v) => v,
+//         Err(_) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
+//     };
+
+//     let w = common_writer(output);
+//     let mut writer = BufWriter::new(w);
+
+//     let batch_size = 10_000usize;
+//     let mut cur_batch: Vec<PAFReadUnit> = Vec::with_capacity(batch_size);
+
+//     let mut total_reads: u64 = 0;
+//     let mut total_unmapped: u64 = 0;
+//     let mut old_read_id = String::new();
+//     let mut read_unit = PAFReadUnit::new();
+
+//     let process_batch = |batch: Vec<PAFReadUnit>| -> String {
+//         use rayon::prelude::*;
+//         let mut parts: Vec<(usize, String)> = batch
+//             .into_par_iter()
+//             .enumerate()
+//             .map(|(i, ru)| {
+//                 let mut au = parse_paf_read_unit(&ru);
+//                 au.rescue(mapq);
+//                 if au.Primary.is_empty() {
+//                     return (i, String::new());
+//                 }
+//                 let mut s = String::with_capacity(au.Primary.len() * 100);
+//                 for r in au.Primary {
+//                     s.push_str(&r.to_string());
+//                     s.push('\n');
+//                 }
+//                 (i, s)
+//             })
+//             .collect();
+
+//         parts.sort_by_key(|(i, _)| *i);
+//         let mut out = String::new();
+//         for (_, s) in parts {
+//             if !s.is_empty() {
+//                 out.push_str(&s);
+//             }
+//         }
+//         out
+//     };
+
+//     for line in rdr.lines() {
+//         let line = match line {
+//             Ok(l) => l,
+//             Err(_) => continue,
+//         };
+//         let fields: Vec<String> = line.split('\t').map(|x| x.to_string()).collect();
+//         if fields.len() <= 12 {
+//             continue;
+//         }
+//         let paf_line = PAFLine::new(fields);
+
+//         if paf_line.target == "*" {
+//             total_unmapped += 1;
+//             total_reads += 1;
+//             continue;
+//         }
+
+//         let read_id = paf_line.query.clone();
+//         if old_read_id != read_id {
+//             if old_read_id != "" {
+//                 cur_batch.push(std::mem::take(&mut read_unit));
+//                 read_unit = PAFReadUnit::new();
+//                 if cur_batch.len() >= batch_size {
+//                     let batch_to_process = std::mem::take(&mut cur_batch);
+//                     let out = process_batch(batch_to_process);
+//                     if !out.is_empty() {
+//                         writer.write_all(out.as_bytes()).unwrap();
+//                     }
+//                     cur_batch = Vec::with_capacity(batch_size);
+//                 }
+//             }
+//             total_reads += 1;
+//             read_unit.data.push(paf_line);
+//             old_read_id = read_id;
+//         } else {
+//             read_unit.data.push(paf_line);
+//         }
+//     }
+
+//     if !read_unit.data.is_empty() {
+//         cur_batch.push(read_unit);
+//     }
+//     if !cur_batch.is_empty() {
+//         let out = process_batch(std::mem::take(&mut cur_batch));
+//         if !out.is_empty() {
+//             writer.write_all(out.as_bytes()).unwrap();
+//         }
+//     }
+
+//     writer.flush().unwrap();
+//     log::info!("Processed reads: {}, unmapped: {}", total_reads, total_unmapped);
+// }
+
+
+// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
+//     let paf = PAFTable::new(input_paf);
+//     let parse_result = paf.parse();
+//     let rdr = match parse_result {
+//         Ok(v) => v,
+//         Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
+//     };
+
+//     let mut total_reads: u64 = 0;
+//     let mut total_alignments: u64 = 0;
+//     let mut total_unmapped: u64 = 0;
+//     let mut old_read_id = String::from("");
+
+//     let wtr = common_writer(output);
+//     let mut writer = BufWriter::new(wtr);
+    
+//     let mut read_unit = PAFReadUnit::new();
+
+//     for line in rdr.lines() {
+//         let fields: Vec<String> = line.unwrap().split('\t').map(|x| x.to_string()).collect();
+        
+//         assert!(fields.len() > 12, "Error: PAF file should have at least 12 columns");
+//         let paf_line: PAFLine = PAFLine::new(fields);
+
+//         if paf_line.target == "*" {
+//             total_unmapped += 1;
+//             total_reads += 1;
+//             continue;
+//         }
+
+//         let read_id = paf_line.query.clone();
+
+//         if old_read_id != paf_line.query {
+//             if old_read_id != "" {
+//                 let mut au = parse_paf_read_unit(&read_unit);
+//                 au.rescue(mapq);
+//                 for r in au.Primary {
+                    
+//                     writer.write(r.to_string().as_bytes()).unwrap();
+//                     writer.write(b"\n").unwrap();
+//                 }
+//             }
+
+//             total_reads += 1;
+//             read_unit.clear();
+//             read_unit.data.push(paf_line);
+//         } else {
+//             read_unit.data.push(paf_line);
+//         }
+
+//         old_read_id = read_id;
+
+//     }
+// }
 
 
 
@@ -494,7 +914,6 @@ pub fn contact_scores_from_contacts(
             continue;
         }
 
-        // 从末尾找一个数字作为计数，找不到则按 1 计
         let mut cnt: u64 = 1;
         for token in cols.iter().rev() {
             if let Ok(v) = u64::from_str(token) {
@@ -764,10 +1183,7 @@ fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
 //     }
 
 // }
-// ...existing code...
 
-
-// 高阶互作先验（稀疏图）
 #[derive(Clone, Default)]
 pub struct ContactGraph {
     scores: HashMap<(i32, i32), f32>,
@@ -788,7 +1204,6 @@ impl ContactGraph {
     }
 }
 
-// 将一对读段拆分为 mate1/mate2 的候选集合
 #[derive(Clone, Default)]
 struct PairAlignmentUnit {
     left_prim: Vec<Record>,
@@ -816,27 +1231,40 @@ impl PairAlignmentUnit {
         (!self.left_prim.is_empty() || !self.left_sec.is_empty()) &&
         (!self.right_prim.is_empty() || !self.right_sec.is_empty())
     }
+    
     fn best_pair_with_contacts(
         &self, graph: &ContactGraph, alpha: f32, beta: f32, k: usize,
     ) -> Option<(Record, Record)> {
         let mut left: Vec<Record> = self.left_prim.iter().cloned()
             .chain(self.left_sec.iter().cloned()).collect();
-        left.sort_by(|a,b| b.mapq().cmp(&a.mapq()));
+       
+        left.sort_by(|a,b| get_score(b).cmp(&get_score(a)));
         if left.len() > k { left.truncate(k); }
 
         let mut right: Vec<Record> = self.right_prim.iter().cloned()
             .chain(self.right_sec.iter().cloned()).collect();
-        right.sort_by(|a,b| b.mapq().cmp(&a.mapq()));
+        right.sort_by(|a,b| get_score(b).cmp(&get_score(a)));
         if right.len() > k { right.truncate(k); }
 
         if left.is_empty() || right.is_empty() { return None; }
 
+
+        let max_score_left = get_score(&left[0]);
+        let max_score_right = get_score(&right[0]);
+
         let mut best = None;
         let mut best_score = f32::NEG_INFINITY;
+        
         for l in &left {
+
+            if (get_score(l) as f32) < (max_score_left as f32 * 0.95) { continue; }
+
             let tl = l.tid();
             for r in &right {
+                if (get_score(r) as f32) < (max_score_right as f32 * 0.95) { continue; }
+
                 let tr = r.tid();
+               
                 let s = beta * graph.score(tl, tr) + alpha * (l.mapq() as f32 + r.mapq() as f32);
                 if s > best_score {
                     best_score = s;
@@ -848,53 +1276,87 @@ impl PairAlignmentUnit {
     }
 }
 
-// 修正 rescue：次比对索引用 j+1 与取用时 -1 配对
 impl AlignmentUnit {
     fn rescue(&mut self, mapq: u8) {
         let mut high_mapq: HashMap<u64, u32> = HashMap::new();
-        let mut high_high_mapq: HashMap<u64, u32> = HashMap::new();
+        
         for r in &self.Primary {
             let target: u64 = r.tid().try_into().unwrap();
-            if r.mapq() >= mapq { *high_mapq.entry(target).or_insert(0) += 1; }
-            if r.mapq() > 1 { *high_high_mapq.entry(target).or_insert(0) += 1; }
+
+            if r.mapq() >= mapq && !r.is_secondary() { 
+                *high_mapq.entry(target).or_insert(0) += 1; 
+            }
         }
+        
         if high_mapq.is_empty() { return; }
 
+        let mut best_anchor_target = 0;
+        let mut max_count = 0;
+        for (target, count) in &high_mapq {
+            if *count > max_count {
+                max_count = *count;
+                best_anchor_target = *target;
+            }
+        }
+
         for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
+      
             if p.mapq() >= mapq { continue; }
 
-            let mut res: HashSet<u64> = HashSet::new();
-            let mut res_record_idx: HashMap<u64, usize> = HashMap::new();
-            let t0: u64 = p.tid().try_into().unwrap();
-            if high_mapq.contains_key(&t0) { res_record_idx.insert(t0, 0); res.insert(t0); }
-            for (j, r) in s.iter().enumerate() {
-                let t: u64 = r.tid().try_into().unwrap();
-                if high_mapq.contains_key(&t) { res_record_idx.insert(t, j + 1); res.insert(t); }
-            }
-            if res.is_empty() { continue; }
+            let p_score = get_score(p);
+            let p_tid: u64 = p.tid().try_into().unwrap();
 
-            let mut max_target = *res.iter().next().unwrap();
-            let mut max_cnt = 0u32;
-            for t in res {
-                let c = *high_mapq.get(&t).unwrap_or(&0);
-                if c > max_cnt { max_cnt = c; max_target = t; }
-            }
-            let record_idx = *res_record_idx.get(&max_target).unwrap_or(&0);
-            if record_idx == 0 {
-                p.set_tid(max_target.try_into().unwrap());
-                p.set_mapq(1);
+
+            let mut best_candidate_idx: Option<usize> = None;
+            let mut best_candidate_score = 0;
+
+            if p_tid == best_anchor_target {
+
+                best_candidate_idx = Some(0);
+                best_candidate_score = p_score;
             } else {
-                let flag = p.flags();
-                let r = &s[record_idx - 1];
-                let mut new_record = Record::from(r.clone());
-                new_record.set_mapq(1);
-                new_record.set_flags(flag);
-                *p = new_record;
+                for (j, r) in s.iter().enumerate() {
+                    let t: u64 = r.tid().try_into().unwrap();
+                    if t == best_anchor_target {
+                        let s_score = get_score(r);
+                        if s_score as f32 >= (p_score as f32 * 0.95) {
+                            if best_candidate_idx.is_none() || s_score > best_candidate_score {
+                                best_candidate_score = s_score;
+                                best_candidate_idx = Some(j + 1);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(idx) = best_candidate_idx {
+                if idx == 0 {
+                    p.set_mapq(std::cmp::min(mapq, 10)); 
+                } else {
+                    let r = &s[idx - 1];
+                    let flag = p.flags(); 
+                    let mut new_record = Record::from(r.clone());
+                    
+                    new_record.set_mapq(std::cmp::min(mapq, 10));
+                    new_record.set_flags(flag); 
+                    *p = new_record;
+                }
             }
         }
     }
 }
 
+fn get_score(record: &Record) -> i64 {
+    match record.aux(b"AS") {
+        Ok(Aux::I8(v)) => v as i64,
+        Ok(Aux::U8(v)) => v as i64,
+        Ok(Aux::I16(v)) => v as i64,
+        Ok(Aux::U16(v)) => v as i64,
+        Ok(Aux::I32(v)) => v as i64,
+        Ok(Aux::U32(v)) => v as i64,
+        Ok(Aux::Float(v)) => v as i64,
+        _ => 0,
+    }
+}
 
 pub fn read_bam(
     input_bam: &String,
@@ -925,7 +1387,7 @@ pub fn read_bam(
     });
     let graph = if let Some(path) = contacts {
         log::info!("Loading contacts prior from {}", path);
-        let scores = contact_scores_from_contacts(&path, &hv, 64); // 每行保留 top-64
+        let scores = contact_scores_from_contacts(&path, &hv, 64); 
         ContactGraph::with_scores(scores)
     } else {
         ContactGraph::new()

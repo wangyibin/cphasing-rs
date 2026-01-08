@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{arg, Arg, ArgAction, Command, 
             Subcommand, value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.3";
+const VERSION: &str = "0.2.4";
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -773,6 +773,13 @@ pub fn cli() -> Command {
                         .default_value("false")
                 )
                 .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -851,6 +858,13 @@ pub fn cli() -> Command {
                         .help("include secondary alignments")
                         .value_parser(value_parser!(bool))
                         .default_value("false")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
                 )
                 .arg_required_else_help(true),
         )
@@ -1055,6 +1069,12 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(bool))
                         .default_value("false")
                 )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8"))
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")
@@ -1287,13 +1307,20 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(u32))
                         .default_value("10000")
                 )
-
-                // .arg(
-                //     Arg::new("LOW_MEMORY")
-                //         .long("low-memory")
-                //         .action(ArgAction::SetTrue)
-                //         .default_value("false")
-                //         .help("use low memory mode, which is slower but use less memory."))
+                .arg(
+                    Arg::new("DISABLE_FILTER")
+                        .long("disable-filter")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("Disable filter bins with extremely high contact depth.")
+                )
+                .arg(
+                    Arg::new("MAX_DEPTH_RATIO")
+                        .long("max-depth-ratio")
+                        .value_parser(value_parser!(f64))
+                        .default_value("5.0")
+                        .help("The ratio threshold for high depth filtering (e.g., 3.0 means > 3 * mean_depth).")
+                )
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")

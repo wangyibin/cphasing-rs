@@ -12,7 +12,7 @@ libc = "2.17"
 
 [tasks]
 libclang = "export LD_LIBRARY_PATH=/usr/lib/clang-private:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
-build-release = { cmd = "cargo build --release" }
+build-release = { cmd = "CC=/usr/bin/gcc CXX=/usr/bin/g++ cargo build --release" }
 install = {cmd = "cargo install --path ./ --locked"}
 
 

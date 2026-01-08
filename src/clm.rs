@@ -47,6 +47,8 @@ impl BaseTable for Clm {
 impl Clm {
     pub fn split_clm(&self, cluster_file: &String, output_dir: &String) -> anyResult<()> {
         let mut cluster_map: HashMap<String, Vec<String>> = HashMap::new();
+        
+        std::fs::create_dir_all(output_dir)?;
 
         let mut cluster_file = BufReader::new(common_reader(cluster_file));
         let mut line = String::new();

@@ -769,7 +769,7 @@ impl AllelesFasta {
         let mut unique_minimizer_count_db = HashMap::new();
         let mut contig_minimizer_count_db = HashMap::new();
 
-        let groups = minimizers.iter_mut().group_by(move |x| x.minimizer)
+        let groups = minimizers.iter_mut().chunk_by(move |x| x.minimizer)
                     .into_iter()
                     .filter_map(|(minimizer, group)| {
                         let group: Vec<&mut MinimizerData> = group.collect();
@@ -901,7 +901,7 @@ impl AllelesFasta {
                                 k: usize, min_sim: f64) -> Vec<MatchRecord> {
         let min_cnt = 5;
         
-        let mut anchors = anchor.iter().group_by(|x| (x.rid1, x.rid2, x.rev))
+        let mut anchors = anchor.iter().chunk_by(|x| (x.rid1, x.rid2, x.rev))
                     .into_iter()
                     .filter_map(|(rid, group)|{
                         let mut group: Vec<_> = group.collect();

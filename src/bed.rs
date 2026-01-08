@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{ Write, BufRead };
 use std::path::Path;
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use rust_lapper::{Interval, Lapper};
 
@@ -57,29 +58,44 @@ impl Bed3 {
         
     }
     
+    // pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
+    //     let mut hcr: HashMap<String, Vec<IvU8>> = HashMap::new();
+    //     for i in self {
+    //         if hcr.contains_key(&i.chrom) {
+    //             hcr.get_mut(&i.chrom).unwrap().push(IvU8 {
+    //                 start: i.start,
+    //                 stop: i.end,
+    //                 val: 0,
+    //             });
+    //         } else {
+    //             hcr.insert(i.chrom, vec![IvU8 {
+    //                 start: i.start,
+    //                 stop: i.end,
+    //                 val: 0,
+    //             }]);
+    //         }
+    //     }
+    //     let mut hcr_lapper: HashMap<String, Lapper<usize, u8>> = HashMap::new();
+    //     for (k, v) in hcr.iter() {
+    //         hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+    //     }
+    //     hcr_lapper
+    // }
+
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
         let mut hcr: HashMap<String, Vec<IvU8>> = HashMap::new();
         for i in self {
-            if hcr.contains_key(&i.chrom) {
-                hcr.get_mut(&i.chrom).unwrap().push(IvU8 {
-                    start: i.start,
-                    stop: i.end,
-                    val: 0,
-                });
-            } else {
-                hcr.insert(i.chrom, vec![IvU8 {
-                    start: i.start,
-                    stop: i.end,
-                    val: 0,
-                }]);
-            }
+            hcr.entry(i.chrom)
+                .or_default()
+                .push(IvU8 { start: i.start, stop: i.end, val: 0 });
         }
-        let mut hcr_lapper: HashMap<String, Lapper<usize, u8>> = HashMap::new();
-        for (k, v) in hcr.iter() {
-            hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+        let mut hcr_lapper: HashMap<String, Lapper<usize, u8>> = HashMap::with_capacity(hcr.len());
+        for (k, v) in hcr.into_iter() {
+            hcr_lapper.insert(k, Lapper::new(v)); // move v
         }
         hcr_lapper
     }
+
 }
 
 
@@ -144,26 +160,40 @@ impl Bed4 {
         
     }
     
+    // pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, String>> {
+    //     let mut hcr: HashMap<String, Vec<IvString>> = HashMap::new();
+    //     for i in self {
+    //         if hcr.contains_key(&i.chrom) {
+    //             hcr.get_mut(&i.chrom).unwrap().push(IvString {
+    //                 start: i.start,
+    //                 stop: i.end,
+    //                 val: i.gene,
+    //             });
+    //         } else {
+    //             hcr.insert(i.chrom, vec![IvString {
+    //                 start: i.start,
+    //                 stop: i.end,
+    //                 val: i.gene,
+    //             }]);
+    //         }
+    //     }
+    //     let mut hcr_lapper: HashMap<String, Lapper<usize, String>> = HashMap::new();
+    //     for (k, v) in hcr.iter() {
+    //         hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+    //     }
+    //     hcr_lapper
+    // }
+
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, String>> {
         let mut hcr: HashMap<String, Vec<IvString>> = HashMap::new();
         for i in self {
-            if hcr.contains_key(&i.chrom) {
-                hcr.get_mut(&i.chrom).unwrap().push(IvString {
-                    start: i.start,
-                    stop: i.end,
-                    val: i.gene,
-                });
-            } else {
-                hcr.insert(i.chrom, vec![IvString {
-                    start: i.start,
-                    stop: i.end,
-                    val: i.gene,
-                }]);
-            }
+            hcr.entry(i.chrom)
+                .or_default()
+                .push(IvString { start: i.start, stop: i.end, val: i.gene });
         }
-        let mut hcr_lapper: HashMap<String, Lapper<usize, String>> = HashMap::new();
-        for (k, v) in hcr.iter() {
-            hcr_lapper.insert(k.to_string(), Lapper::new(v.to_vec()));
+        let mut hcr_lapper: HashMap<String, Lapper<usize, String>> = HashMap::with_capacity(hcr.len());
+        for (k, v) in hcr.into_iter() {
+            hcr_lapper.insert(k, Lapper::new(v)); // move v
         }
         hcr_lapper
     }

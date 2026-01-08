@@ -1,3 +1,7 @@
+## [v0.2.4] - 20250108
+- `porec2pairs`, speed up it 
+- `paf2depth`, speed up it 
+
 ## [v0.2.3] - 20251207
 ## New features
 - `optimize`, add optimize module similar to the `allhic optimize`

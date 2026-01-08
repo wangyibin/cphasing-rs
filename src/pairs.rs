@@ -777,7 +777,10 @@ impl Pairs {
                 output_depth: bool,
                 binsize: u32,
                 threads: usize,
-                low_memory: bool) {
+                low_memory: bool,
+                disable_filter: bool,
+                max_depth_ratio: f64
+            ) {
         use hashbrown::HashMap;
         let parse_result = self.parse2();
 
@@ -1040,12 +1043,81 @@ impl Pairs {
 
         log::info!("Calculating the distance between contigs");
         
+        let mut blacklist: HashSet<(u32, u32)> = HashSet::new();
+        if !disable_filter {
+            log::info!("Identifying high depth regions...");
+            let bin_depths: HashMap<(u32, u32), u32> = data.par_iter()
+                .fold(
+                    || HashMap::new(),
+                    |mut acc: HashMap<(u32, u32), u32>, ((c1, c2), vec)| {
+                        for pair in vec {
+                            let pos1 = pair[0];
+                            let pos2 = pair[1];
+                            let bin1 = pos1 / binsize;
+                            let bin2 = pos2 / binsize;
+
+                            *acc.entry((*c1, bin1)).or_insert(0) += 1;
+                            *acc.entry((*c2, bin2)).or_insert(0) += 1;
+                        }
+                        acc
+                    }
+                )
+                .reduce(
+                    || HashMap::new(),
+                    |mut acc, part| {
+                        for (k, v) in part {
+                            *acc.entry(k).or_insert(0) += v;
+                        }
+                        acc
+                    }
+                );
+
+            if !bin_depths.is_empty() {
+                let mut depths: Vec<u32> = bin_depths.values().cloned().collect();
+                depths.sort_unstable();
+                
+                let n = depths.len();
+                let mid = n / 2;
+                let median_depth = depths[mid] as f64;
+                
+                
+                let mut deviations: Vec<u32> = depths.iter()
+                    .map(|&x| (x as i64 - median_depth as i64).abs() as u32)
+                    .collect();
+                deviations.sort_unstable();
+                let mad = deviations[n / 2] as f64;
+                
+           
+                let min_absolute_threshold = 10.0;
+                let threshold = median_depth + (max_depth_ratio * mad).max(min_absolute_threshold);
+                
+                log::info!("Median bin depth: {}, MAD: {}, Threshold: {:.2}", median_depth, mad, threshold);
+
+                for (key, &depth) in bin_depths.iter() {
+                    if depth as f64 > threshold {
+                        blacklist.insert(*key);
+                    }
+                }
+                log::info!("Identified {} high depth bins out of {}.", blacklist.len(), bin_depths.len());
+            }
+        }
         
         match low_memory {
             true => {
                 let mut wtr = common_writer(output);
                 let wtr = Arc::new(Mutex::new(wtr));
                 data.par_iter().for_each(|(cp, vec)| {
+
+                    let vec: Vec<&SmallIntVec> = if !disable_filter && !blacklist.is_empty() {
+                        vec.iter().filter(|pair| {
+                            let bin1 = pair[0] / binsize;
+                            let bin2 = pair[1] / binsize;
+                            !blacklist.contains(&(cp.0, bin1)) && !blacklist.contains(&(cp.1, bin2))
+                        }).collect()
+                    } else {
+                        vec.iter().collect()
+                    };
+
                     if vec.len() < min_contacts as usize {
                         return;
                     }
@@ -1105,6 +1177,14 @@ impl Pairs {
 
                     let result = data.par_iter_mut(
                         ).filter_map(|(cp, vec)| {
+                            if !disable_filter && !blacklist.is_empty() {
+                                vec.retain(|pair| {
+                                    let bin1 = pair[0] / binsize;
+                                    let bin2 = pair[1] / binsize;
+                                    !blacklist.contains(&(cp.0, bin1)) && !blacklist.contains(&(cp.1, bin2))
+                                });
+                            }
+
                             if vec.len() >= min_contacts as usize {
                                 Some((cp, vec))
                             } else {
@@ -1112,7 +1192,7 @@ impl Pairs {
                             }
                         }
                     ).map_init(|| Vec::new(), |res, (cp, vec)|{
-                       
+                        
                         let length1 = idx_sizes.get(&cp.0).unwrap();
                         let length2 = idx_sizes.get(&cp.1).unwrap();
                         
@@ -1177,6 +1257,7 @@ impl Pairs {
                 
             }
         }
+
         log::info!("Successful output clm file `{}`", output);
     }
 
@@ -2369,7 +2450,6 @@ impl Pairs {
                                     let path = format!("{}/q1/{}.parquet", output, chunk_id);
                                     let mut file = File::create(path).unwrap();
                                     ParquetWriter::new(&mut file)
-                                        // .with_compression(ParquetCompression::Uncompressed)
                                         .finish(&mut df_filtered).unwrap();
                                 }
                             }
@@ -2426,8 +2506,6 @@ impl Pairs {
                                 let path = format!("{}/q0/{}.parquet", output, chunk_id);
                                 let mut file = File::create(path).unwrap();
                                 ParquetWriter::new(&mut file)
-                                    // .with_compression(ParquetCompression::Zstd(Some(1)))
-                                    // .with_compression(ParquetCompression::Uncompressed) // 或 Snappy
                                     .finish(&mut df).unwrap();
                             }
     
@@ -2438,7 +2516,6 @@ impl Pairs {
                                     let path = format!("{}/q1/{}.parquet", output, chunk_id);
                                     let mut file = File::create(path).unwrap();
                                     ParquetWriter::new(&mut file)
-                                        // .with_compression(ParquetCompression::Uncompressed)
                                         .finish(&mut df_filtered).unwrap();
                                 }
                                

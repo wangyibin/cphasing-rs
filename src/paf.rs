@@ -16,6 +16,7 @@ use std::path::Path;
 use std::error::Error;
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use std::io::{ Write, BufReader, BufRead };
+use std::fmt::{ Write as FmtWrite };
 use serde::{ Deserialize, Serialize};
 use std::time::{Instant, Duration};
 use rust_lapper::{Interval, Lapper};
@@ -295,6 +296,14 @@ impl FilterReason {
 //     }
 // }
 
+fn fast_parse_int(b: &[u8]) -> Option<u64> {
+    let mut n = 0;
+    for &c in b {
+         if c < b'0' || c > b'9' { return None; }
+         n = n * 10 + (c - b'0') as u64;
+    }
+    Some(n)
+}
 
 #[derive(Debug)]
 pub struct Concatemer {
@@ -455,6 +464,33 @@ impl Concatemer {
     }
 }
 
+fn process_group(
+    grp: &mut Vec<PoreCRecord>, 
+    ih: &HashMap<String, Lapper<usize, u8>>, 
+    is_digest: bool, is_edges: bool, max_len: u64, max_ord: u32,
+    buf: &mut String, p: &mut u64, s: &mut u64, l: &mut u64, c: &mut u64,
+) {
+    let mut concatemer = Concatemer::with_capacity(grp.len() + 2);
+    for r in grp.drain(..) { concatemer.push(r); }
+    
+    let (final_status, pass_indices) = concatemer.process(
+        is_digest, ih, is_edges, max_len, max_ord
+    );
+
+    if final_status == PASS_STR {
+         for &idx in &pass_indices {
+             buf.push_str(&concatemer.records[idx].to_string());
+             buf.push('\n');
+         }
+    }
+    match final_status {
+        PASS_STR => *p += 1,
+        SINGLETON_STR => *s += 1,
+        LOW_MQ_STR => *l += 1,
+        COMPLEX_STR => *c += 1,
+        _ => {}
+    }
+}
 
 impl PAFTable {
     pub fn parse(&self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
@@ -545,15 +581,15 @@ impl PAFTable {
         Ok(iter)
     }
 
-    pub fn paf2table4(&self, bed: &String,
+    pub fn paf2table(&self, bed: &String,
             output: &String, min_quality: &u8, 
             min_identity: &f32,  min_length: &u32,
             max_order: &u32, 
             max_edge_length: &u64,
-            secondary: bool    
+            secondary: bool,
+            num_threads: usize 
         ) -> Result<(), Box<dyn Error>> {
-        
-        type IvU8 = Interval<usize, u8>;
+            
         let min_quality = *min_quality;
         let min_identity = *min_identity;
         let min_length = *min_length;
@@ -561,135 +597,586 @@ impl PAFTable {
         let max_edge_length = *max_edge_length;
 
         let is_filter_digest = !bed.is_empty();
-        let bed = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
-        let interval_hash = bed.to_interval_hash();
+        let bed_obj = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
+        let interval_hash = Arc::new(bed_obj.to_interval_hash());
         let is_filter_edges = max_edge_length > 0;
 
-        let num_threads = 10;
         log::info!("Using {} threads for processing.", num_threads);
-        rayon::ThreadPoolBuilder::new().num_threads(num_threads).build_global().unwrap();
-        let use_rayon = true;
-        let mut rdr = self.parse2(secondary.clone())?;
-        let mut old_query: Option<String> = None;
-        let mut current_group: Vec<PoreCRecord> = Vec::new();
-        let mut read_idx: u64 = 0;
+        
+        let (tx_raw, rx_raw) = bounded::<Vec<u8>>(16); 
+        let (tx_writer, rx_writer) = bounded::<String>(1024);
 
-        let mut batch_groups: Vec<Vec<PoreCRecord>> = Vec::with_capacity(GROUP_BATCH_SIZE);
-        let mut total_records_in_batch = 0usize;
+        let output_clone = output.clone();
+        let writer_handle = thread::spawn(move || {
+            let mut writer = common_writer(&output_clone);
+            for chunk in rx_writer {
+                writer.write_all(chunk.as_bytes()).unwrap();
+            }
+        });
 
-  
-        let mut writer = common_writer(output);
-        let mut stats = (0u64,0u64,0u64,0u64); // pass,singleton,low_mq,complex
+        let mut handles = Vec::new();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let stats_pass = Arc::new(AtomicU64::new(0));
+        let stats_sing = Arc::new(AtomicU64::new(0));
+        let stats_low  = Arc::new(AtomicU64::new(0));
+        let stats_comp = Arc::new(AtomicU64::new(0));
+        
+        let global_read_idx = Arc::new(AtomicU64::new(0)); 
 
-        let flush_batch = |mut groups: Vec<Vec<PoreCRecord>>,
-                           is_filter_digest: bool,
-                           interval_hash: &HashMap<String,Lapper<usize,u8>>,
-                           is_filter_edges: bool,
-                           max_edge_length: u64,
-                           max_order: u32,
-                           stats: &mut (u64,u64,u64,u64),
-                           writer: &mut dyn Write| {
-            if groups.is_empty() { return; }
+        for _ in 0..num_threads {
+            let rx = rx_raw.clone();
+            let tx_w = tx_writer.clone();
+            let ih = interval_hash.clone();
+            let s_p = stats_pass.clone();
+            let s_s = stats_sing.clone();
+            let s_l = stats_low.clone();
+            let s_c = stats_comp.clone();
+            let g_rid = global_read_idx.clone();
 
-            let results: Vec<(String,(u64,u64,u64,u64))> = groups
-                .into_par_iter()
-                .map(|grp| {
-                    let mut c = Concatemer::with_capacity(grp.len()+2);
-                    for r in grp { c.push(r); }
-                    let (final_status, pass_indices) = c.process(
-                        is_filter_digest, interval_hash, is_filter_edges,
-                        max_edge_length, max_order
-                    );
-                    let mut out = String::new();
-                    if final_status == PASS_STR {
-                        out.reserve(pass_indices.len()*128);
-                        for &idx in &pass_indices {
-                            out.push_str(&c.records[idx].to_string());
-                            out.push('\n');
-                        }
+            handles.push(thread::spawn(move || {
+                let mut local_p=0; let mut local_s=0; let mut local_l=0; let mut local_c=0;
+                let mut output_buffer = String::with_capacity(WRITE_CHUNK);
+                
+    
+                fn process_group_vec(
+                    groups: &mut Vec<Vec<PoreCRecord>>,
+                    start_id: u64,
+                    ih: &HashMap<String, Lapper<usize, u8>>,
+                    is_fd: bool, is_fe: bool, max_len: u64, max_ord: u32,
+                    buf: &mut String,
+                    lp: &mut u64, ls: &mut u64, ll: &mut u64, lc: &mut u64
+                ) {
+                    for (i, grp) in groups.iter_mut().enumerate() {
+                        let rid = start_id + i as u64;
+                        for r in grp.iter_mut() { r.read_idx = rid; }
+                        
+                        process_single_group(grp, ih, is_fd, is_fe, max_len, max_ord, buf, lp, ls, ll, lc);
                     }
-                    let st = match final_status {
-                        PASS_STR => (1,0,0,0),
-                        SINGLETON_STR => (0,1,0,0),
-                        LOW_MQ_STR => (0,0,1,0),
-                        COMPLEX_STR => (0,0,0,1),
-                        _ => (0,0,0,0)
-                    };
-                    (out, st)
-                }).collect();
-            let mut merged = String::with_capacity(results.iter().map(|(s,_ )| s.len()).sum());
-            for (chunk,(a,b,c,d)) in results {
-                if !chunk.is_empty() {
-                    merged.push_str(&chunk);
+                    groups.clear();
                 }
-                stats.0 += a; stats.1 += b; stats.2 += c; stats.3 += d;
-            }
-            if !merged.is_empty() {
-                writer.write_all(merged.as_bytes()).unwrap();
-            }
-        };
 
-        for record in rdr {
-            let is_switch = match old_query.as_deref() {
-                Some(prev) => prev != record.query.as_str(),
-                None => false,
-            };
-            if is_switch && old_query.is_some() {
-                batch_groups.push(std::mem::take(&mut current_group));
-                read_idx += 1;
-                if batch_groups.len() >= GROUP_BATCH_SIZE ||
-                   total_records_in_batch >= RECORD_BATCH_SIZE {
-                    flush_batch(std::mem::take(&mut batch_groups),
-                                is_filter_digest,&interval_hash,
-                                is_filter_edges,max_edge_length,max_order,
-                                &mut stats,&mut writer);
-                    total_records_in_batch = 0;
+                fn process_single_group(
+                    grp: &mut Vec<PoreCRecord>, 
+                    ih: &HashMap<String, Lapper<usize, u8>>, 
+                    is_digest: bool, is_edges: bool, max_len: u64, max_ord: u32,
+                    buf: &mut String, p: &mut u64, s: &mut u64, l: &mut u64, c: &mut u64,
+                ) {
+                    let mut concatemer = Concatemer::with_capacity(grp.len() + 2);
+                    for r in grp.drain(..) { concatemer.push(r); }
+                    
+                    let (final_status, pass_indices) = concatemer.process(
+                        is_digest, ih, is_edges, max_len, max_ord
+                    );
+
+                    if final_status == PASS_STR {
+                            for &idx in &pass_indices {
+                                buf.push_str(&concatemer.records[idx].to_string());
+                                buf.push('\n');
+                            }
+                    }
+                    match final_status {
+                        PASS_STR => *p += 1,
+                        SINGLETON_STR => *s += 1,
+                        LOW_MQ_STR => *l += 1,
+                        COMPLEX_STR => *c += 1,
+                        _ => {}
+                    }
                 }
-            }
-            let length = record.query_end - record.query_start;
-            let identity = if record.alignment_length>0 {
-                record.match_n as f32 / record.alignment_length as f32
-            } else { 0.0 };
-            let fr = if record.mapq < min_quality || length < min_length || identity < min_identity {
-                LOW_MQ_STR
-            } else { PASS_STR };
 
-            if is_switch || old_query.is_none() {
-                old_query = Some(record.query.clone());
-            }
-            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
-            current_group.push(pcr);
-            total_records_in_batch += 1;
-        }
-        if !current_group.is_empty() {
-            batch_groups.push(std::mem::take(&mut current_group));
-            read_idx += 1;
-        }
-        if !batch_groups.is_empty() {
-            flush_batch(std::mem::take(&mut batch_groups),
-                        is_filter_digest,&interval_hash,
-                        is_filter_edges,max_edge_length,max_order,
-                        &mut stats,&mut writer);
-        }
+                let mut block_groups: Vec<Vec<PoreCRecord>> = Vec::with_capacity(2048);
 
+                while let Ok(block) = rx.recv() {
+                    let mut start = 0;
+                    let len = block.len();
+                    
+                    let mut current_group: Vec<PoreCRecord> = Vec::with_capacity(32);
+                    let mut old_q_start = 0; 
+                    let mut old_q_end = 0;
+                    let mut has_old = false;
+
+                    while start < len {
+                        let end = match block[start..].iter().position(|&b| b == b'\n') {
+                            Some(p) => start + p,
+                            None => len,
+                        };
+                        let mut line = &block[start..end];
+                        start = end + 1; 
+                        
+                        if !line.is_empty() && line[line.len()-1] == b'\r' { line = &line[..line.len()-1]; }
+                        if line.is_empty() || line[0] == b'#' { continue; }
+
+                        let mut iter = line.split(|&b| b == b'\t');
+                        let q_bytes = match iter.next() { Some(v) => v, None => continue };
+
+                        let is_switch = if !has_old {
+                            false
+                        } else {
+                            q_bytes != &block[old_q_start..old_q_end]
+                        };
+
+                        if is_switch {
+                            if !current_group.is_empty() {
+                                block_groups.push(std::mem::take(&mut current_group));
+                            
+                            }
+                        }
+
+                        if !has_old || is_switch {
+                            let q_len = q_bytes.len();
+                            let q_ptr = q_bytes.as_ptr() as usize;
+                            let start_ptr = block.as_ptr() as usize;
+                            old_q_start = q_ptr - start_ptr;
+                            old_q_end = old_q_start + q_len;
+                            has_old = true;
+                        }
+
+                            let qlen = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u32, None=>continue };
+                            let qs   = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u32, None=>continue };
+                            let qe   = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u32, None=>continue };
+                            let strand_char = match iter.next() { Some(v)=> if v.is_empty() { '+' } else { v[0] as char }, None=>'+' };
+                            let t_bytes = match iter.next() { Some(v)=>v, None=>continue };
+                            let tlen = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u64, None=>continue };
+                            let ts   = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u64, None=>continue };
+                            let te   = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u64, None=>continue };
+                            let matches = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u32, None=>continue };
+                            let alen    = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u32, None=>continue };
+                            let mapq    = match iter.next().and_then(fast_parse_int) { Some(v)=>v as u8, None=>continue };
+
+                            if mapq < min_quality { continue; }
+                            if !secondary {
+                                let mut is_sec = false;
+                                for tag in iter { if tag.starts_with(b"tp:A:S") { is_sec = true; break; } }
+                                if is_sec { continue; }
+                            }
+
+                            let q_cov = qe - qs;
+                            let ident = if alen > 0 { matches as f32 / alen as f32 } else { 0.0 };
+                            let fr = if q_cov < min_length || ident < min_identity { LOW_MQ_STR } else { PASS_STR };
+
+                            let t_str = unsafe { String::from_utf8_unchecked(t_bytes.to_vec()) };
+
+                        current_group.push(PoreCRecord {
+                                read_idx: 0, // Placeholder
+                                query_length: qlen, query_start: qs, query_end: qe, query_strand: strand_char,
+                                target: t_str, target_length: tlen, target_start: ts, target_end: te,
+                                mapq: mapq, identity: ident, filter_reason: fr.to_string(),
+                        });
+                    }
+                    
+                    if !current_group.is_empty() {
+                            block_groups.push(current_group);
+                    }
+            
+                    let count = block_groups.len() as u64;
+                    if count > 0 {
+                        let start_id = g_rid.fetch_add(count, Ordering::Relaxed);
+                        
+        
+                        process_group_vec(&mut block_groups, 
+                            start_id, &ih, is_filter_digest, 
+                            is_filter_edges, 
+                            max_edge_length, 
+                            max_order,  
+                            &mut output_buffer, 
+                            &mut local_p, &mut local_s, &mut local_l, &mut local_c);
+                    }
+                    
+                    if output_buffer.len() >= WRITE_CHUNK {
+                        tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
+                        output_buffer = String::with_capacity(WRITE_CHUNK); 
+                    }
+                }
+                if !output_buffer.is_empty() {
+                    tx_w.send(output_buffer).unwrap();
+                }
+                
+                s_p.fetch_add(local_p, Ordering::Relaxed);
+                s_s.fetch_add(local_s, Ordering::Relaxed);
+                s_l.fetch_add(local_l, Ordering::Relaxed);
+                s_c.fetch_add(local_c, Ordering::Relaxed);
+            }));
+        }
+        drop(tx_writer);
+
+        {
+            let mut reader = common_reader(&self.file);
+            const BLOCK_SIZE: usize = 64 * 1024 * 1024; 
+            let mut buffer = vec![0u8; BLOCK_SIZE]; 
+            let mut valid_len = 0;
+
+            loop {
+                let bytes_read = reader.read(&mut buffer[valid_len..]).unwrap_or(0);
+                if bytes_read == 0 {
+                    if valid_len > 0 { tx_raw.send(buffer[..valid_len].to_vec()).unwrap(); }
+                    break;
+                }
+                let end_ptr = valid_len + bytes_read;
+                let active_slice = &buffer[..end_ptr];
+                
+                let last_nl = match active_slice.iter().rposition(|&b| b == b'\n') {
+                    Some(p) => p,
+                    None => {
+                            valid_len = end_ptr;
+                            if valid_len == buffer.len() { buffer.resize(buffer.len()*2, 0); }
+                            continue;
+                    }
+                };
+
+                let safe_slice = &active_slice[..=last_nl];
+                
+                let prev_nl = safe_slice[..last_nl].iter().rposition(|&b| b == b'\n').map(|p| p+1).unwrap_or(0);
+                let last_line = &safe_slice[prev_nl..last_nl];
+                let tab_pos = last_line.iter().position(|&b| b == b'\t').unwrap_or(last_line.len());
+                let last_q_bytes = &last_line[..tab_pos];
+                
+                let mut cut_pos = safe_slice.len(); 
+                let mut found_boundary = false;
+
+                let mut scan_end = prev_nl;
+                let scan_limit = if safe_slice.len() > 1024*1024 { safe_slice.len() - 1024*1024 } else { 0 };
+
+                while scan_end > scan_limit {
+                    if scan_end == 0 { break; } 
+                    let newline_idx = scan_end - 1;
+                    let start_idx = safe_slice[..newline_idx].iter().rposition(|&b| b == b'\n').map(|p| p+1).unwrap_or(0);
+                    let line = &safe_slice[start_idx..newline_idx];
+                    let t = line.iter().position(|&b| b == b'\t').unwrap_or(line.len());
+                    let q = &line[..t];
+                    if q != last_q_bytes {
+                        cut_pos = scan_end;
+                        found_boundary = true;
+                        break;
+                    }
+                    if start_idx == 0 { break; }
+                    scan_end = start_idx;
+                }
+
+                if !found_boundary && end_ptr < buffer.len() {
+                        if bytes_read < (buffer.len() - valid_len) {
+                            tx_raw.send(safe_slice.to_vec()).unwrap();
+                            let rem_len = end_ptr - (last_nl + 1);
+                            buffer.copy_within((last_nl+1)..end_ptr, 0);
+                            valid_len = rem_len;
+                            continue;
+                        } 
+                        valid_len = end_ptr;
+                        buffer.resize(buffer.len() * 2, 0);
+                        continue;
+                }
+                
+                let chunk_to_send = &buffer[..cut_pos];
+                tx_raw.send(chunk_to_send.to_vec()).unwrap(); 
+
+                let tail_len = end_ptr - cut_pos;
+                buffer.copy_within(cut_pos..end_ptr, 0);
+                valid_len = tail_len;
+            }
+        }
+        drop(tx_raw);
+
+        for h in handles { h.join().unwrap(); }
+        writer_handle.join().unwrap();
+        
         let mut summary = ReadSummary::new();
-        summary.pass = stats.0;
-        summary.singleton = stats.1;
-        summary.low_mq = stats.2;
-        summary.complex = stats.3;
-        summary.mapping = read_idx;
+        summary.pass = stats_pass.load(Ordering::Relaxed);
+        summary.singleton = stats_sing.load(Ordering::Relaxed);
+        summary.low_mq = stats_low.load(Ordering::Relaxed);
+        summary.complex = stats_comp.load(Ordering::Relaxed);
+        summary.mapping = global_read_idx.load(Ordering::Relaxed); 
+
         let output_prefix = if output == "-" {
             Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
         } else {
             Path::new(output).with_extension("").to_str().unwrap().to_string()
         };
         summary.save(&format!("{}.read.summary", output_prefix));
-        log::info!("Successful output Pore-C table `{}` (rayon)", output);
-        return Ok(());
+
+        log::info!("Successful output Pore-C table `{}` (block-io-atomic-ids)", output);
+        Ok(())
     }
 
+    pub fn paf2table_fast(&self, bed: &String,
+            output: &String, min_quality: &u8, 
+            min_identity: &f32,  min_length: &u32,
+            max_order: &u32, 
+            max_edge_length: &u64,
+            secondary: bool    
+        ) -> Result<(), Box<dyn Error>> {
+            
+        let min_quality = *min_quality;
+        let min_identity = *min_identity;
+        let min_length = *min_length;
+        let max_order = *max_order;
+        let max_edge_length = *max_edge_length;
 
-    pub fn paf2table(&self, bed: &String,
+        let is_filter_digest = !bed.is_empty();
+        let bed_obj = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
+        let interval_hash = Arc::new(bed_obj.to_interval_hash());
+        let is_filter_edges = max_edge_length > 0;
+
+        let num_threads = 20; 
+        log::info!("Using {} threads for processing.", num_threads);
+        
+        let (tx_raw, rx_raw) = bounded::<(u64, Vec<u8>)>(100); 
+        let (tx_writer, rx_writer) = bounded::<String>(1000);
+
+
+        let output_clone = output.clone();
+        let writer_handle = thread::spawn(move || {
+            let mut writer = common_writer(&output_clone);
+            for chunk in rx_writer {
+                writer.write_all(chunk.as_bytes()).unwrap();
+            }
+        });
+
+        let mut handles = Vec::new();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let stats_pass = Arc::new(AtomicU64::new(0));
+        let stats_sing = Arc::new(AtomicU64::new(0));
+        let stats_low  = Arc::new(AtomicU64::new(0));
+        let stats_comp = Arc::new(AtomicU64::new(0));
+
+        for _ in 0..num_threads {
+            let rx = rx_raw.clone();
+            let tx_w = tx_writer.clone();
+            let ih = interval_hash.clone();
+            let s_p = stats_pass.clone();
+            let s_s = stats_sing.clone();
+            let s_l = stats_low.clone();
+            let s_c = stats_comp.clone();
+
+            handles.push(thread::spawn(move || {
+                let mut local_p=0; let mut local_s=0; let mut local_l=0; let mut local_c=0;
+                let mut output_buffer = String::with_capacity(WRITE_CHUNK);
+                
+                
+                fn parse_line(line: &[u8], min_q: u8, min_l: u32, min_id: f32, sec: bool) -> Option<(PoreCRecord, String)> {
+                    let mut iter = line.split(|&b| b == b'\t');
+                    let q_bytes = iter.next()?;
+                    
+                    let qlen: u32 = fast_parse_int(iter.next()?)? as u32;
+                    let qs: u32   = fast_parse_int(iter.next()?)? as u32;
+                    let qe: u32   = fast_parse_int(iter.next()?)? as u32;
+                    let strand_c  = iter.next().map(|s| if s.is_empty() { '+' } else { s[0] as char }).unwrap_or('+');
+                    let t_bytes   = iter.next()?;
+                    let tlen: u64 = fast_parse_int(iter.next()?)?;
+                    let ts: u64   = fast_parse_int(iter.next()?)?;
+                    let te: u64   = fast_parse_int(iter.next()?)?;
+                    let mat: u32  = fast_parse_int(iter.next()?)? as u32;
+                    let aln: u32  = fast_parse_int(iter.next()?)? as u32;
+                    let mapq: u8  = fast_parse_int(iter.next()?)? as u8;
+                    
+                    if mapq < min_q { return None; }
+
+                    if !sec {
+                        let mut is_sec = false;
+                        for tag in iter {
+                            if tag.starts_with(b"tp:A:S") { is_sec = true; break; }
+                        }
+                        if is_sec { return None; }
+                    }
+
+                    let q_cov = qe - qs;
+                    let ident = if aln > 0 { mat as f32 / aln as f32 } else { 0.0 };
+                        let fr = if q_cov < min_l || ident < min_id {
+                            LOW_MQ_STR
+                    } else {
+                            PASS_STR
+                    };
+
+                    let t_str = unsafe { String::from_utf8_unchecked(t_bytes.to_vec()) };
+                    let q_str = unsafe { String::from_utf8_unchecked(q_bytes.to_vec()) };
+
+                    Some(PoreCRecord {
+                            read_idx: 0, 
+                            query_length: qlen, 
+                            query_start: qs, query_end: qe, query_strand: strand_c,
+                            target: t_str, target_length: tlen,
+                            target_start: ts, target_end: te,
+                            mapq: mapq, identity: ident, filter_reason: fr.to_string(),
+                    }).map(|r| (r, q_str))
+                }
+
+                while let Ok((start_idx, batch_bytes)) = rx.recv() {
+                    let mut current_idx = start_idx;
+                    
+                    let mut start = 0;
+                    let mut current_group: Vec<PoreCRecord> = Vec::with_capacity(32);
+                    let mut old_q_str = String::new();
+                    
+                    while start < batch_bytes.len() {
+                        let end = match batch_bytes[start..].iter().position(|&b| b == b'\n') {
+                                Some(p) => start + p,
+                                None => batch_bytes.len(),
+                        };
+                        let line = &batch_bytes[start..end];
+                        start = end + 1; 
+                        
+                        if line.is_empty() { continue; }
+                    
+                        if let Some((mut pcr, q_str)) = parse_line(line, min_quality, min_length, min_identity, secondary) {
+                            
+                            let is_switch = !old_q_str.is_empty() && old_q_str != q_str;
+                            
+                            if is_switch {
+                        
+                                for r in &mut current_group { r.read_idx = current_idx; }
+                                
+                                process_group(&mut current_group, &ih, is_filter_digest, is_filter_edges, max_edge_length, max_order, &mut output_buffer, &mut local_p, &mut local_s, &mut local_l, &mut local_c);
+                                
+                                if output_buffer.len() >= WRITE_CHUNK {
+                                    tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
+                                    output_buffer = String::with_capacity(WRITE_CHUNK);
+                                }
+                                
+                    
+                                current_idx += 1;
+                            }
+                            
+                            if old_q_str.is_empty() || is_switch {
+                                old_q_str = q_str;
+                            }
+                            current_group.push(pcr);
+                        }
+                    }
+                    
+                    if !current_group.is_empty() {
+                            for r in &mut current_group { r.read_idx = current_idx; }
+                            process_group(&mut current_group, &ih, is_filter_digest, is_filter_edges, max_edge_length, max_order, &mut output_buffer, &mut local_p, &mut local_s, &mut local_l, &mut local_c);
+                    }
+                    
+                    if output_buffer.len() >= WRITE_CHUNK {
+                        tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
+                        output_buffer = String::with_capacity(WRITE_CHUNK);
+                    }
+                }
+                
+                if !output_buffer.is_empty() {
+                    tx_w.send(output_buffer).unwrap();
+                }
+                s_p.fetch_add(local_p, Ordering::Relaxed);
+                s_s.fetch_add(local_s, Ordering::Relaxed);
+                s_l.fetch_add(local_l, Ordering::Relaxed);
+                s_c.fetch_add(local_c, Ordering::Relaxed);
+            }));
+        }
+        drop(tx_writer);
+
+        let mut reader = common_reader(&self.file);
+        const IO_BUF_SIZE: usize = 1024 * 1024; // 1MB read buffer
+        let mut buffer = vec![0u8; IO_BUF_SIZE];
+        let mut leftover = Vec::new();
+
+        const BATCH_SIZE_LIMIT: usize = 16 * 1024 * 1024; 
+        let mut current_batch = Vec::with_capacity(BATCH_SIZE_LIMIT + IO_BUF_SIZE);
+        
+        let mut old_query_bytes = Vec::with_capacity(128);
+        let mut first = true;
+        
+        let mut total_groups: u64 = 0;
+        let mut batch_start_idx: u64 = 0;
+
+        loop {
+            let n = reader.read(&mut buffer).unwrap_or(0);
+            if n == 0 { break; }
+
+            let data = if !leftover.is_empty() {
+                let mut v = Vec::with_capacity(leftover.len() + n);
+                v.extend_from_slice(&leftover);
+                v.extend_from_slice(&buffer[..n]);
+                leftover.clear();
+                Cow::Owned(v)
+            } else {
+                Cow::Borrowed(&buffer[..n])
+            };
+            
+            let data_slice = &data;
+            let mut start_pos = 0;
+
+            while start_pos < data_slice.len() {
+                let end_pos = match data_slice[start_pos..].iter().position(|&b| b == b'\n') {
+                    Some(p) => start_pos + p,
+                    None => {
+                        leftover.extend_from_slice(&data_slice[start_pos..]);
+                        break; 
+                    }
+                };
+                let mut line = &data_slice[start_pos..end_pos];
+                start_pos = end_pos + 1;
+
+                if !line.is_empty() && line[line.len()-1] == b'\r' { line = &line[..line.len()-1]; }
+                if line.is_empty() || line[0] == b'#' { continue; }
+
+                let tab_pos = match line.iter().position(|&b| b == b'\t') {
+                    Some(p) => p, None => continue,
+                };
+                let q_bytes = &line[..tab_pos];
+
+                let is_switch = if first {
+                    first = false;
+                    old_query_bytes.extend_from_slice(q_bytes);
+                    false
+                } else {
+                    q_bytes != old_query_bytes.as_slice()
+                };
+
+                if is_switch {
+                    total_groups += 1;
+                    
+                    old_query_bytes.clear();
+                    old_query_bytes.extend_from_slice(q_bytes);
+
+                    if current_batch.len() >= BATCH_SIZE_LIMIT {
+                        tx_raw.send((batch_start_idx, std::mem::take(&mut current_batch))).unwrap();
+            
+                        batch_start_idx = total_groups;
+                        
+                        current_batch = Vec::with_capacity(BATCH_SIZE_LIMIT + IO_BUF_SIZE);
+                    }
+                }
+                
+                current_batch.extend_from_slice(line);
+                current_batch.push(b'\n');
+            }
+        }
+        
+        if !current_batch.is_empty() {
+            tx_raw.send((batch_start_idx, current_batch)).unwrap();
+            
+            total_groups += 1;
+        }
+        drop(tx_raw);
+
+        for h in handles { h.join().unwrap(); }
+        writer_handle.join().unwrap();
+        
+        let final_stats = (
+            stats_pass.load(Ordering::Relaxed), 
+            stats_sing.load(Ordering::Relaxed),
+            stats_low.load(Ordering::Relaxed),
+            stats_comp.load(Ordering::Relaxed)
+        );
+        
+        let mut summary = ReadSummary::new();
+        summary.pass = final_stats.0;
+        summary.singleton = final_stats.1;
+        summary.low_mq = final_stats.2;
+        summary.complex = final_stats.3;
+    
+        summary.mapping = total_groups; 
+
+        let output_prefix = if output == "-" {
+            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
+        } else {
+            Path::new(output).with_extension("").to_str().unwrap().to_string()
+        };
+        summary.save(&format!("{}.read.summary", output_prefix));
+
+        log::info!("Successful output Pore-C table `{}` (raw-bytes-batched)", output);
+        Ok(())
+    }
+    
+    pub fn paf2table1(&self, bed: &String,
             output: &String, min_quality: &u8, 
             min_identity: &f32,  min_length: &u32,
             max_order: &u32, 
@@ -1326,237 +1813,610 @@ impl PAFTable {
         Ok(())
     }
 
+    // pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
+    //             min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
+    //     let mut chromsize_map: HashMap<String, usize> = HashMap::new();
+    //     {
+    //         let input = common_reader(chromsize);
+    //         let buf = std::io::BufReader::new(input);
+    //         for line in buf.lines() {
+    //             let line = line?;
+    //             if line.trim().is_empty() || line.starts_with('#') {
+    //                 continue;
+    //             }
+
+    //             let mut spl = line.split_whitespace();
+    //             let chr = spl.next().unwrap_or("").to_string();
+    //             let size_str = spl.next().unwrap_or("0");
+    //             let size = size_str.parse::<usize>().unwrap_or(0);
+    //             chromsize_map.insert(chr, size);
+    //         }
+    //     }
+        
+    //     let mut coverage_diff_map: HashMap<String, BTreeMap<usize, i64>> = HashMap::new();
+    //     for (chr, _) in chromsize_map.iter() {
+    //         coverage_diff_map.insert(chr.clone(), BTreeMap::new());
+    //     }
+
+    //     let mut rdr = self.parse2(secondary)?;
+    //     let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
+        
+    //     let mut handles = Vec::new();
+    //     let mut coverage_diff_map = Arc::new(Mutex::new(coverage_diff_map));
+    //     for _ in 0..8 {
+    //         let receiver = receiver.clone();
+    //         let coverage_diff_map_clone = Arc::clone(&coverage_diff_map);
+    //         handles.push(thread::spawn(move || {
+    //             while let Ok(records) = receiver.recv() {
+    //                 let mut local_data = HashMap::new();
+    //                 for record in records {
+    //                     let mapq = record.mapq;
+    //                     if mapq < min_mapq {
+    //                         continue;
+    //                     }
+    //                     let chr = record.target.clone();
+    //                     let start = record.target_start as usize;
+    //                     let end = record.target_end as usize;
+
+    //                     let local_btm = local_data.entry(chr).or_insert_with(BTreeMap::new);
+    //                     *local_btm.entry(start).or_insert(0) += 1;
+    //                     *local_btm.entry(end).or_insert(0) -= 1;
+    //                 }
+
+    //                 let mut coverage_diff_map_locked = coverage_diff_map_clone.lock().unwrap();
+    //                 for (chr, local_btm) in local_data {
+    //                     let global_btm = coverage_diff_map_locked
+    //                         .entry(chr)
+    //                         .or_insert_with(BTreeMap::new);
+    //                     for (pos, delta) in local_btm {
+    //                         *global_btm.entry(pos).or_insert(0) += delta;
+    //                     }
+    //                 }
+
+    //             }
+    //         }))
+
+
+    //     }
+        
+    //     let mut batch = Vec::with_capacity(CHUNK_SIZE);
+    //     for record in rdr{
+    //         batch.push(record);
+    //         if batch.len() >= CHUNK_SIZE {
+    //             sender.send(batch).unwrap();
+    //             batch = Vec::with_capacity(CHUNK_SIZE);
+    //         }
+    //     }
+
+    //     if !batch.is_empty() {
+    //         sender.send(batch).unwrap();
+    //     }
+
+    //     drop(sender);
+
+    //     for handle in handles {
+    //         handle.join().unwrap();
+    //     }
+
+    //     let mut coverage_diff_map = Arc::try_unwrap(coverage_diff_map).unwrap().into_inner().unwrap();
+    //     if step_size == window_size {
+    //         let mut wtr = common_writer(output);
+    //         for (chr, chrom_length) in &chromsize_map {
+    //             if let Some(diff) = coverage_diff_map.get_mut(chr) {
+    //                 let mut running = 0i64;
+    //                 let mut prev_pos = 0usize;
+                    
+    //                 let mut bin_start = 0usize;
+    //                 let mut bin_sum = 0i64;
+    //                 let mut bin_count = 0usize;
+
+    //                 for (&pos, &delta) in diff.iter() {
+    //                     while prev_pos < pos && prev_pos < *chrom_length {
+    //                         bin_sum += running;
+    //                         bin_count += 1;
+    //                         prev_pos += 1;
+
+    //                         if prev_pos - bin_start == window_size {
+    //                             let mean_coverage = bin_sum as f64 / bin_count as f64;
+    //                             let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+    //                             wtr.write_all(line.as_bytes())?;
+
+    //                             bin_sum = 0;
+    //                             bin_count = 0;
+    //                             bin_start = prev_pos;
+    //                         }
+    //                     }
+        
+    //                     running += delta;
+    //                 }
+
+    //                 while prev_pos < *chrom_length {
+    //                     bin_sum += running;
+    //                     bin_count += 1;
+    //                     prev_pos += 1;
+
+    //                     if prev_pos - bin_start == window_size {
+    //                         let mean_coverage = bin_sum as f64 / bin_count as f64;
+    //                         let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+    //                         wtr.write_all(line.as_bytes())?;
+    //                         bin_sum = 0;
+    //                         bin_count = 0;
+    //                         bin_start = prev_pos;
+    //                     }
+    //                 }
+
+    //                 if bin_count > 0 {
+    //                     let mean_coverage = bin_sum as f64 / bin_count as f64;
+    //                     let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
+    //                     wtr.write_all(line.as_bytes())?;
+    //                 }
+                    
+    //             }
+    //         }
+
+    //         log::info!(
+    //             "Successful output coverage (window {}bp) to `{}`",
+    //             window_size,
+    //             output
+    //         );
+
+    //     } else {
+
+    //         let mut wtr = common_writer(output);
+
+    //         for (chr, &chrom_len) in &chromsize_map {
+    //             let diff = match coverage_diff_map.get_mut(chr) {
+    //                 Some(d) => d,
+    //                 None => continue,
+    //             };
+
+    //             let mut coverage_vec = vec![0i64; chrom_len];
+    //             let mut running = 0i64;
+    //             let mut prev_pos = 0usize;
+    //             for (&pos, &delta) in diff.iter() {
+    //                 while prev_pos < pos && prev_pos < chrom_len {
+    //                     coverage_vec[prev_pos] = running;
+    //                     prev_pos += 1;
+    //                 }
+    //                 running += delta;
+    //             }
+    
+    //             while prev_pos < chrom_len {
+    //                 coverage_vec[prev_pos] = running;
+    //                 prev_pos += 1;
+    //             }
+
+    //             let mut prefix_sum = vec![0i64; chrom_len + 1];
+    //             for i in 0..chrom_len {
+    //                 prefix_sum[i+1] = prefix_sum[i] + coverage_vec[i];
+    //             }
+
+    //             let mut i = 0usize;
+    //             while i < chrom_len {
+    //                 let w_end = std::cmp::min(i + window_size, chrom_len);
+    //                 let total_cov = prefix_sum[w_end] - prefix_sum[i];
+    //                 let window_len = w_end - i;
+    //                 if window_len == 0 {
+    //                     break;
+    //                 }
+    //                 let mean_cov = total_cov as f64 / window_len as f64;
+
+    //                 let line = format!("{}\t{}\t{}\t{:.3}\n", chr, i, w_end, mean_cov);
+    //                 wtr.write_all(line.as_bytes())?;
+
+    //                 i += step_size; 
+    //             }
+    //         }
+
+    //         log::info!(
+    //             "Successful output coverage (window {}bp, step {}bp) to `{}`",
+    //             window_size,
+    //             step_size,
+    //             output
+    //         );
+    //     }
+
+    //     Ok(())
+    // }
+
+    // pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
+    //             min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
+    //     let mut chrom_names = Vec::new();
+    //     let mut chrom_sizes = Vec::new();
+    //     let mut chrom_map = HashMap::new();
+
+    //     {
+    //         let input = common_reader(chromsize);
+    //         let buf = std::io::BufReader::new(input);
+    //         for line in buf.lines() {
+    //             let line = line?;
+    //             if line.trim().is_empty() || line.starts_with('#') {
+    //                 continue;
+    //             }
+
+    //             let mut spl = line.split_whitespace();
+    //             let chr = spl.next().unwrap_or("").to_string();
+    //             let size_str = spl.next().unwrap_or("0");
+    //             let size = size_str.parse::<usize>().unwrap_or(0);
+    //             chrom_map.insert(chr.clone(), chrom_names.len());
+    //             chrom_names.push(chr);
+    //             chrom_sizes.push(size);
+    //         }
+    //     }
+        
+    //     let num_chroms = chrom_names.len();
+    //     let chrom_map = Arc::new(chrom_map);
+
+    //     let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
+        
+    //     let mut handles = Vec::new();
+    //     for _ in 0..8 {
+    //         let receiver = receiver.clone();
+    //         let chrom_map = chrom_map.clone();
+    //         handles.push(thread::spawn(move || {
+               
+    //             let mut local_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
+    //             while let Ok(records) = receiver.recv() {
+    //                 for record in records {
+    //                     if record.mapq < min_mapq {
+    //                         continue;
+    //                     }
+    //                     if let Some(&idx) = chrom_map.get(&record.target) {
+    //                         local_events[idx].push((record.target_start as u32, 1));
+    //                         local_events[idx].push((record.target_end as u32, -1));
+    //                     }
+    //                 }
+    //             }
+    //             local_events
+    //         }));
+    //     }
+        
+    //     let rdr = self.parse2(secondary)?;
+    //     let mut batch = Vec::with_capacity(CHUNK_SIZE);
+    //     for record in rdr{
+    //         batch.push(record);
+    //         if batch.len() >= CHUNK_SIZE {
+    //             sender.send(batch).unwrap();
+    //             batch = Vec::with_capacity(CHUNK_SIZE);
+    //         }
+    //     }
+
+    //     if !batch.is_empty() {
+    //         sender.send(batch).unwrap();
+    //     }
+
+    //     drop(sender);
+
+    //     let mut global_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
+    //     for handle in handles {
+    //         let local_events = handle.join().unwrap();
+    //         for (i, events) in local_events.into_iter().enumerate() {
+    //             global_events[i].extend(events);
+    //         }
+    //     }
+
+    //     let mut wtr = common_writer(output);
+
+    //     for (i, mut events) in global_events.into_iter().enumerate() {
+    //         if events.is_empty() { continue; }
+    //         let chrom_len = chrom_sizes[i];
+    //         let chrom_name = &chrom_names[i];
+
+    //         events.par_sort_unstable_by_key(|e| e.0);
+
+    //         let mut coverage = vec![0i32; chrom_len];
+    //         let mut current_cov = 0i32;
+    //         let mut prev_pos = 0;
+
+    //         for (pos, delta) in events {
+    //             let pos = pos as usize;
+    //             if pos >= chrom_len { break; }
+                
+    //             if pos > prev_pos {
+    //                 for k in prev_pos..pos {
+    //                     coverage[k] = current_cov;
+    //                 }
+    //             }
+    //             current_cov += delta;
+    //             prev_pos = pos;
+    //         }
+    //         if prev_pos < chrom_len {
+    //             for k in prev_pos..chrom_len {
+    //                 coverage[k] = current_cov;
+    //             }
+    //         }
+
+
+    //         let mut prefix_sum = vec![0i64; chrom_len + 1];
+    //         let mut running = 0i64;
+    //         for (k, &cov) in coverage.iter().enumerate() {
+    //             running += cov as i64;
+    //             prefix_sum[k+1] = running;
+    //         }
+
+    //         let mut start = 0usize;
+    //         while start < chrom_len {
+    //             let end = std::cmp::min(start + window_size, chrom_len);
+    //             let len = end - start;
+    //             if len == 0 { break; }
+                
+    //             let sum = prefix_sum[end] - prefix_sum[start];
+    //             let mean = sum as f64 / len as f64;
+                
+    //             let line = format!("{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean);
+    //             wtr.write_all(line.as_bytes())?;
+
+    //             start += step_size;
+    //         }
+    //     }
+
+    //     log::info!(
+    //         "Successful output coverage (window {}bp, step {}bp) to `{}`",
+    //         window_size,
+    //         step_size,
+    //         output
+    //     );
+
+    //     Ok(())
+    // }
+
     pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
                 min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
-        let mut chromsize_map: HashMap<String, usize> = HashMap::new();
+        let mut chrom_names = Vec::new();
+        let mut chrom_sizes = Vec::new();
+        let mut chrom_map = HashMap::new();
         {
             let input = common_reader(chromsize);
             let buf = std::io::BufReader::new(input);
             for line in buf.lines() {
                 let line = line?;
-                if line.trim().is_empty() || line.starts_with('#') {
-                    continue;
-                }
-
+                if line.trim().is_empty() || line.starts_with('#') { continue; }
                 let mut spl = line.split_whitespace();
                 let chr = spl.next().unwrap_or("").to_string();
-                let size_str = spl.next().unwrap_or("0");
-                let size = size_str.parse::<usize>().unwrap_or(0);
-                chromsize_map.insert(chr, size);
+                let size = spl.next().unwrap_or("0").parse::<usize>().unwrap_or(0);
+                chrom_map.insert(chr.clone(), chrom_names.len());
+                chrom_names.push(chr);
+                chrom_sizes.push(size);
             }
         }
         
-        let mut coverage_diff_map: HashMap<String, BTreeMap<usize, i64>> = HashMap::new();
-        for (chr, _) in chromsize_map.iter() {
-            coverage_diff_map.insert(chr.clone(), BTreeMap::new());
-        }
+        let num_chroms = chrom_names.len();
+        let chrom_map = Arc::new(chrom_map);
 
-        let mut rdr = self.parse2(secondary)?;
-        let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
+        // 2. Channel for raw byte blocks
+        // Change: Send Vec<u8> (raw bytes) instead of parsed PAFLine objects
+        let (sender, receiver) = bounded::<Vec<u8>>(100);
         
         let mut handles = Vec::new();
-        let mut coverage_diff_map = Arc::new(Mutex::new(coverage_diff_map));
         for _ in 0..8 {
             let receiver = receiver.clone();
-            let coverage_diff_map_clone = Arc::clone(&coverage_diff_map);
+            let chrom_map = chrom_map.clone();
             handles.push(thread::spawn(move || {
-                while let Ok(records) = receiver.recv() {
-                    let mut local_data = HashMap::new();
-                    for record in records {
-                        let mapq = record.mapq;
-                        if mapq < min_mapq {
-                            continue;
-                        }
-                        let chr = record.target.clone();
-                        let start = record.target_start as usize;
-                        let end = record.target_end as usize;
-
-                        let local_btm = local_data.entry(chr).or_insert_with(BTreeMap::new);
-                        *local_btm.entry(start).or_insert(0) += 1;
-                        *local_btm.entry(end).or_insert(0) -= 1;
+                let mut local_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
+                
+                // Helper to parse integer from bytes quickly
+                fn fast_parse_u64(bytes: &[u8]) -> Option<u64> {
+                    let mut n = 0;
+                    for &b in bytes {
+                        if b < b'0' || b > b'9' { return None; }
+                        n = n * 10 + (b - b'0') as u64;
                     }
-
-                    let mut coverage_diff_map_locked = coverage_diff_map_clone.lock().unwrap();
-                    for (chr, local_btm) in local_data {
-                        let global_btm = coverage_diff_map_locked
-                            .entry(chr)
-                            .or_insert_with(BTreeMap::new);
-                        for (pos, delta) in local_btm {
-                            *global_btm.entry(pos).or_insert(0) += delta;
-                        }
-                    }
-
+                    Some(n)
                 }
-            }))
 
+                while let Ok(data) = receiver.recv() {
+                    let mut start_idx = 0;
+                    // Split lines by '\n' manually
+                    while start_idx < data.len() {
+                        let end_idx = match data[start_idx..].iter().position(|&b| b == b'\n') {
+                            Some(pos) => start_idx + pos,
+                            None => data.len(), 
+                        };
+                        let line = &data[start_idx..end_idx];
+                        start_idx = end_idx + 1;
 
-        }
-        
-        let mut batch = Vec::with_capacity(CHUNK_SIZE);
-        for record in rdr{
-            batch.push(record);
-            if batch.len() >= CHUNK_SIZE {
-                sender.send(batch).unwrap();
-                batch = Vec::with_capacity(CHUNK_SIZE);
-            }
-        }
+                        if line.is_empty() || line[0] == b'#' { continue; }
 
-        if !batch.is_empty() {
-            sender.send(batch).unwrap();
-        }
+                        // Manual column splitting by '\t' to avoid allocation
+                        // PAF columns needed: 
+                        // 5: target name (str), 7: t_start (int), 8: t_end (int), 11: mapq (int)
+                        
+                        let mut iter = line.split(|&b| b == b'\t');
+                        
+                        // Skip first 5 columns: qname, qlen, qstart, qend, strand
+                        if iter.nth(4).is_none() { continue; } 
+                        
+                        // Column 5: Target Name
+                        let target_bytes = match iter.next() { Some(v) => v, None => continue };
+                        
+                        // Only convert to string if we need to look it up (allocating here is unavoidable unless we hash bytes directly)
+                        // Optimization: Check mapq first to avoid string alloc if mapq is low
+                        
+                        // Skip 6: tlen
+                        if iter.next().is_none() { continue; }
 
-        drop(sender);
+                        // Column 7: Target Start
+                        let t_start_bytes = match iter.next() { Some(v) => v, None => continue };
+                        
+                        // Column 8: Target End
+                        let t_end_bytes = match iter.next() { Some(v) => v, None => continue };
+                        
+                        // Skip 9, 10
+                        if iter.nth(1).is_none() { continue; }
+                        
+                        // Column 11: MAPQ
+                        let mapq_bytes = match iter.next() { Some(v) => v, None => continue };
+                        let mapq = match fast_parse_u64(mapq_bytes) { Some(v) => v as u8, None => continue };
 
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-
-        // let mut rdr = self.parse()?;
-        // for (line_num, rec) in rdr.deserialize().enumerate() {
-        //     let record: PAFLine = match rec {
-        //         Ok(r) => r,
-        //         Err(e) => {
-        //             log::warn!("Error parsing line {} in {}: {:?}", line_num, self.file_name(), e);
-        //             continue;
-        //         }
-        //     };
-        //     let mapq = record.mapq;
-        //     if mapq < min_mapq {
-        //         continue;
-        //     }
-        //     let chr = record.target.clone();
-        //     let start = record.target_start as usize;
-        //     let end = record.target_end as usize;
-
-        //     if let Some(diff) = coverage_diff_map.get_mut(&chr) {
-        //         *diff.entry(start).or_insert(0) += 1;
-        //         *diff.entry(end).or_insert(0) -= 1;
-        //     }
-        // }
-
-        let mut coverage_diff_map = Arc::try_unwrap(coverage_diff_map).unwrap().into_inner().unwrap();
-        if step_size == window_size {
-            let mut wtr = common_writer(output);
-            for (chr, chrom_length) in &chromsize_map {
-                if let Some(diff) = coverage_diff_map.get_mut(chr) {
-                    let mut running = 0i64;
-                    let mut prev_pos = 0usize;
-                    
-                    let mut bin_start = 0usize;
-                    let mut bin_sum = 0i64;
-                    let mut bin_count = 0usize;
-
-                    for (&pos, &delta) in diff.iter() {
-                        while prev_pos < pos && prev_pos < *chrom_length {
-                            bin_sum += running;
-                            bin_count += 1;
-                            prev_pos += 1;
-
-                            if prev_pos - bin_start == window_size {
-                                let mean_coverage = bin_sum as f64 / bin_count as f64;
-                                let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-                                wtr.write_all(line.as_bytes())?;
-
-                                bin_sum = 0;
-                                bin_count = 0;
-                                bin_start = prev_pos;
+                        if mapq < min_mapq { continue; }
+                        if !secondary {
+                            let mut is_secondary = false;
+                            for tag in iter {
+                                if tag.starts_with(b"tp:A:S") {
+                                    is_secondary = true;
+                                    break;
+                                }
                             }
+                            if is_secondary { continue; }
                         }
-        
-                        running += delta;
-                    }
 
-                    while prev_pos < *chrom_length {
-                        bin_sum += running;
-                        bin_count += 1;
-                        prev_pos += 1;
+                        // Now parse coordinates
+                        let t_start = match fast_parse_u64(t_start_bytes) { Some(v) => v, None => continue };
+                        let t_end = match fast_parse_u64(t_end_bytes) { Some(v) => v, None => continue };
 
-                        if prev_pos - bin_start == window_size {
-                            let mean_coverage = bin_sum as f64 / bin_count as f64;
-                            let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-                            wtr.write_all(line.as_bytes())?;
-                            bin_sum = 0;
-                            bin_count = 0;
-                            bin_start = prev_pos;
+                        // Look up chromosome ID using str (std::str::from_utf8 is zero-copy reference)
+                        if let Ok(target_str) = std::str::from_utf8(target_bytes) {
+                                if let Some(&idx) = chrom_map.get(target_str) {
+                                local_events[idx].push((t_start as u32, 1));
+                                local_events[idx].push((t_end as u32, -1));
+                                }
                         }
                     }
-
-                    if bin_count > 0 {
-                        let mean_coverage = bin_sum as f64 / bin_count as f64;
-                        let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-                        wtr.write_all(line.as_bytes())?;
-                    }
-                    
                 }
-            }
+                local_events
+            }));
+        }
+        
+        // 3. Main Thread: Raw Byte Reading
+        {
+            let mut input = common_reader(&self.file); // Raw reader, not BufReader if possible, or large BufReader
+            
+            // 512 KB buffer size
+            const BUF_SIZE: usize = 512 * 1024; 
+            let mut buffer = vec![0u8; BUF_SIZE];
+            let mut leftover = Vec::with_capacity(1024);
 
-            log::info!(
-                "Successful output coverage (window {}bp) to `{}`",
-                window_size,
-                output
-            );
+            loop {
+                // Read into buffer
+                let bytes_read = input.read(&mut buffer).unwrap_or(0);
+                if bytes_read == 0 {
+                    break;
+                }
 
-        } else {
+                let chunk = &buffer[..bytes_read];
 
-            let mut wtr = common_writer(output);
+                let last_newline = chunk.iter().rposition(|&b| b == b'\n');
 
-            for (chr, &chrom_len) in &chromsize_map {
-                let diff = match coverage_diff_map.get_mut(chr) {
-                    Some(d) => d,
-                    None => continue,
+                let to_send = if let Some(pos) = last_newline {
+                    
+                    let mut send_buf = Vec::with_capacity(leftover.len() + pos + 1);
+                    send_buf.extend_from_slice(&leftover);
+                    send_buf.extend_from_slice(&chunk[..=pos]);
+                    
+                    leftover.clear();
+                    leftover.extend_from_slice(&chunk[pos+1..]);
+                    
+                    send_buf
+                } else {
+                    leftover.extend_from_slice(chunk);
+                    continue; 
                 };
 
-                let mut coverage_vec = vec![0i64; chrom_len];
-                let mut running = 0i64;
-                let mut prev_pos = 0usize;
-                for (&pos, &delta) in diff.iter() {
-                    while prev_pos < pos && prev_pos < chrom_len {
-                        coverage_vec[prev_pos] = running;
-                        prev_pos += 1;
-                    }
-                    running += delta;
-                }
-    
-                while prev_pos < chrom_len {
-                    coverage_vec[prev_pos] = running;
-                    prev_pos += 1;
-                }
-
-                let mut prefix_sum = vec![0i64; chrom_len + 1];
-                for i in 0..chrom_len {
-                    prefix_sum[i+1] = prefix_sum[i] + coverage_vec[i];
-                }
-
-                let mut i = 0usize;
-                while i < chrom_len {
-                    let w_end = std::cmp::min(i + window_size, chrom_len);
-                    let total_cov = prefix_sum[w_end] - prefix_sum[i];
-                    let window_len = w_end - i;
-                    if window_len == 0 {
-                        break;
-                    }
-                    let mean_cov = total_cov as f64 / window_len as f64;
-
-                    let line = format!("{}\t{}\t{}\t{:.3}\n", chr, i, w_end, mean_cov);
-                    wtr.write_all(line.as_bytes())?;
-
-                    i += step_size; 
+                if !to_send.is_empty() {
+                    sender.send(to_send).unwrap();
                 }
             }
+            // Send remaining leftover if any
+            if !leftover.is_empty() {
+                sender.send(leftover).unwrap();
+            }
+        }
+        
+        drop(sender);
 
-            log::info!(
+        // ... existing aggregation and writing logic ...
+        let mut global_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
+
+        for handle in handles {
+            let local_events = handle.join().unwrap();
+            for (i, events) in local_events.into_iter().enumerate() {
+                global_events[i].extend(events);
+            }
+        }
+
+        rayon::scope(|s| {
+            let (tx, rx) = bounded::<String>(1024);
+
+            s.spawn(|_| {
+                let mut wtr = common_writer(output);
+                for s in rx {
+                    wtr.write_all(s.as_bytes()).unwrap();
+                }
+            });
+
+            global_events.into_par_iter().enumerate().for_each_with(tx, |tx, (i, mut events)| {
+                if events.is_empty() { return; }
+                let chrom_len = chrom_sizes[i];
+                let chrom_name = &chrom_names[i];
+
+                events.par_sort_unstable_by_key(|e| e.0);
+
+                let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
+                prefix_sum.push(0);
+                
+                let mut current_cov = 0i32;
+                let mut prev_pos = 0usize;
+                let mut running_sum = 0i64;
+
+                for (pos, delta) in events {
+                    let pos = pos as usize;
+                    if pos >= chrom_len { break; }
+                    
+                    if pos > prev_pos {
+                        let cov = current_cov as i64;
+                        let count = pos - prev_pos;
+                        for _ in 0..count {
+                            running_sum += cov;
+                            prefix_sum.push(running_sum);
+                        }
+                    }
+                    current_cov += delta;
+                    prev_pos = pos;
+                }
+                
+                if prev_pos < chrom_len {
+                    let cov = current_cov as i64;
+                    let count = chrom_len - prev_pos;
+                    for _ in 0..count {
+                        running_sum += cov;
+                        prefix_sum.push(running_sum);
+                    }
+                }
+
+                let mut output_buf = String::with_capacity(64 * 1024);
+                let mut start = 0usize;
+
+                while start < chrom_len {
+                    let end = std::cmp::min(start + window_size, chrom_len);
+                    let len = end - start;
+                    if len == 0 { break; }
+                    
+                    let sum = prefix_sum[end] - prefix_sum[start];
+                    let mean = sum as f64 / len as f64;
+                    
+                    write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean).unwrap();
+
+                    if output_buf.len() > 60 * 1024 {
+                        tx.send(std::mem::take(&mut output_buf)).unwrap();
+                        output_buf = String::with_capacity(64 * 1024);
+                    }
+
+                    start += step_size;
+                }
+                if !output_buf.is_empty() {
+                    tx.send(output_buf).unwrap();
+                }
+            });
+        });
+
+        log::info!(
                 "Successful output coverage (window {}bp, step {}bp) to `{}`",
                 window_size,
                 step_size,
                 output
             );
-        }
-
         Ok(())
     }
-
-    
 }
 
 
