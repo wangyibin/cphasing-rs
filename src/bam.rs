@@ -242,6 +242,59 @@ fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
     (qstart, qend, qlen)
 }
 
+
+fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
+    let mut match_len: i64 = 0;
+    let mut aln_len: i64 = 0;
+    let mut ins_len: i64 = 0;
+    let mut del_len: i64 = 0;
+    
+    let mut qstart: u32 = 0;
+    let mut qpos: u32 = 0;
+    let mut qlen: u32 = 0;
+    let mut qend_consumed: u32 = 0;
+    let mut found_start = false;
+
+    for op in record.cigar().iter() {
+        let l = op.len();
+        match op {
+            Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_) => {
+                let len = l as i64;
+                match_len += len;
+                aln_len += len;
+                if !found_start { qstart = qpos; found_start = true; }
+                qpos += l;
+                qlen += l;
+                qend_consumed += l;
+            }
+            Cigar::Del(_) => {
+                let len = l as i64;
+                del_len += len;
+                aln_len += len;
+            }
+            Cigar::Ins(_) => {
+                let len = l as i64;
+                ins_len += len;
+                aln_len += len;
+                if !found_start { qstart = qpos; found_start = true; }
+                qpos += l;
+                qlen += l;
+                qend_consumed += l;
+            }
+            Cigar::RefSkip(_) | Cigar::Pad(_) => {
+                aln_len += l as i64;
+            }
+            Cigar::SoftClip(_) | Cigar::HardClip(_) => {
+                if !found_start { qstart = qpos + l; found_start = true; }
+                qpos += l;
+                qlen += l;
+            }
+        }
+    }
+    let qend = qstart + qend_consumed;
+    (match_len, aln_len, ins_len, del_len, qstart, qend, qlen)
+}
+
 pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary: bool) {
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")

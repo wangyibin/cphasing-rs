@@ -806,10 +806,11 @@ fn main() {
         Some(("porec-break", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut prt = PoreCTable::new(&table);
-            prt.break_contigs(&break_bed, &output);
+            prt.break_contigs(&break_bed, &output, *threads);
 
         }
 

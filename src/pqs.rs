@@ -194,99 +194,156 @@ impl PQS {
                 contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), (k.clone(), v.clone()))).collect();
 
         let (sender, receiver) = bounded::<LazyFrame>(100);
-        let data = Arc::new(Mutex::new(HashMap::new()));
+        // let data = Arc::new(Mutex::new(HashMap::new()));
 
 
-        let consumer_handles: Vec<_> = (0..8).map(|_| {
-            let receiver: Receiver<_> = receiver.clone();
+        // let consumer_handles: Vec<_> = (0..8).map(|_| {
+        //     let receiver: Receiver<_> = receiver.clone();
+        //     let data = Arc::clone(&data);
+        //     let contig_idx = contig_idx.clone();
+
+        //     thread::spawn(move || {
+        //         while let Ok(df) = receiver.recv() {
+        //             let mut df = df.collect().unwrap();
+        //             let need_cast = !matches!(df.column("chrom1").unwrap().dtype(), DataType::Categorical(_, _))
+        //                         || !matches!(df.column("chrom2").unwrap().dtype(), DataType::Categorical(_, _));
+        //                     if need_cast {
+        //                         df = df
+        //                             .lazy()
+        //                             .with_column(
+        //                                 col("chrom1")
+        //                                     .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+        //                             )
+        //                             .with_column(
+        //                                 col("chrom2")
+        //                                     .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
+        //                             )
+        //                             .collect()
+        //                             .unwrap();
+        //                     }
+        //             let mut local_data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
+        //             let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
+        //             let rev_map1 = cat_col1.get_rev_map();
+    
+        //             let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
+        //             let rev_map2 = cat_col2.get_rev_map();
+
+        //             let nrows = df.height();
+
+        //             for idx in 0..nrows {
+        //                 let row = df.get(idx).unwrap();
+        //                 let chrom1 = match row.get(0) {
+        //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let chrom2 = match row.get(1) {
+        //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let pos1 = match row.get(2) {
+        //                     Some(AnyValue::List(v)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 let pos2 = match row.get(3) {
+        //                     Some(AnyValue::List(v)) => Some(v),
+        //                     _ => None
+        //                 };
+    
+        //                 if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
+        //                     let chrom1 = rev_map1.get(*chrom1);
+        //                     let chrom2 = rev_map2.get(*chrom2);
+        //                     let chrom1 = match contig_idx.get(chrom1) {
+        //                         Some(v) => v,
+        //                         None => {
+        //                             log::warn!("Could not found {:?} in _contigsizes", chrom1);
+        //                             continue
+        //                         },
+        //                     };
+        //                     let chrom2 = match contig_idx.get(chrom2) {
+        //                         Some(v) => v,
+        //                         None => {
+        //                             log::warn!("Could not found {:?} in _contigsizes", chrom2);
+        //                             continue
+        //                         },
+        //                     };
+        //                     let mut vec: Vec<SmallIntVec> = Vec::new();
+        //                     for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
+        //                         vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
+        //                     }
+        //                     local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+        //                 }
+        //             }
+
+        //             let mut data = data.lock().unwrap();
+        //             for (key, value) in local_data {
+        //                 data.entry(key).or_insert(Vec::new()).extend(value);
+        //             }
+             
+        //         }
+        //     })
+        // }).collect();
+
+        type DataMap = HashMap<(u32, u32), (Vec<u32>, Vec<u32>)>;
+        let data: Arc<Mutex<DataMap>> = Arc::new(Mutex::new(HashMap::default()));
+        let consumer_threads = (threads / 2).max(1).min(16); 
+        let consumer_handles: Vec<_> = (0..consumer_threads).map(|_| {
+            let receiver = receiver.clone();
             let data = Arc::clone(&data);
             let contig_idx = contig_idx.clone();
 
             thread::spawn(move || {
-                while let Ok(df) = receiver.recv() {
-                    let mut df = df.collect().unwrap();
-                    let need_cast = !matches!(df.column("chrom1").unwrap().dtype(), DataType::Categorical(_, _))
-                                || !matches!(df.column("chrom2").unwrap().dtype(), DataType::Categorical(_, _));
-                            if need_cast {
-                                df = df
-                                    .lazy()
-                                    .with_column(
-                                        col("chrom1")
-                                            .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-                                    )
-                                    .with_column(
-                                        col("chrom2")
-                                            .cast(DataType::Categorical(None, CategoricalOrdering::Physical))
-                                    )
-                                    .collect()
-                                    .unwrap();
-                            }
-                    let mut local_data: HashMap<(u32, u32), Vec<SmallIntVec>> = HashMap::new();
-                    let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
-                    let rev_map1 = cat_col1.get_rev_map();
-    
-                    let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
-                    let rev_map2 = cat_col2.get_rev_map();
+                while let Ok(lf) = receiver.recv() {
+                    let mut df = lf.collect().expect("Polars collect failed");
 
-                    let nrows = df.height();
+                    let chrom1_col = df.column("chrom1").unwrap().categorical().unwrap();
+                    let chrom2_col = df.column("chrom2").unwrap().categorical().unwrap();
+                    let pos1_list = df.column("pos1").unwrap().list().unwrap();
+                    let pos2_list = df.column("pos2").unwrap().list().unwrap();
+                    let mut phys_to_idx1 = HashMap::new();
+                    let mut phys_to_idx2 = HashMap::new();
+                    let rev1 = chrom1_col.get_rev_map();
+                    let rev2 = chrom2_col.get_rev_map();
 
-                    for idx in 0..nrows {
-                        let row = df.get(idx).unwrap();
-                        let chrom1 = match row.get(0) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None
-                        };
-    
-                        let chrom2 = match row.get(1) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None
-                        };
-    
-                        let pos1 = match row.get(2) {
-                            Some(AnyValue::List(v)) => Some(v),
-                            _ => None
-                        };
-    
-                        let pos2 = match row.get(3) {
-                            Some(AnyValue::List(v)) => Some(v),
-                            _ => None
-                        };
-    
-                        if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
-                            let chrom1 = rev_map1.get(*chrom1);
-                            let chrom2 = rev_map2.get(*chrom2);
-                            let chrom1 = match contig_idx.get(chrom1) {
-                                Some(v) => v,
-                                None => {
-                                    log::warn!("Could not found {:?} in _contigsizes", chrom1);
-                                    continue
-                                },
-                            };
-                            let chrom2 = match contig_idx.get(chrom2) {
-                                Some(v) => v,
-                                None => {
-                                    log::warn!("Could not found {:?} in _contigsizes", chrom2);
-                                    continue
-                                },
-                            };
-                            let mut vec: Vec<SmallIntVec> = Vec::new();
-                            for (p1, p2) in pos1.u32().unwrap().iter().zip(pos2.u32().unwrap().iter()) {
-                                vec.push(smallvec![p1.unwrap(), p2.unwrap()]);
-                            }
-                            local_data.entry((*chrom1, *chrom2)).or_insert(Vec::new()).extend(vec);
+                    chrom1_col.physical().unique().unwrap().into_iter().flatten().for_each(|phi| {
+                        phys_to_idx1.insert(phi, *contig_idx.get(rev1.get(phi)).unwrap_or(&u32::MAX));
+                    });
+                    chrom2_col.physical().unique().unwrap().into_iter().flatten().for_each(|phi| {
+                        phys_to_idx2.insert(phi, *contig_idx.get(rev2.get(phi)).unwrap_or(&u32::MAX));
+                    });
+
+                    let mut local_data: DataMap = HashMap::new();
+                    let phys1 = chrom1_col.physical();
+                    let phys2 = chrom2_col.physical();
+
+                    for i in 0..df.height() {
+                        let idx1 = *phys_to_idx1.get(&phys1.get(i).unwrap()).unwrap();
+                        let idx2 = *phys_to_idx2.get(&phys2.get(i).unwrap()).unwrap();
+                        if idx1 == u32::MAX || idx2 == u32::MAX { continue; }
+
+                        if let (Some(s1), Some(s2)) = (pos1_list.get_as_series(i), pos2_list.get_as_series(i)) {
+                            let v1 = s1.u32().unwrap();
+                            let v2 = s2.u32().unwrap();
+                            
+                            let pair_data = local_data.entry((idx1, idx2)).or_insert_with(|| (Vec::new(), Vec::new()));
+                            pair_data.0.extend(v1.into_iter().flatten());
+                            pair_data.1.extend(v2.into_iter().flatten());
                         }
                     }
 
-                    let mut data = data.lock().unwrap();
-                    for (key, value) in local_data {
-                        data.entry(key).or_insert(Vec::new()).extend(value);
+                    if !local_data.is_empty() {
+                        let mut g_data = data.lock().unwrap();
+                        for (k, (v1, v2)) in local_data {
+                            let g_entry = g_data.entry(k).or_insert_with(|| (Vec::new(), Vec::new()));
+                            g_entry.0.extend(v1);
+                            g_entry.1.extend(v2);
+                        }
                     }
-             
                 }
             })
         }).collect();
-
-       
 
         for file in files.into_iter() {
 
@@ -304,13 +361,19 @@ impl PQS {
                 df
             };
 
-            let result = df.group_by(["chrom1", "chrom2"])
+
+            let result = df.select(
+                [col("chrom1"),
+                col("chrom2"),
+                col("pos1"),
+                col("pos2"),]
+            ).group_by(["chrom1", "chrom2"])
                 .agg(&[col("pos1"), col("pos2")]);
 
             sender.send(result).unwrap();
         }
 
-    
+
         drop(sender);
 
         for handle in consumer_handles {
@@ -329,28 +392,41 @@ impl PQS {
     
             let writer = common_writer(format!("{}.split.contacts.gz", output_prefix.to_string()).as_str());
             let writer = Arc::new(Mutex::new(writer));
-            data.par_iter().for_each(|(cp, vec) | {
-                if vec.len() < min_contacts as usize {
+            // data.par_iter().for_each(|(cp, vec) | {
+            //     if vec.len() < min_contacts as usize {
+            //         return;
+            //     }
+            //     let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
+            //     let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
+            //     let res = vec.iter().map(
+            //         |x| {
+            //             let pos1 = x[0];
+            //             let pos2 = x[1];
+            //             let split_index1 = (pos1 / (length1 / 2)) as u8;
+            //             let split_index2 = (pos2 / (length2 / 2)) as u8;
+                    
+            //             (split_index1, split_index2)
+            //         }
+            //     ).collect::<Vec<_>>();
+
+            //     let mut contact_hash = HashMap::with_capacity(4);
+            //     res.iter().for_each(|(split_idx1, split_idx2)| {
+            //         *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
+            //     });
+            data.par_iter().for_each(|(cp, (v1, v2)) | {
+                if v1.len() < min_contacts as usize {
                     return;
                 }
                 let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
                 let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
-                let res = vec.iter().map(
-                    |x| {
-                        let pos1 = x[0];
-                        let pos2 = x[1];
-                        let split_index1 = (pos1 / (length1 / 2)) as u8;
-                        let split_index2 = (pos2 / (length2 / 2)) as u8;
-                    
-                        (split_index1, split_index2)
-                    }
-                ).collect::<Vec<_>>();
 
+                // 使用 zip 同步遍历两个坐标向量
                 let mut contact_hash = HashMap::with_capacity(4);
-                res.iter().for_each(|(split_idx1, split_idx2)| {
-                    *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
+                v1.iter().zip(v2.iter()).for_each(|(&pos1, &pos2)| {
+                    let split_index1 = (pos1 / (length1 / 2)) as u8;
+                    let split_index2 = (pos2 / (length2 / 2)) as u8;
+                    *contact_hash.entry((split_index1, split_index2)).or_insert(0) += 1;
                 });
-                
                 let mut buffer = Vec::with_capacity(4);
                 contact_hash.iter().for_each(|(cp, count)| {
                     if count >= &min_contacts {
@@ -381,36 +457,52 @@ impl PQS {
                                                             (chrom, vec![0; num_bins])
                                                         }).collect();
             
-            data.iter().for_each(|(cp, vec)| {
-                let res = vec.iter().map(
-                    |x| {
-                        let pos1 = x[0];
-                        let pos2 = x[1];
-                        let split_index1 = (pos1 / binsize) as u32;
-                        let split_index2 = (pos2 / binsize) as u32;
+            // data.iter().for_each(|(cp, vec)| {
+            //     let res = vec.iter().map(
+            //         |x| {
+            //             let pos1 = x[0];
+            //             let pos2 = x[1];
+            //             let split_index1 = (pos1 / binsize) as u32;
+            //             let split_index2 = (pos2 / binsize) as u32;
                         
-                        (split_index1, split_index2)
-                    }
-                ).collect::<Vec<_>>();
+            //             (split_index1, split_index2)
+            //         }
+            //     ).collect::<Vec<_>>();
                 
-                res.iter().for_each(|(split_index1, split_index2)| {
-                    if let Some(v) = depth.get_mut(&cp.0) {
-                        if let Some(v) = v.get_mut(*split_index1 as usize) {
-                            *v += 1;
-                        }
+            //     res.iter().for_each(|(split_index1, split_index2)| {
+            //         if let Some(v) = depth.get_mut(&cp.0) {
+            //             if let Some(v) = v.get_mut(*split_index1 as usize) {
+            //                 *v += 1;
+            //             }
                 
-                    }
+            //         }
 
-                    if let Some(v) = depth.get_mut(&cp.1) {
-                        if let Some(v) = v.get_mut(*split_index2 as usize) {
-                            *v += 1;
-                        }
-                    }
+            //         if let Some(v) = depth.get_mut(&cp.1) {
+            //             if let Some(v) = v.get_mut(*split_index2 as usize) {
+            //                 *v += 1;
+            //             }
+            //         }
 
-                    // *depth.get_mut(&cp.0).unwrap().get_mut(*split_index1 as usize).unwrap() += 1;
-                    // *depth.get_mut(&cp.1).unwrap().get_mut(*split_index2 as usize).unwrap() += 1;
-                });
+            //         // *depth.get_mut(&cp.0).unwrap().get_mut(*split_index1 as usize).unwrap() += 1;
+            //         // *depth.get_mut(&cp.1).unwrap().get_mut(*split_index2 as usize).unwrap() += 1;
+            //     });
                 
+            // });
+            data.iter().for_each(|(cp, (v1, v2))| {
+                // v1 对应 cp.0 的深度
+                if let Some(depth_v) = depth.get_mut(&cp.0) {
+                    for &pos in v1 {
+                        let bin = (pos / binsize) as usize;
+                        if let Some(v) = depth_v.get_mut(bin) { *v += 1; }
+                    }
+                }
+                // v2 对应 cp.1 的深度
+                if let Some(depth_v) = depth.get_mut(&cp.1) {
+                    for &pos in v2 {
+                        let bin = (pos / binsize) as usize;
+                        if let Some(v) = depth_v.get_mut(bin) { *v += 1; }
+                    }
+                }
             });
 
             let depth: BTreeMap<_, _> = depth.into_iter().collect();
@@ -453,15 +545,12 @@ impl PQS {
             let bin_depths: HashMap<(u32, u32), u32> = data.par_iter()
                 .fold(
                     || HashMap::new(),
-                    |mut acc: HashMap<(u32, u32), u32>, ((c1, c2), vec)| {
-                        for pair in vec {
-                            let pos1 = pair[0];
-                            let pos2 = pair[1];
-                            let bin1 = pos1 / binsize;
-                            let bin2 = pos2 / binsize;
-
-                            *acc.entry((*c1, bin1)).or_insert(0) += 1;
-                            *acc.entry((*c2, bin2)).or_insert(0) += 1;
+                    |mut acc: HashMap<(u32, u32), u32>, ((c1, c2), (v1, v2))| {
+                        for &pos1 in v1 {
+                            *acc.entry((*c1, pos1 / binsize)).or_insert(0) += 1;
+                        }
+                        for &pos2 in v2 {
+                            *acc.entry((*c2, pos2 / binsize)).or_insert(0) += 1;
                         }
                         acc
                     }
@@ -510,23 +599,25 @@ impl PQS {
         let wtr = Arc::new(Mutex::new(wtr));
         let blacklist = Arc::new(blacklist);
 
-        data.par_iter().for_each(|(cp, vec)| {
+        data.par_iter().for_each(|(cp, (v1, v2))| {
             if cp.0 == cp.1 { return; }
 
             let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
             let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
 
-            let filtered_vec: Vec<&SmallIntVec> = if !disable_filter && !blacklist.is_empty() {
-                vec.iter().filter(|pair| {
-                    let bin1 = pair[0] / binsize;
-                    let bin2 = pair[1] / binsize;
-                    !blacklist.contains(&(cp.0, bin1)) && !blacklist.contains(&(cp.1, bin2))
-                }).collect()
-            } else {
-                vec.iter().collect()
-            };
+            let filtered_pairs: Vec<(u32, u32)> = v1.iter().zip(v2.iter())
+                .filter_map(|(&p1, &p2)| {
+                    if !disable_filter && !blacklist.is_empty() {
+                        let b1 = p1 / binsize;
+                        let b2 = p2 / binsize;
+                        if blacklist.contains(&(cp.0, b1)) || blacklist.contains(&(cp.1, b2)) {
+                            return None;
+                        }
+                    }
+                    Some((p1, p2))
+                }).collect();
 
-            let count = filtered_vec.len();
+            let count = filtered_pairs.len();
             if count < min_contacts as usize { return; }
 
             let mut buffer = String::with_capacity(count * 40);
@@ -541,12 +632,12 @@ impl PQS {
                 };
                 buffer.push_str(&header);
                 
-                for (idx, pair) in filtered_vec.iter().enumerate() {
+                for (idx, (p1, p2)) in filtered_pairs.iter().enumerate() {
                     let val = match i {
-                        0 => length1.wrapping_sub(pair[0]).wrapping_add(pair[1]),
-                        1 => length1.wrapping_sub(pair[0]).wrapping_add(*length2).wrapping_sub(pair[1]),
-                        2 => pair[0].wrapping_add(pair[1]),
-                        _ => pair[0].wrapping_add(*length2).wrapping_sub(pair[1]),
+                        0 => length1.wrapping_sub(*p1).wrapping_add(*p2),
+                        1 => length1.wrapping_sub(*p1).wrapping_add(*length2).wrapping_sub(*p2),
+                        2 => p1.wrapping_add(*p2),
+                        _ => p1.wrapping_add(*length2).wrapping_sub(*p2),
                     };
                     buffer.push_str(itoa_buf.format(val));
                     if idx < count - 1 { buffer.push(' '); }

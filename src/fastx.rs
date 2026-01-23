@@ -18,10 +18,6 @@ use std::path::Path;
 use std::ops::AddAssign;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use seq_io::prelude::*;
-use seq_io::fastq;
-use seq_io::fastx::Reader as FastxReader;
-use seq_io::parallel::{ read_process_fastx_records, read_process_recordsets };
 
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
@@ -78,141 +74,181 @@ impl BaseTable for Fastx {
 
 impl Fastx {
     pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>>  {
+        use rayon::iter::{ParallelBridge, ParallelIterator};
         let reader = common_reader(&self.file);
-        let reader = FastxReader::new(reader);
-        let mut chrom_size: HashMap<String, u64> = HashMap::new();
+        let fasta_reader = bio::io::fasta::Reader::new(reader);
+        let chrom_size = Arc::new(Mutex::new(HashMap::new()));
 
-        read_process_fastx_records(reader, 4, 2,
-            |record, length| { // runs in worker
-                *length = record.seq_lines()
-                                .fold(0, |l, seq| l + seq.len());
-            },
-            |record, length| { // runs in main thread
-                chrom_size.insert(record.id().unwrap().to_owned(), *length as u64); 
-                None::<()>
-            }).unwrap();
+        fasta_reader.records().par_bridge().for_each(|result| {
+            if let Ok(record) = result {
+                let id = record.id().to_owned();
+                let len = record.seq().len() as u64;
+                chrom_size.lock().unwrap().insert(id, len);
+            }
+        });
     
-        Ok(chrom_size)
+        Ok(Arc::try_unwrap(chrom_size).unwrap().into_inner().unwrap())
     }
 
     pub fn get_chrom_seqs (&self) -> AnyResult<HashMap<String, String>> {
+        use rayon::iter::{ParallelBridge, ParallelIterator};
         let reader = common_reader(&self.file);
-        let reader = FastxReader::new(reader);
-        let mut chrom_seqs: HashMap<String, String> = HashMap::new();
+        let fasta_reader = bio::io::fasta::Reader::new(reader);
+        let chrom_seqs = Arc::new(Mutex::new(HashMap::new()));
 
-        read_process_fastx_records(reader, 8, 4,
-            |record, seq| { // runs in worker
-                *seq = record.seq_lines()
-                                .fold(String::new(), |mut s, seq| {
-                                    s.push_str(&String::from_utf8(seq.to_vec()).unwrap());
-                                    s
-                });
-            },
-            |record, seq| { // runs in main thread
-                chrom_seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
-                None::<()>
-            }).unwrap();
+        fasta_reader.records().par_bridge().for_each(|result| {
+            if let Ok(record) = result {
+                let id = record.id().to_owned();
+                let seq = String::from_utf8(record.seq().to_vec())
+                    .expect("序列包含非 UTF-8 字符");
+                chrom_seqs.lock().unwrap().insert(id, seq);
+            }
+        });
     
-        Ok(chrom_seqs)
+        Ok(Arc::try_unwrap(chrom_seqs).unwrap().into_inner().unwrap())
     }
+    // pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>>  {
+    //     let reader = common_reader(&self.file);
+    //     let reader = FastxReader::new(reader);
+    //     let mut chrom_size: HashMap<String, u64> = HashMap::new();
+
+    //     read_process_fastx_records(reader, 4, 2,
+    //         |record, length| { // runs in worker
+    //             *length = record.seq_lines()
+    //                             .fold(0, |l, seq| l + seq.len());
+    //         },
+    //         |record, length| { // runs in main thread
+    //             chrom_size.insert(record.id().unwrap().to_owned(), *length as u64); 
+    //             None::<()>
+    //         }).unwrap();
+    
+    //     Ok(chrom_size)
+    // }
+
+    // pub fn get_chrom_seqs (&self) -> AnyResult<HashMap<String, String>> {
+    //     let reader = common_reader(&self.file);
+    //     let reader = FastxReader::new(reader);
+    //     let mut chrom_seqs: HashMap<String, String> = HashMap::new();
+
+    //     read_process_fastx_records(reader, 8, 4,
+    //         |record, seq| { // runs in worker
+    //             *seq = record.seq_lines()
+    //                             .fold(String::new(), |mut s, seq| {
+    //                                 s.push_str(&String::from_utf8(seq.to_vec()).unwrap());
+    //                                 s
+    //             });
+    //         },
+    //         |record, seq| { // runs in main thread
+    //             chrom_seqs.insert(record.id().unwrap().to_owned(), seq.to_owned()); 
+    //             None::<()>
+    //         }).unwrap();
+    
+    //     Ok(chrom_seqs)
+    // }
+
+    // pub fn count_re(&self, patterns: &String) -> AnyResult<(hashHashMap<String, u64>, hashHashMap<String, u64>)> {
+    //     use aho_corasick::AhoCorasick;
+    //     let chrom_count: hashHashMap<String, u64> = hashHashMap::new();
+    //     let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
+    //     let pattern_vec_uppercase: Vec<String> = pattern_vec.iter().map(|x| x.to_uppercase()).collect();
+    //     // let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
+    //     // let all_patterns: Vec<&str> = pattern_vec_uppercase
+    //     //                                 .iter()
+    //     //                                 .chain(pattern_vec_lowercase.iter())
+    //     //                                 .map(|x| x.as_str())
+    //     //                                 .collect();
+        
+    //     let chrom_count_mutex = Mutex::new(hashHashMap::new());
+    //     let chrom_length_mutex = Mutex::new(hashHashMap::new());
+        
+        
+    //     let ac = AhoCorasick::new(&pattern_vec_uppercase).unwrap();
+
+    //     log::set_max_level(log::LevelFilter::Off);
+    //     let reader = common_reader(&self.file);
+    //     log::set_max_level(log::LevelFilter::Info);
+    //     let reader = FastxReader::new(reader);
+
+        
+    //     read_process_fastx_records(
+    //         reader,
+    //         4, // Number of worker threads
+    //         2, // Number of partitions
+    //         |record, (count, length)| {
+    //             // Worker thread: Count matches for all patterns
+    //             let sequence = record.seq().to_ascii_uppercase();
+    //             let mut local_count = 0u64;
+
+    //             for mat in ac.find_iter(&sequence) {
+    //                 local_count += 1;
+    //             }
+
+    //             *length = record.seq_lines().fold(0, |l, seq| l + seq.len());
+                
+    //             *count = local_count;
+    //         },
+    //         |record, (count, length)| {
+    //             let mut chrom_count = chrom_count_mutex.lock().unwrap();
+    //             chrom_count
+    //                 .entry(record.id().unwrap().to_owned())
+    //                 .or_insert(0)
+    //                 .add_assign(*count as u64);
+    //             let mut chrom_length = chrom_length_mutex.lock().unwrap();
+    //             chrom_length
+    //                 .entry(record.id().unwrap().to_owned())
+    //                 .or_insert(0)
+    //                 .add_assign(*length as u64);
+    //             None::<()>
+    //         },
+    //     ).unwrap();
+        
+    //     let chrom_count = chrom_count_mutex.into_inner().unwrap();
+    //     let chrom_length = chrom_length_mutex.into_inner().unwrap();
+    //     let pattern_count = pattern_vec_uppercase.len() as u64;
+
+    //     Ok((chrom_count, chrom_length))
+    // }
 
     pub fn count_re(&self, patterns: &String) -> AnyResult<(hashHashMap<String, u64>, hashHashMap<String, u64>)> {
         use aho_corasick::AhoCorasick;
-        let chrom_count: hashHashMap<String, u64> = hashHashMap::new();
-        let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
-        let pattern_vec_uppercase: Vec<String> = pattern_vec.iter().map(|x| x.to_uppercase()).collect();
-        // let pattern_vec_lowercase: Vec<String> = pattern_vec.iter().map(|x| x.to_lowercase()).collect();
-        // let all_patterns: Vec<&str> = pattern_vec_uppercase
-        //                                 .iter()
-        //                                 .chain(pattern_vec_lowercase.iter())
-        //                                 .map(|x| x.as_str())
-        //                                 .collect();
-        
-        let chrom_count_mutex = Mutex::new(hashHashMap::new());
-        let chrom_length_mutex = Mutex::new(hashHashMap::new());
-        
-        
-        let ac = AhoCorasick::new(&pattern_vec_uppercase).unwrap();
+        use rayon::iter::{ParallelBridge, ParallelIterator};
 
-        log::set_max_level(log::LevelFilter::Off);
+        let pattern_vec: Vec<String> = patterns.split(',').map(|s| s.to_uppercase()).collect();
+        let ac = AhoCorasick::new(&pattern_vec).unwrap();
+
+        let chrom_count = Arc::new(Mutex::new(hashHashMap::new()));
+        let chrom_length = Arc::new(Mutex::new(hashHashMap::new()));
+
         let reader = common_reader(&self.file);
-        log::set_max_level(log::LevelFilter::Info);
-        let reader = FastxReader::new(reader);
+        let fasta_reader = bio::io::fasta::Reader::new(reader);
 
-        
-        read_process_fastx_records(
-            reader,
-            4, // Number of worker threads
-            2, // Number of partitions
-            |record, (count, length)| {
-                // Worker thread: Count matches for all patterns
-                let sequence = record.seq().to_ascii_uppercase();
+        fasta_reader.records().par_bridge().for_each(|result| {
+            if let Ok(record) = result {
+                let id = record.id().to_owned();
+                let mut seq = record.seq().to_vec();
+                seq.make_ascii_uppercase();
+
                 let mut local_count = 0u64;
-
-                for mat in ac.find_iter(&sequence) {
+                for _ in ac.find_iter(&seq) {
                     local_count += 1;
                 }
 
-                *length = record.seq_lines().fold(0, |l, seq| l + seq.len());
-                
-                *count = local_count;
-            },
-            |record, (count, length)| {
-                let mut chrom_count = chrom_count_mutex.lock().unwrap();
-                chrom_count
-                    .entry(record.id().unwrap().to_owned())
-                    .or_insert(0)
-                    .add_assign(*count as u64);
-                let mut chrom_length = chrom_length_mutex.lock().unwrap();
-                chrom_length
-                    .entry(record.id().unwrap().to_owned())
-                    .or_insert(0)
-                    .add_assign(*length as u64);
-                None::<()>
-            },
-        ).unwrap();
-        
-        let chrom_count = chrom_count_mutex.into_inner().unwrap();
-        let chrom_length = chrom_length_mutex.into_inner().unwrap();
-        let pattern_count = pattern_vec_uppercase.len() as u64;
+                let seq_len = seq.len() as u64;
 
-        Ok((chrom_count, chrom_length))
-    }
+                {
+                    let mut c_map = chrom_count.lock().unwrap();
+                    c_map.entry(id.clone()).or_insert(0).add_assign(local_count);
+                    
+                    let mut l_map = chrom_length.lock().unwrap();
+                    l_map.entry(id).or_insert(0).add_assign(seq_len);
+                }
+            }
+        });
 
-    pub fn count_re2(&self, patterns: &String) -> AnyResult<IndexMap<String, u64>> {
-        
-        let mut chrom_count: IndexMap<String, u64> = IndexMap::new();
-        let pattern_vec = patterns.split(",").collect::<Vec<&str>>();
-    
-        // convert to uppercase
-        let pattern_vec_uppercase = pattern_vec.iter().map(|x| x.to_uppercase()).collect::<Vec<String>>();
-        for pattern in &pattern_vec_uppercase {
-            log::info!("Counting restriction site `{}` in `{}`", pattern, self.file);
-        }
-        // convert to lowercase
-        let pattern_vec_lowercase = pattern_vec.iter().map(|x| x.to_lowercase()).collect::<Vec<String>>();
-        // merge two vectors
-        let pattern_vec = pattern_vec_uppercase.iter().chain(pattern_vec_lowercase.iter()).collect::<Vec<&String>>();
+        let final_count = Arc::try_unwrap(chrom_count).unwrap().into_inner().unwrap();
+        let final_len = Arc::try_unwrap(chrom_length).unwrap().into_inner().unwrap();
 
-
-        for pattern in pattern_vec {
-            log::set_max_level(log::LevelFilter::Off);
-            let reader = common_reader(&self.file);
-            log::set_max_level(log::LevelFilter::Info);
-            let reader = FastxReader::new(reader);
-            read_process_fastx_records(reader, 4, 2,
-                |record, count| { // runs in worker
-                    *count = record.seq().windows(pattern.len()).filter(|&x| x == pattern.as_bytes()).count();
-                                    
-                },
-                |record, count| { // runs in main thread
-                    chrom_count.entry(record.id().unwrap().to_owned()).or_insert(0).add_assign(*count as u64);
-                    None::<()>
-                }).unwrap();
-        }
-        
-    
-        Ok(chrom_count)
+        Ok((final_count, final_len))
     }
 
     pub fn digest(&self, patterns: &String, slope: i64) -> AnyResult<HashMap<String, Vec<Vec<i64>>>> {
@@ -843,25 +879,149 @@ impl Fastx {
     //     Ok(())
     // }
 
+    // pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
+    //     let reader = common_reader(cluster_file);
+        
+    //     let mut cluster_map: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+    //     let mut groups = HashSet::new(); // Use HashSet to avoid duplicates
+
+    //     for line in reader.lines() {
+    //         let line = line.unwrap();
+    //         let line = line.trim();
+    //         if line.is_empty() { continue; }
+    //         let parts = line.split("\t").collect::<Vec<&str>>();
+    //         if parts.len() < 3 { continue; }
+            
+    //         let group = parts[0].to_string();
+    //         groups.insert(group.clone());
+
+    //         let contigs = parts[2].split(" ").collect::<Vec<&str>>();
+    //         for contig in contigs {
+                
+    //             if let Some(idx) = contig.rfind('|') {
+    //                 let raw_id = &contig[..idx];
+    //                 let range_part = &contig[idx+1..];
+    //                 if let Some(sep_idx) = range_part.find('_') {
+    //                     let start_str = &range_part[..sep_idx];
+    //                     let end_str = &range_part[sep_idx+1..];
+    //                     if let (Ok(start), Ok(end)) = (start_str.parse::<usize>(), end_str.parse::<usize>()) {
+    //                         cluster_map.entry(raw_id.to_string())
+    //                             .or_insert_with(Vec::new)
+    //                             .push((group.clone(), start, end));
+    //                     }
+    //                 }
+    //             } else {
+                    
+    //                 cluster_map.entry(contig.to_string())
+    //                     .or_insert_with(Vec::new)
+    //                     .push((group.clone(), 0, usize::MAX));
+    //             }
+    //         }
+    //     }
+
+    //     // Wrap cluster_map in Arc for parallel access
+    //     let cluster_map = Arc::new(cluster_map);
+
+    //     let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
+    //     for group in groups {
+    //         let writer = common_writer(&format!("{}.contigs.fasta", group));
+    //         writer_map.insert(group, writer);
+    //     }
+
+    //     let trim_threshold = trim_length * 3;
+
+    //     // Use seq_io for parallel processing
+    //     let reader = common_reader(&self.file);
+    //     let reader = FastxReader::new(reader);
+
+    //     read_process_fastx_records(
+    //         reader,
+    //         4, // threads
+    //         2, // queue size
+    //         |record, buffer: &mut Vec<(String, String)>| { // Worker thread: Process and Format
+    //             buffer.clear();
+    //             let id = match record.id() {
+    //                 Ok(s) => s,
+    //                 Err(_) => return,
+    //             };
+                
+    //             if let Some(targets) = cluster_map.get(id) {
+    //                 let full_seq = record.seq();
+    //                 let full_len = full_seq.len();
+
+    //                 for (group, req_start, req_end) in targets {
+    //                     let mut start = *req_start;
+    //                     let mut end = *req_end;
+
+    //                     if end == usize::MAX {
+    //                         end = full_len;
+    //                     }
+
+    //                     if start >= full_len { continue; }
+    //                     if end > full_len { end = full_len; }
+    //                     if start >= end { continue; }
+
+    //                     let slice_len = end - start;
+    //                     if slice_len > trim_threshold {
+    //                         if start < trim_length {
+    //                             start += trim_length;
+    //                         }
+                            
+    //                         if slice_len > trim_threshold {
+    //                             let mut effective_end = end;
+    //                             if (effective_end - start) > trim_threshold {
+    //                                     effective_end -= trim_length;
+    //                             }
+    //                             end = effective_end;
+    //                         }
+    //                     }
+    //                     if start >= end { continue; }
+
+    //                     let seq_slice = &full_seq[start..end];
+    //                     let seq_str = String::from_utf8_lossy(seq_slice);
+                        
+    //                     let header = if *req_end == usize::MAX {
+    //                         id.to_string()
+    //                     } else {
+    //                         format!("{}|{}_{}", id, start, end)
+    //                     };
+
+    //                     // Format the output string here in parallel
+    //                     let output = format!(">{}\n{}\n", header, seq_str);
+    //                     buffer.push((group.clone(), output));
+    //                 }
+    //             }
+    //         },
+    //         |_, buffer: &mut Vec<(String, String)>| { // Main thread: Write to files
+    //             for (group, content) in buffer.iter() {
+    //                 if let Some(writer) = writer_map.get_mut(group) {
+    //                     writer.write_all(content.as_bytes()).unwrap();
+    //                 }
+    //             }
+    //             None::<()>
+    //         }
+    //     ).unwrap();
+
+    //     Ok(())
+    // }
     pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
         let reader = common_reader(cluster_file);
         
         let mut cluster_map: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
-        let mut groups = HashSet::new(); // Use HashSet to avoid duplicates
+        let mut groups = HashSet::new();
 
         for line in reader.lines() {
-            let line = line.unwrap();
+            let line = line?;
             let line = line.trim();
             if line.is_empty() { continue; }
-            let parts = line.split("\t").collect::<Vec<&str>>();
+            let parts = line.split('\t').collect::<Vec<&str>>();
             if parts.len() < 3 { continue; }
             
             let group = parts[0].to_string();
             groups.insert(group.clone());
 
-            let contigs = parts[2].split(" ").collect::<Vec<&str>>();
+            let contigs = parts[2].split(' ').collect::<Vec<&str>>();
             for contig in contigs {
-                
                 if let Some(idx) = contig.rfind('|') {
                     let raw_id = &contig[..idx];
                     let range_part = &contig[idx+1..];
@@ -875,7 +1035,6 @@ impl Fastx {
                         }
                     }
                 } else {
-                    
                     cluster_map.entry(contig.to_string())
                         .or_insert_with(Vec::new)
                         .push((group.clone(), 0, usize::MAX));
@@ -883,9 +1042,7 @@ impl Fastx {
             }
         }
 
-        // Wrap cluster_map in Arc for parallel access
         let cluster_map = Arc::new(cluster_map);
-
         let mut writer_map: HashMap<String, Box<dyn Write + Send>> = HashMap::new();
         for group in groups {
             let writer = common_writer(&format!("{}.contigs.fasta", group));
@@ -893,21 +1050,25 @@ impl Fastx {
         }
 
         let trim_threshold = trim_length * 3;
+        
+        let (tx, rx) = bounded::<(String, String)>(2000);
 
-        // Use seq_io for parallel processing
+        let writer_handle = thread::spawn(move || {
+            let mut writer_map = writer_map;
+            while let Ok((group, content)) = rx.recv() {
+                if let Some(writer) = writer_map.get_mut(&group) {
+                    let _ = writer.write_all(content.as_bytes());
+                }
+            }
+        });
+
         let reader = common_reader(&self.file);
-        let reader = FastxReader::new(reader);
+        let fasta_reader = bio::io::fasta::Reader::new(reader);
 
-        read_process_fastx_records(
-            reader,
-            4, // threads
-            2, // queue size
-            |record, buffer: &mut Vec<(String, String)>| { // Worker thread: Process and Format
-                buffer.clear();
-                let id = match record.id() {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
+        // 使用 Rayon 进行并行处理
+        fasta_reader.records().par_bridge().for_each_with(tx, |tx, result| {
+            if let Ok(record) = result {
+                let id = record.id();
                 
                 if let Some(targets) = cluster_map.get(id) {
                     let full_seq = record.seq();
@@ -917,26 +1078,17 @@ impl Fastx {
                         let mut start = *req_start;
                         let mut end = *req_end;
 
-                        if end == usize::MAX {
-                            end = full_len;
-                        }
-
+                        if end == usize::MAX { end = full_len; }
                         if start >= full_len { continue; }
                         if end > full_len { end = full_len; }
                         if start >= end { continue; }
 
                         let slice_len = end - start;
                         if slice_len > trim_threshold {
-                            if start < trim_length {
-                                start += trim_length;
-                            }
+                            if start < trim_length { start += trim_length; }
                             
-                            if slice_len > trim_threshold {
-                                let mut effective_end = end;
-                                if (effective_end - start) > trim_threshold {
-                                        effective_end -= trim_length;
-                                }
-                                end = effective_end;
+                            if (end - start) > trim_threshold {
+                                end -= trim_length;
                             }
                         }
                         if start >= end { continue; }
@@ -950,21 +1102,14 @@ impl Fastx {
                             format!("{}|{}_{}", id, start, end)
                         };
 
-                        // Format the output string here in parallel
                         let output = format!(">{}\n{}\n", header, seq_str);
-                        buffer.push((group.clone(), output));
+                        let _ = tx.send((group.clone(), output));
                     }
                 }
-            },
-            |_, buffer: &mut Vec<(String, String)>| { // Main thread: Write to files
-                for (group, content) in buffer.iter() {
-                    if let Some(writer) = writer_map.get_mut(group) {
-                        writer.write_all(content.as_bytes()).unwrap();
-                    }
-                }
-                None::<()>
             }
-        ).unwrap();
+        });
+
+        writer_handle.join().unwrap();
 
         Ok(())
     }

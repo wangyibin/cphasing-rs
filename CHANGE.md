@@ -1,3 +1,11 @@
+## [v0.2.5] - 20250122
+#### Enhancement
+- `porec-break`, speed up this code by parallel
+#### bug fixes
+- fixed bug of `pairs2bam` when any contig can not be found in header
+- fixed bug of `count_re` and `chromsizes` that can not parse >2Gb contig
+
+
 ## [v0.2.4] - 20250108
 - `porec2pairs`, speed up it 
 - `paf2depth`, speed up it 

@@ -1719,74 +1719,192 @@ impl PoreCTable {
     //     log::info!("Successful output intersection porec table into `{}`", output);
     // }
 
-    pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
-        type IvString = Interval<usize, String>;
-        let bed = Bed4::new(break_bed);
-        let interval_hash = bed.to_interval_hash();
-        let writer = common_writer(output);
-        let mut wtr = csv::WriterBuilder::new()
-                        .has_headers(false)
-                        .delimiter(b'\t')
-                        .from_writer(writer);
+    // pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
+    //     type IvString = Interval<usize, String>;
+    //     let bed = Bed4::new(break_bed);
+    //     let interval_hash = bed.to_interval_hash();
+    //     let writer = common_writer(output);
+    //     let mut wtr = csv::WriterBuilder::new()
+    //                     .has_headers(false)
+    //                     .delimiter(b'\t')
+    //                     .from_writer(writer);
 
-        for (i, line) in self.parse().unwrap().records().enumerate() {
-            let record = match line {
-                Ok(v) => v,
-                Err(error) => {
-                    log::warn!("Could not parse line {}", i + 1);
-                    continue
-                },
-            };
+    //     for (i, line) in self.parse().unwrap().records().enumerate() {
+    //         let record = match line {
+    //             Ok(v) => v,
+    //             Err(error) => {
+    //                 log::warn!("Could not parse line {}", i + 1);
+    //                 continue
+    //             },
+    //         };
 
 
-            let target_start = record[6].parse::<usize>().unwrap();
-            let target_end = record[7].parse::<usize>().unwrap();
+    //         let target_start = record[6].parse::<usize>().unwrap();
+    //         let target_end = record[7].parse::<usize>().unwrap();
             
-            let is_break_contig = interval_hash.contains_key(&record[5]);
+    //         let is_break_contig = interval_hash.contains_key(&record[5]);
             
-            if is_break_contig {
+    //         if is_break_contig {
                 
-                let interval = interval_hash.get(&record[5]).unwrap();
-                let res = interval.find(target_start, target_end).collect::<Vec<_>>();
+    //             let interval = interval_hash.get(&record[5]).unwrap();
+    //             let res = interval.find(target_start, target_end).collect::<Vec<_>>();
                 
-                if res.len() > 0 {
-                    let break_contig_length = res[0].stop - res[0].start + 1;
-                    let new_target_start = target_start - res[0].start + 1;
-                    let new_target_end = target_end - res[0].start + 1;
-                    if new_target_end <= break_contig_length {
-                        let mut new_record = csv::StringRecord::new();
-                        new_record.push_field(&record[0]);
-                        new_record.push_field(&record[1]);
-                        new_record.push_field(&record[2]);
-                        new_record.push_field(&record[3]);
-                        new_record.push_field(&record[4]);
-                        // let target = record[5].to_string();
-                        // let new_target = format!("{}:{}-{}", target, res[0].start, res[0].stop);
-                        let new_target = &res[0].val;
-                        new_record.push_field(&new_target);
+    //             if res.len() > 0 {
+    //                 let break_contig_length = res[0].stop - res[0].start + 1;
+    //                 let new_target_start = target_start - res[0].start + 1;
+    //                 let new_target_end = target_end - res[0].start + 1;
+    //                 if new_target_end <= break_contig_length {
+    //                     let mut new_record = csv::StringRecord::new();
+    //                     new_record.push_field(&record[0]);
+    //                     new_record.push_field(&record[1]);
+    //                     new_record.push_field(&record[2]);
+    //                     new_record.push_field(&record[3]);
+    //                     new_record.push_field(&record[4]);
+    //                     let new_target = &res[0].val;
+    //                     new_record.push_field(&new_target);
                         
                     
-                        new_record.push_field(&new_target_start.to_string());
-                        new_record.push_field(&new_target_end.to_string());
-                        new_record.push_field(&record[8]);
-                        new_record.push_field(&record[9]);
-                        new_record.push_field(&record[10]);
+    //                     new_record.push_field(&new_target_start.to_string());
+    //                     new_record.push_field(&new_target_end.to_string());
+    //                     new_record.push_field(&record[8]);
+    //                     new_record.push_field(&record[9]);
+    //                     new_record.push_field(&record[10]);
                     
                     
-                        let _ = wtr.write_record(&new_record);
-                    }
+    //                     let _ = wtr.write_record(&new_record);
+    //                 }
                    
 
-                } else {
-                    let _ = wtr.write_record(&record);
-                }
+    //             } else {
+    //                 let _ = wtr.write_record(&record);
+    //             }
                
                
-            } else {
-                let _ = wtr.write_record(&record);
-            }
+    //         } else {
+    //             let _ = wtr.write_record(&record);
+    //         }
 
+    //     }
+    //     log::info!("Successful output contigs corrected porec table into `{}`", output);
+    // }
+
+
+    pub fn break_contigs(&mut self, break_bed: &String, output: &String, threads: usize) {
+        type IvString = Interval<usize, String>;
+        let bed = Bed4::new(break_bed);
+   
+        let interval_hash = Arc::new(bed.to_interval_hash());
+
+        let wtr_file = common_writer(output);
+        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, wtr_file);
+
+        let (sender, receiver) = bounded::<(usize, Vec<String>)>(200);
+        let (out_sender, out_receiver) = bounded::<(usize, Vec<u8>)>(200);
+
+        let num_workers = threads;
+        let mut handles = vec![];
+
+        for _ in 0..num_workers {
+            let rx = receiver.clone();
+            let tx = out_sender.clone();
+            let ih = Arc::clone(&interval_hash);
+
+            handles.push(thread::spawn(move || {
+                let mut local_buf = Vec::with_capacity(1024 * 1024);
+                while let Ok((chunk_id, batch)) = rx.recv() {
+                    local_buf.clear();
+                    for line in batch {
+                        let trimmed = line.trim_end();
+                        let fields: Vec<&str> = trimmed.split('\t').collect();
+                        
+                        if fields.len() < 8 {
+                            local_buf.extend_from_slice(line.as_bytes());
+                            local_buf.push(b'\n');
+                            continue;
+                        }
+
+                        let target = fields[5];
+                        let mut processed = false;
+
+                        if let Some(intervals) = ih.get(target) {
+                            if let (Ok(t_start), Ok(t_end)) = (fields[6].parse::<usize>(), fields[7].parse::<usize>()) {
+                                if let Some(iv) = intervals.find(t_start, t_end).next() {
+                                    let break_contig_length = iv.stop - iv.start + 1;
+                                    
+                                    if t_start >= iv.start {
+                                        let new_target_start = t_start - iv.start + 1;
+                                        let new_target_end = t_end - iv.start + 1;
+
+                                        if new_target_end <= break_contig_length {
+                                            for i in 0..5 {
+                                                local_buf.extend_from_slice(fields[i].as_bytes());
+                                                local_buf.push(b'\t');
+                                            }
+                                            local_buf.extend_from_slice(iv.val.as_bytes());
+                                            local_buf.push(b'\t');
+                           
+                                            let _ = write!(local_buf, "{}\t{}\t", new_target_start, new_target_end);
+                                            for i in 8..=10 {
+                                                if i < fields.len() {
+                                                    local_buf.extend_from_slice(fields[i].as_bytes());
+                                                }
+                                                if i < 10 { local_buf.push(b'\t'); }
+                                            }
+                                            local_buf.push(b'\n');
+                                            processed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !processed {
+                            local_buf.extend_from_slice(line.as_bytes());
+                            local_buf.push(b'\n');
+                        }
+                    }
+                    tx.send((chunk_id, local_buf.clone())).unwrap();
+                }
+            }));
         }
+        drop(out_sender); 
+
+        let write_handle = thread::spawn(move || {
+            let mut pending = std::collections::BTreeMap::new();
+            let mut next_chunk = 0;
+            while let Ok((chunk_id, data)) = out_receiver.recv() {
+                pending.insert(chunk_id, data);
+                while let Some(data) = pending.remove(&next_chunk) {
+                    writer.write_all(&data).unwrap();
+                    next_chunk += 1;
+                }
+            }
+            writer.flush().unwrap();
+        });
+
+        let mut rdr = self.parse2().expect("Failed to open table for reading");
+        let batch_size = 5000;
+        let mut batch = Vec::with_capacity(batch_size);
+        let mut chunk_id = 0;
+
+        for line_res in rdr.lines() {
+            if let Ok(line) = line_res {
+                batch.push(line);
+                if batch.len() >= batch_size {
+                    sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
+                    batch = Vec::with_capacity(batch_size);
+                    chunk_id += 1;
+                }
+            }
+        }
+        if !batch.is_empty() {
+            sender.send((chunk_id, batch)).unwrap();
+        }
+        drop(sender);
+
+        for h in handles { h.join().unwrap(); }
+        write_handle.join().unwrap();
+
         log::info!("Successful output contigs corrected porec table into `{}`", output);
     }
 

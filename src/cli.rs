@@ -1,10 +1,24 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{arg, Arg, ArgAction, Command, 
-            Subcommand, value_parser, ColorChoice};
+use clap::{arg, Arg, ArgAction, 
+            builder::{
+                styling::{AnsiColor, Effects},
+                Styles,
+            },
+            Command, 
+            Subcommand, 
+            value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.4";
+const VERSION: &str = "0.2.5";
+
+
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::Yellow.on_default());
+
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -12,6 +26,7 @@ pub fn cli() -> Command {
         .about("Phasing and scaffolding based on Pore-C or Hi-C data")
         .subcommand_required(true)
         .version(VERSION)
+        .styles(STYLES)
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
         .subcommand(
@@ -181,6 +196,7 @@ pub fn cli() -> Command {
                                 .value_parser(value_parser!(String))
                                 .default_value("-")
                                 .help("output file, default is stdout"))
+                        .arg_required_else_help(true),
         )
         .subcommand(
             Command::new("alleles")
@@ -923,6 +939,14 @@ pub fn cli() -> Command {
                 .alias("con-break")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<BREAK_BED> "break points in bed format"))
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                        .help("number of threads")
+                )
                 .arg(
                     Arg::new("OUTPUT")
                         .long("output")

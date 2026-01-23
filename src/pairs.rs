@@ -522,7 +522,22 @@ impl Pairs {
                     if filter_mapq && record.len() >= 8 && mapq < min_quality {
                         continue;
                     }
-           
+                    
+                    let tid1 = match bam_header_view.tid(record[1].as_bytes()) {
+                        Some(tid) => tid as i32,
+                        None => {
+                            // log::warn!("Contig {} not found in header, skipping record {}", &record[1], id);
+                            continue;
+                        }
+                    };
+
+                    let tid2 = match bam_header_view.tid(record[3].as_bytes()) {
+                        Some(tid) => tid as i32,
+                        None => {
+                            // log::warn!("Contig {} not found in header, skipping record {}", &record[3], id);
+                            continue;
+                        }
+                    };
 
                     let flag1 = 65;
 
@@ -532,10 +547,10 @@ impl Pairs {
                         let cigar = CigarString(vec![Cigar::Match(150)]);
                         let cigar: Option<&CigarString> = Some(&cigar);
                         bam_record1.set(record[0].as_bytes(), cigar, &[], &[]);
-                        bam_record1.set_tid(bam_header_view.tid(record[1].as_bytes()).unwrap().try_into().unwrap());
+                        bam_record1.set_tid(tid1);
                         bam_record1.set_pos(record[2].parse::<i64>().unwrap());
                         bam_record1.set_mapq(60);
-                        bam_record1.set_mtid(bam_header_view.tid(record[3].as_bytes()).unwrap().try_into().unwrap());
+                        bam_record1.set_mtid(tid2);
                         bam_record1.set_mpos(record[4].parse::<i64>().unwrap());
                         bam_record1.set_insert_size(0);
                         // bam_record1.set_qname(record[0].as_bytes());
@@ -553,10 +568,10 @@ impl Pairs {
                         let cigar = CigarString(vec![Cigar::Match(150)]);
                         let cigar: Option<&CigarString> = Some(&cigar);
                         bam_record2.set(record[0].as_bytes(), cigar, &[], &[]);
-                        bam_record2.set_tid(bam_header_view.tid(record[3].as_bytes()).unwrap().try_into().unwrap());
+                        bam_record2.set_tid(tid2);
                         bam_record2.set_pos(record[4].parse::<i64>().unwrap());
                         bam_record2.set_mapq(mapq);
-                        bam_record2.set_mtid(bam_header_view.tid(record[1].as_bytes()).unwrap().try_into().unwrap());
+                        bam_record2.set_mtid(tid1);
                         bam_record2.set_mpos(record[2].parse::<i64>().unwrap());
                         bam_record2.set_insert_size(0);
                         // bam_record2.set_qname(record[0].as_bytes());
@@ -1544,9 +1559,9 @@ impl Pairs {
                                 .map_or(true, |mapq| mapq >= min_quality)
                             {
                                 let chrom1 = fields[1];
-                                let pos1 = fields[2].parse::<usize>().unwrap();
+                                let pos1 = fields[2].parse::<usize>().ok()?;
                                 let chrom2 = fields[3];
-                                let pos2 = fields[4].parse::<usize>().unwrap();
+                                let pos2 = fields[4].parse::<usize>().ok()?;
                                 
                                 if edge_length > 0 {
                                     let size1 = *contigsizes.get(chrom1).unwrap_or(&0);
@@ -1578,8 +1593,6 @@ impl Pairs {
                             None
                         })
                         .collect();
-                    
-
                     
                     if !data.is_empty() {
                         let data = data.join("\n") + "\n";

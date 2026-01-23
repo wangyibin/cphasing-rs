@@ -42,7 +42,11 @@ compilers = ">=1.6.0"
 make = ">=4.3,<5"
 mold = ">=2.33.0,<3.0"
 
+[feature.conda.dependencies]
+conda-build = ">=25.11.1,<26"
+
 [environments]
 default = {features = [
     "build",
 ]}
+conda = {features = ["conda"]}
