@@ -9,10 +9,13 @@ keywords = ["polyploids", "genome", "assembly", "haplotype-resolved", "pore-c"]
 categories = ["command-line-utilities", "science"]
 
 [package.metadata.release]
+tag-name = "v{{version}}"
+tag = true
 pre-release-replacements = [
   { file = "pixi.toml", search = '(?m)^version = "[^"]*"', replace = 'version = "{{version}}"', exactly = 1 },
   { file = "recipe.yaml", search = '(?m)^\s*version:.*', replace = '  version: {{version}}', exactly = 1 },
 ]
+
 
 [[bin]]
 name = "cphasing-rs"
