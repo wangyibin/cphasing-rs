@@ -49,7 +49,7 @@ impl BaseTable for CountRE {
 
 impl CountRE {
     pub fn parse(&mut self) {
-        let mut input = common_reader(&self.file);
+        let input = common_reader(&self.file);
         for (line_number, line) in input.lines().enumerate() {
             match line {
                 Ok(content) => {

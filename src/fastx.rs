@@ -18,6 +18,7 @@ use std::path::Path;
 use std::ops::AddAssign;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use needletail::{parse_fastx_file, Sequence};
 
 use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
@@ -73,40 +74,69 @@ impl BaseTable for Fastx {
 }
 
 impl Fastx {
-    pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>>  {
-        use rayon::iter::{ParallelBridge, ParallelIterator};
-        let reader = common_reader(&self.file);
-        let fasta_reader = bio::io::fasta::Reader::new(reader);
-        let chrom_size = Arc::new(Mutex::new(HashMap::new()));
+    // pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>>  {
+    //     use rayon::iter::{ParallelBridge, ParallelIterator};
+    //     let reader = common_reader(&self.file);
+    //     let fasta_reader = bio::io::fasta::Reader::new(reader);
+    //     let chrom_size = Arc::new(Mutex::new(HashMap::new()));
 
-        fasta_reader.records().par_bridge().for_each(|result| {
-            if let Ok(record) = result {
-                let id = record.id().to_owned();
-                let len = record.seq().len() as u64;
-                chrom_size.lock().unwrap().insert(id, len);
-            }
-        });
+    //     fasta_reader.records().par_bridge().for_each(|result| {
+    //         if let Ok(record) = result {
+    //             let id = record.id().to_owned();
+    //             let len = record.seq().len() as u64;
+    //             chrom_size.lock().unwrap().insert(id, len);
+    //         }
+    //     });
     
-        Ok(Arc::try_unwrap(chrom_size).unwrap().into_inner().unwrap())
+    //     Ok(Arc::try_unwrap(chrom_size).unwrap().into_inner().unwrap())
+    // }
+
+    // pub fn get_chrom_seqs (&self) -> AnyResult<HashMap<String, String>> {
+    //     use rayon::iter::{ParallelBridge, ParallelIterator};
+    //     let reader = common_reader(&self.file);
+    //     let fasta_reader = bio::io::fasta::Reader::new(reader);
+    //     let chrom_seqs = Arc::new(Mutex::new(HashMap::new()));
+
+    //     fasta_reader.records().par_bridge().for_each(|result| {
+    //         if let Ok(record) = result {
+    //             let id = record.id().to_owned();
+    //             let seq = String::from_utf8(record.seq().to_vec())
+    //                 .expect("Invalid UTF-8 sequence");
+    //             chrom_seqs.lock().unwrap().insert(id, seq);
+    //         }
+    //     });
+    
+    //     Ok(Arc::try_unwrap(chrom_seqs).unwrap().into_inner().unwrap())
+    // }
+
+    pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>> {
+        let mut reader = needletail::parse_fastx_file(&self.file)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        let mut chrom_size = HashMap::new();
+        while let Some(record) = reader.next() {
+            let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+            
+            chrom_size.insert(id, seq_rec.num_bases() as u64);
+        }
+        Ok(chrom_size)
     }
 
-    pub fn get_chrom_seqs (&self) -> AnyResult<HashMap<String, String>> {
-        use rayon::iter::{ParallelBridge, ParallelIterator};
-        let reader = common_reader(&self.file);
-        let fasta_reader = bio::io::fasta::Reader::new(reader);
-        let chrom_seqs = Arc::new(Mutex::new(HashMap::new()));
+    pub fn get_chrom_seqs(&self) -> AnyResult<HashMap<String, String>> {
+        let mut reader = needletail::parse_fastx_file(&self.file)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut chrom_seqs = HashMap::new();
 
-        fasta_reader.records().par_bridge().for_each(|result| {
-            if let Ok(record) = result {
-                let id = record.id().to_owned();
-                let seq = String::from_utf8(record.seq().to_vec())
-                    .expect("序列包含非 UTF-8 字符");
-                chrom_seqs.lock().unwrap().insert(id, seq);
-            }
-        });
-    
-        Ok(Arc::try_unwrap(chrom_seqs).unwrap().into_inner().unwrap())
+        while let Some(record) = reader.next() {
+            let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+            let seq = String::from_utf8(seq_rec.seq().to_vec())?;
+            chrom_seqs.insert(id, seq);
+        }
+        Ok(chrom_seqs)
     }
+
     // pub fn get_chrom_size(&self) -> AnyResult<HashMap<String, u64>>  {
     //     let reader = common_reader(&self.file);
     //     let reader = FastxReader::new(reader);
@@ -305,138 +335,361 @@ impl Fastx {
         
         Ok(positions)
     }
-    pub fn slidefasta(&self, output: &String, window: u64, step: u64)  -> AnyResult<()>{
-        use std::fmt::Write;
+
+
+    pub fn slidefasta(&self, output: &String, window: u64, step: u64) -> AnyResult<()> {
+        use itoa;
+        use std::io::Write as _;
+
         let window = window as usize;
-        let step = step as usize;
-        let step = if step == 0 { window } else { step };
-        let reader = common_reader(&self.file);
+        let step = if step == 0 { window } else { step as usize };
 
-        let reader = bio::io::fasta::Reader::new(reader);
-        
-        
-        let writer = common_writer(output);
-        let wtr = bio::io::fasta::Writer::new(writer);
-        let wtr = Arc::new(Mutex::new(wtr));
-        let (sender, receiver) = bounded::<(String, Vec<u8>)>(100);
-        let consumer_count = 8;
-        let mut handles = Vec::new();
-        for _ in 0..consumer_count {
-            let receiver = receiver.clone();
-            let writer = Arc::clone(&wtr);
+        let num_workers = rayon::current_num_threads().max(4).min(32);
+        let writer_capacity = 64; 
+        let pool_size = writer_capacity + num_workers + 8; 
+    
+        let (tx_writer, rx_writer) = bounded::<Vec<u8>>(writer_capacity); 
+        let (tx_free, rx_free) = unbounded::<Vec<u8>>();
+        for _ in 0..pool_size { 
+            tx_free.send(Vec::with_capacity(16 * 1024 * 1024)).unwrap(); 
+        }
 
-            handles.push(thread::spawn(move || {
-                
-                while let Ok((id, seq_bytes)) = receiver.recv() {
-                    let seq_length = seq_bytes.len();
-                    let seq_str = match std::str::from_utf8(&seq_bytes) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            log::error!("Invalid UTF-8: {}", e);
-                            continue;
-                        }
-                    };
-                    let mut start = 0;
-                    let mut end = window.min(seq_length);
-                    let mut vec = Vec::new();
-                    let mut name_buf = String::with_capacity(64);
-                    while start < seq_length {
-                        name_buf.clear();
-                        let _ = write!(name_buf, "{}:{}-{}", id, start, end);
-                        let record = bio::io::fasta::Record::with_attrs(
-                            &name_buf,
-                            None,
-                            &seq_str[start..end].as_bytes()
-                        );
-                        
-                        vec.push(record);
 
-                        start += step;
-                        end += step;
-                        if end > seq_length {
-                            end = seq_length;
+        let output_clone = output.clone();
+        let tx_free_clone = tx_free.clone();
+        let writer_handle = thread::spawn(move || {
+            let mut writer = common_writer(&output_clone);
+            while let Ok(mut data) = rx_writer.recv() {
+                let _ = writer.write_all(&data);
+                data.clear();
+                let _ = tx_free_clone.send(data); 
+            }
+        });
+
+        let (tx_worker, rx_worker) = bounded::<(String, Arc<Vec<u8>>, usize, usize)>(200);
+        let mut worker_handles = Vec::new();
+        let num_workers = rayon::current_num_threads().max(4); 
+
+        for _ in 0..num_workers {
+            let rx = rx_worker.clone();
+            let tx_w = tx_writer.clone();
+            let rx_f = rx_free.clone();
+            worker_handles.push(thread::spawn(move || {
+                let mut itoa_b = itoa::Buffer::new();
+                let mut batch_buffer = rx_f.recv().unwrap(); 
+
+                while let Ok((id, seq, start_bound, end_bound)) = rx.recv() {
+                    let mut curr = start_bound;
+                    while curr < end_bound {
+                        let end = (curr + window).min(seq.len());
+
+                        batch_buffer.push(b'>');
+                        batch_buffer.extend_from_slice(id.as_bytes());
+                        batch_buffer.push(b':');
+                        batch_buffer.extend_from_slice(itoa_b.format(curr).as_bytes());
+                        batch_buffer.push(b'-');
+                        batch_buffer.extend_from_slice(itoa_b.format(end).as_bytes());
+                        batch_buffer.push(b'\n');
+                        batch_buffer.extend_from_slice(&seq[curr..end]);
+                        batch_buffer.push(b'\n');
+
+                        if batch_buffer.len() > 14 * 1024 * 1024 {
+                            if tx_w.send(batch_buffer).is_err() { return; }
+                            batch_buffer = rx_f.recv().unwrap(); 
                         }
-                    }
-                    {
-                        let mut wtr = writer.lock().unwrap();
-                        for record in vec {
-                            match wtr.write_record(&record) {
-                                Ok(_) => {},
-                                Err(e) => {
-                                    log::error!("Error writing record: {}", e);
-                                }
-                            }
-                        }
+
+                        if end == seq.len() || curr + step >= end_bound { break; }
+                        curr += step;
                     }
                 }
+                if !batch_buffer.is_empty() { let _ = tx_w.send(batch_buffer); }
             }));
         }
 
-        for result in reader.records() {
-            match result {
-                Ok(rec) => {
-                    
-                    if sender.send((rec.id().to_owned(), rec.seq().to_vec())).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    log::error!("Error reading record: {}", e);
-                    continue;
-                }
+        let mut reader = needletail::parse_fastx_file(&self.file)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        while let Some(record) = reader.next() {
+            let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+            let seq = Arc::new(seq_rec.normalize(false).into_owned());
+            
+            let seq_len = seq.len();
+            let chunk_size = 5000 * step; 
+            let mut chunk_start = 0;
+            while chunk_start < seq_len {
+                let chunk_end = (chunk_start + chunk_size).min(seq_len);
+                tx_worker.send((id.clone(), Arc::clone(&seq), chunk_start, chunk_end))?;
+                chunk_start += chunk_size;
             }
         }
 
-        drop(sender);
+        drop(tx_worker);
+        drop(tx_writer);
+        for h in worker_handles { h.join().unwrap(); }
     
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        
-        // for result in reader.records() {
-        //     let record = match result {
-        //         Ok(record) => record,
-        //         Err(e) => {
-        //             log::error!("Error reading record: {}", e);
-        //             continue
-        //         }
-        //     };
-        //     let seq = record.seq();
-        //     let seq_length = seq.len();
-        //     let seq_str = std::str::from_utf8(&seq).unwrap();
-        //     let mut start = 0;
-        //     let mut end = window;
-        //     let mut i = 0;
-        //     if end >= seq_length {
-        //         end = seq_length;
-        //     }
-            
-        //     while start < seq_length {
-        //         let seq_window = &seq_str[start..end as usize];
-        //         let record = bio::io::fasta::Record::with_attrs(format!("{}:{}-{}", record.id(), start, end).as_str(),
-        //                                                     None, seq_window.as_bytes());
-        //         match wtr.write_record(&record) {
-        //             Ok(_) => {},
-        //             Err(e) => {
-        //                 log::error!("Error writing record: {}", e);
-        //             }
-                
-        //         };
-        //         start += step;
-        //         end += step;
-        //         if end >= seq_length {
-        //             end = seq_length;
-        //         }
-                
-        //         i += 1;
-        //     } 
-        // }
-
+        writer_handle.join().unwrap();
         Ok(())
-
-
     }
+
+
+    // pub fn slidefasta(&self, output: &String, window: u64, step: u64) -> AnyResult<()> {
+    //     use itoa;
+    //     use std::io::Write as _;
+
+    //     let window = window as usize;
+    //     let step = step as usize;
+    //     let step = if step == 0 { window } else { step };
+
+    //     let (tx_writer, rx_writer) = bounded::<Vec<u8>>(40); 
+    //     let (tx_free, rx_free) = unbounded::<Vec<u8>>();
+    //     for _ in 0..80 { 
+    //         tx_free.send(Vec::with_capacity(16 * 1024 * 1024)).unwrap(); 
+    //     }
+
+    //     let output_clone = output.clone();
+    //     let tx_free_clone = tx_free.clone();
+    //     let writer_handle = thread::spawn(move || {
+    //         let mut writer = common_writer(&output_clone);
+    //         while let Ok(mut data) = rx_writer.recv() {
+    //             let _ = writer.write_all(&data);
+    //             data.clear();
+    //             let _ = tx_free_clone.send(data); 
+    //         }
+    //     });
+
+    //     let (tx_worker, rx_worker) = bounded::<(String, Vec<u8>)>(100);
+    //     let mut worker_handles = Vec::new();
+    //     let num_workers = rayon::current_num_threads().max(4).min(16); 
+    //     for _ in 0..num_workers {
+    //         let rx = rx_worker.clone();
+    //         let tx_w = tx_writer.clone();
+    //         let rx_f = rx_free.clone();
+    //         worker_handles.push(thread::spawn(move || {
+    //             let mut itoa_b = itoa::Buffer::new();
+    //             let mut batch_buffer = rx_f.recv().unwrap(); 
+                
+    //             while let Ok((id, seq)) = rx.recv() {
+    //                 let seq_len = seq.len();
+    //                 let id_bytes = id.as_bytes();
+    //                 let mut start = 0;
+
+    //                 while start < seq_len {
+    //                     let end = (start + window).min(seq_len);
+
+    //                     batch_buffer.push(b'>');
+    //                     batch_buffer.extend_from_slice(id_bytes);
+    //                     batch_buffer.push(b':');
+    //                     batch_buffer.extend_from_slice(itoa_b.format(start).as_bytes());
+    //                     batch_buffer.push(b'-');
+    //                     batch_buffer.extend_from_slice(itoa_b.format(end).as_bytes());
+    //                     batch_buffer.push(b'\n');
+                        
+    //                     batch_buffer.extend_from_slice(&seq[start..end]);
+    //                     batch_buffer.push(b'\n');
+
+    //                     if batch_buffer.len() > 14 * 1024 * 1024 {
+    //                         if tx_w.send(batch_buffer).is_err() { return; }
+    //                         batch_buffer = rx_f.recv().unwrap(); 
+    //                     }
+
+    //                     if end == seq_len { break; }
+    //                     start += step;
+    //                 }
+    //             }
+    //             if !batch_buffer.is_empty() {
+    //                 let _ = tx_w.send(batch_buffer);
+    //             }
+    //         }));
+    //     }
+
+
+    //     let mut reader = needletail::parse_fastx_file(&self.file)
+    //         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+    //     while let Some(record) = reader.next() {
+    //         let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    //         let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+    //         let seq = seq_rec.normalize(false).into_owned(); 
+    //         if tx_worker.send((id, seq)).is_err() { break; }
+    //     }
+
+    //     drop(tx_worker);
+    //     for h in worker_handles { h.join().unwrap(); }
+    //     drop(tx_writer);
+    //     writer_handle.join().unwrap();
+    //     Ok(())
+    // }
+
+    // pub fn slidefasta(&self, output: &String, window: u64, step: u64) -> AnyResult<()> {
+    //     use std::fmt::Write as _; 
+    //     use std::io::Write as _;  
+
+    //     let window = window as usize;
+    //     let step = step as usize;
+    //     let step = if step == 0 { window } else { step };
+
+    //     let (tx_writer, rx_writer) = bounded::<Vec<u8>>(1000);
+    //     let output_clone = output.clone();
+    //     let writer_handle = thread::spawn(move || {
+    //         let mut writer = common_writer(&output_clone);
+    //         while let Ok(data) = rx_writer.recv() {
+    //             let _ = writer.write_all(&data);
+    //         }
+    //     });
+
+    //     let (tx_worker, rx_worker) = bounded::<(String, Vec<u8>)>(100);
+    //     let mut worker_handles = Vec::new();
+    //     let num_workers = 8;
+
+    //     for _ in 0..num_workers {
+    //         let rx = rx_worker.clone();
+    //         let tx_w = tx_writer.clone();
+    //         worker_handles.push(thread::spawn(move || {
+    //             let mut name_buf = String::with_capacity(128);
+                
+    //             while let Ok((id, seq)) = rx.recv() {
+    //                 let seq_len = seq.len();
+    //                 let mut start = 0;
+                    
+    //                 let mut batch_buffer = Vec::with_capacity(1024 * 1024); 
+
+    //                 while start < seq_len {
+    //                     let mut end = start + window;
+    //                     if end > seq_len { end = seq_len; }
+
+    //                     name_buf.clear();
+    //                     let _ = write!(name_buf, ">{}:{}-{}\n", id, start, end);
+                        
+    //                     batch_buffer.extend_from_slice(name_buf.as_bytes());
+    //                     batch_buffer.extend_from_slice(&seq[start..end]);
+    //                     batch_buffer.push(b'\n');
+
+    //                     if batch_buffer.len() > 8 * 1024 * 1024 { 
+    //                         if tx_w.send(batch_buffer.split_off(0)).is_err() { break; }
+    //                     }
+
+    //                     if end == seq_len { break; }
+    //                     start += step;
+    //                 }
+    //                 if !batch_buffer.is_empty() {
+    //                     let _ = tx_w.send(batch_buffer);
+    //                 }
+    //             }
+    //         }));
+    //     }
+
+
+    //     let mut reader = needletail::parse_fastx_file(&self.file)
+    //         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+    //     while let Some(record) = reader.next() {
+    //         let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    //         let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+    //         let seq = seq_rec.normalize(false).into_owned(); 
+    //         if tx_worker.send((id, seq)).is_err() { break; }
+    //     }
+
+
+    //     drop(tx_worker);
+    //     for h in worker_handles { h.join().unwrap(); }
+    //     drop(tx_writer);
+    //     writer_handle.join().unwrap();
+
+    //     Ok(())
+    // }
+
+    // pub fn slidefasta(&self, output: &String, window: u64, step: u64)  -> AnyResult<()>{
+    //     use std::fmt::Write;
+    //     let window = window as usize;
+    //     let step = step as usize;
+    //     let step = if step == 0 { window } else { step };
+    //     let reader = common_reader(&self.file);
+
+    //     let reader = bio::io::fasta::Reader::new(reader);
+        
+    //     let writer = common_writer(output);
+    //     let wtr = bio::io::fasta::Writer::new(writer);
+    //     let wtr = Arc::new(Mutex::new(wtr));
+    //     let (sender, receiver) = bounded::<(String, Vec<u8>)>(100);
+    //     let consumer_count = 8;
+    //     let mut handles = Vec::new();
+    //     for _ in 0..consumer_count {
+    //         let receiver = receiver.clone();
+    //         let writer = Arc::clone(&wtr);
+
+    //         handles.push(thread::spawn(move || {
+                
+    //             while let Ok((id, seq_bytes)) = receiver.recv() {
+    //                 let seq_length = seq_bytes.len();
+    //                 let seq_str = match std::str::from_utf8(&seq_bytes) {
+    //                     Ok(s) => s,
+    //                     Err(e) => {
+    //                         log::error!("Invalid UTF-8: {}", e);
+    //                         continue;
+    //                     }
+    //                 };
+    //                 let mut start = 0;
+    //                 let mut end = window.min(seq_length);
+    //                 let mut vec = Vec::new();
+    //                 let mut name_buf = String::with_capacity(64);
+    //                 while start < seq_length {
+    //                     name_buf.clear();
+    //                     let _ = write!(name_buf, "{}:{}-{}", id, start, end);
+    //                     let record = bio::io::fasta::Record::with_attrs(
+    //                         &name_buf,
+    //                         None,
+    //                         &seq_str[start..end].as_bytes()
+    //                     );
+                        
+    //                     vec.push(record);
+
+    //                     start += step;
+    //                     end += step;
+    //                     if end > seq_length {
+    //                         end = seq_length;
+    //                     }
+    //                 }
+    //                 {
+    //                     let mut wtr = writer.lock().unwrap();
+    //                     for record in vec {
+    //                         match wtr.write_record(&record) {
+    //                             Ok(_) => {},
+    //                             Err(e) => {
+    //                                 log::error!("Error writing record: {}", e);
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }));
+    //     }
+
+    //     for result in reader.records() {
+    //         match result {
+    //             Ok(rec) => {
+                    
+    //                 if sender.send((rec.id().to_owned(), rec.seq().to_vec())).is_err() {
+    //                     break;
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 log::error!("Error reading record: {}", e);
+    //                 continue;
+    //             }
+    //         }
+    //     }
+
+    //     drop(sender);
+    
+    //     for handle in handles {
+    //         handle.join().unwrap();
+    //     }
+
+    //     Ok(())
+
+    // }
+
     pub fn slide(&self, output: &String, 
                     window: u64, step: u64, 
                     min_length: u64, filetype: &str,
@@ -1004,6 +1257,7 @@ impl Fastx {
 
     //     Ok(())
     // }
+    
     pub fn split_by_cluster(&self, cluster_file: &String, trim_length: usize) -> AnyResult<()> {
         let reader = common_reader(cluster_file);
         
@@ -1065,7 +1319,6 @@ impl Fastx {
         let reader = common_reader(&self.file);
         let fasta_reader = bio::io::fasta::Reader::new(reader);
 
-        // 使用 Rayon 进行并行处理
         fasta_reader.records().par_bridge().for_each_with(tx, |tx, result| {
             if let Ok(record) = result {
                 let id = record.id();

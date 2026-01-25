@@ -1,12 +1,18 @@
 [package]
 name = "cphasing"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
 repository = "https://github.com/wangyibin/cphasing-rs"
 keywords = ["polyploids", "genome", "assembly", "haplotype-resolved", "pore-c"]
 categories = ["command-line-utilities", "science"]
+
+[package.metadata.release]
+pre-release-replacements = [
+  { file = "pixi.toml", search = '(?m)^version = "[^"]*"', replace = 'version = "{{version}}"', exactly = 1 },
+  { file = "recipe.yaml", search = '(?m)^\s*version:.*', replace = '  version: {{version}}', exactly = 1 },
+]
 
 [[bin]]
 name = "cphasing-rs"
@@ -41,6 +47,7 @@ tikv-jemallocator = { version = "*" }
 ndarray = { version = "0.17.1" }
 no-panic = { version = "0.1" }
 noodles = { version = "0.57.0", features = ["core", "fasta", "bed", "vcf"]}
+needletail = { version = "0.6.3" }
 nthash = { version = "0.5.1" }
 memchr = { version = "2.7" }
 memmap2 = { version = "0.9" }

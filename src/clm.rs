@@ -18,7 +18,6 @@ use crate::core::BaseTable;
 use crate::core::{ ContigPair2, ContigPair3 };
 use crate::core::{ common_reader, common_writer };
 
-
 #[derive(Debug, Clone)]
 pub struct Clm {
     file: String

@@ -1,4 +1,7 @@
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 use std::collections::HashMap;
 use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
 use bio::io::fasta::{Reader as FastaReader, Record as FastaRecord, Writer as FastaWriter};
@@ -235,7 +238,7 @@ fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
             Cigar::Del(_) | Cigar::RefSkip(_) | Cigar::Pad(_) => {
 
             }
-            _ => {}
+            // _ => {}
         }
     }
     let qend = qstart + qend_used;
@@ -893,7 +896,7 @@ pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
         let avg_len = total_len as f64 / total_count as f64;
     
         
-        (input_bam.clone(), total_count, total_len, min_len, 
+        (input_bam, total_count, total_len, min_len, 
             avg_len, max_len, q1, q2, q3, n50, gc_content)
         
     }).collect::<Vec<_>>();

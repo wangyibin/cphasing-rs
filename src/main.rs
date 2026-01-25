@@ -1300,6 +1300,11 @@ fn main() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
+                        
+                        if output == "-" {
+                            let output = pairs.strip_suffix(".pqs").unwrap_or(&pairs);
+                            log::info!("Output path set to {}.", output);
+                        }
                         if Path::new(&output).exists() {
                             log::info!("Output path {} existed, removing it first.", output);
                             std::fs::remove_dir_all(&output).unwrap();

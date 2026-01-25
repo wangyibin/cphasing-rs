@@ -1,0 +1,37 @@
+package:
+  name: cphasing-rs
+  version: 0.2.6
+
+source:
+  path: .
+
+
+build:
+  number: 0
+  script: cargo install --path . --root $PREFIX --locked
+
+
+requirements:
+  build:
+    - rust
+    - compilers
+    - clang
+    - pkg-config
+    - clangdev
+    - automake
+    - autoconf
+    - jemalloc
+    - make 
+  host:
+    - openssl
+    - zlib
+  run:
+    - openssl
+    - zlib
+
+
+about:
+  summary: Library of C-Phasing, a polyploid genome phasing and scaffolding software
+  license: BSD-3-Clause
+  description: C-Phasing (https://github.com/wangyibin/CPhasing/tree/main) is a polyploid genome phasing and scaffolding software that leverages
+    long/linked reads (Pore-C/CiFi) and Hi-C data to generate chromosome-scale haplotype-resolved assemblies.

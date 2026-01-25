@@ -299,7 +299,7 @@ impl Pruner {
                 let mut tmp_record: Vec<AlleleRecord> = Vec::new();
                 
                 for alleles in record.iter() {
-                    let mut tmp_alleles = alleles.clone().clone();
+                    let mut tmp_alleles = (*alleles).clone();
                     tmp_alleles.data.retain(|x| whitehash.contains(x));
                     if tmp_alleles.data.len() > 1 {
                         tmp_record.push(tmp_alleles);

@@ -1,11 +1,12 @@
-#[allow(unused)]
+#![allow(unused)]
+#![allow(dead_code)]
 use anyhow::Result as anyResult;
 
 use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
 use log::LevelFilter;
 use rand::prelude::*;
 use std::collections::{ BTreeMap, HashMap, HashSet };
-use std::hash::BuildHasherDefault;
+use std::hash::{ BuildHasherDefault, Hasher, Hash };
 use std::borrow::Cow;
 use std::path::{ Path, PathBuf };
 use walkdir::WalkDir;
@@ -151,12 +152,13 @@ impl PQS {
         disable_filter: bool,
         max_depth_ratio: f64
     ) -> anyResult<()> {
-        // use arrow::array::UInt32Array;
         use hashbrown::HashMap;
+        use twox_hash::XxHash64;
         use std::fmt::Write;
-        polars::enable_string_cache(); 
+        
+        // polars::enable_string_cache(); 
         unsafe {
-            std::env::set_var("POLARS_MAX_THREADS", format!("{}", threads));
+            std::env::set_var("POLARS_MAX_THREADS", format!("{}", "1"));
         }
         
         let min_mapq = min_quality as u32;
@@ -195,7 +197,6 @@ impl PQS {
 
         let (sender, receiver) = bounded::<LazyFrame>(100);
         // let data = Arc::new(Mutex::new(HashMap::new()));
-
 
         // let consumer_handles: Vec<_> = (0..8).map(|_| {
         //     let receiver: Receiver<_> = receiver.clone();
@@ -286,101 +287,132 @@ impl PQS {
         //     })
         // }).collect();
 
-        type DataMap = HashMap<(u32, u32), (Vec<u32>, Vec<u32>)>;
-        let data: Arc<Mutex<DataMap>> = Arc::new(Mutex::new(HashMap::default()));
-        let consumer_threads = (threads / 2).max(1).min(16); 
-        let consumer_handles: Vec<_> = (0..consumer_threads).map(|_| {
-            let receiver = receiver.clone();
-            let data = Arc::clone(&data);
-            let contig_idx = contig_idx.clone();
+        // for file in files.into_iter() {
 
-            thread::spawn(move || {
-                while let Ok(lf) = receiver.recv() {
-                    let mut df = lf.collect().expect("Polars collect failed");
+        //     let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
+        //         Ok(df) => df,
+        //         Err(e) => {
+        //             log::warn!("Empty file: {:?}", file);
+        //             continue
+        //         }
+        //     };
 
-                    let chrom1_col = df.column("chrom1").unwrap().categorical().unwrap();
-                    let chrom2_col = df.column("chrom2").unwrap().categorical().unwrap();
-                    let pos1_list = df.column("pos1").unwrap().list().unwrap();
-                    let pos2_list = df.column("pos2").unwrap().list().unwrap();
-                    let mut phys_to_idx1 = HashMap::new();
-                    let mut phys_to_idx2 = HashMap::new();
-                    let rev1 = chrom1_col.get_rev_map();
-                    let rev2 = chrom2_col.get_rev_map();
+        //     let df = if min_mapq > 1 {
+        //         df.filter(col("mapq").gt_eq(min_mapq))
+        //     } else {
+        //         df
+        //     };
 
-                    chrom1_col.physical().unique().unwrap().into_iter().flatten().for_each(|phi| {
-                        phys_to_idx1.insert(phi, *contig_idx.get(rev1.get(phi)).unwrap_or(&u32::MAX));
-                    });
-                    chrom2_col.physical().unique().unwrap().into_iter().flatten().for_each(|phi| {
-                        phys_to_idx2.insert(phi, *contig_idx.get(rev2.get(phi)).unwrap_or(&u32::MAX));
-                    });
+        //     let result = df.group_by(["chrom1", "chrom2"])
+        //         .agg(&[col("pos1"), col("pos2")]);
 
-                    let mut local_data: DataMap = HashMap::new();
-                    let phys1 = chrom1_col.physical();
-                    let phys2 = chrom2_col.physical();
-
-                    for i in 0..df.height() {
-                        let idx1 = *phys_to_idx1.get(&phys1.get(i).unwrap()).unwrap();
-                        let idx2 = *phys_to_idx2.get(&phys2.get(i).unwrap()).unwrap();
-                        if idx1 == u32::MAX || idx2 == u32::MAX { continue; }
-
-                        if let (Some(s1), Some(s2)) = (pos1_list.get_as_series(i), pos2_list.get_as_series(i)) {
-                            let v1 = s1.u32().unwrap();
-                            let v2 = s2.u32().unwrap();
-                            
-                            let pair_data = local_data.entry((idx1, idx2)).or_insert_with(|| (Vec::new(), Vec::new()));
-                            pair_data.0.extend(v1.into_iter().flatten());
-                            pair_data.1.extend(v2.into_iter().flatten());
-                        }
-                    }
-
-                    if !local_data.is_empty() {
-                        let mut g_data = data.lock().unwrap();
-                        for (k, (v1, v2)) in local_data {
-                            let g_entry = g_data.entry(k).or_insert_with(|| (Vec::new(), Vec::new()));
-                            g_entry.0.extend(v1);
-                            g_entry.1.extend(v2);
-                        }
-                    }
-                }
-            })
-        }).collect();
-
-        for file in files.into_iter() {
-
-            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
-                Ok(df) => df,
-                Err(e) => {
-                    log::warn!("Empty file: {:?}", file);
-                    continue
-                }
-            };
-
-            let df = if min_mapq > 1 {
-                df.filter(col("mapq").gt_eq(min_mapq))
-            } else {
-                df
-            };
+        //     sender.send(result).unwrap();
+        // }
 
 
-            let result = df.select(
-                [col("chrom1"),
-                col("chrom2"),
-                col("pos1"),
-                col("pos2"),]
-            ).group_by(["chrom1", "chrom2"])
-                .agg(&[col("pos1"), col("pos2")]);
+        // drop(sender);
 
-            sender.send(result).unwrap();
-        }
-
-
-        drop(sender);
-
-        for handle in consumer_handles {
-            handle.join().unwrap();
-        }
+        // for handle in consumer_handles {
+        //     handle.join().unwrap();
+        // }
     
-        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+        // let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
+
+        type FastHasher = std::hash::BuildHasherDefault<XxHash64>;
+        type ShardMap = HashMap<(u32, u32), Vec<SmallIntVec>, FastHasher>;
+        let num_shards = 128;
+        let shards: Arc<Vec<Mutex<ShardMap>>> = Arc::new(
+            (0..num_shards).map(|_| Mutex::new(ShardMap::with_capacity_and_hasher(2048, FastHasher::default()))).collect()
+        );
+        let contig_idx = Arc::new(contig_idx);
+
+        files.par_iter().for_each(|file| {
+            let lf = match LazyFrame::scan_parquet(file, ScanArgsParquet::default()) {
+                Ok(lf) => lf.select([col("chrom1"), col("chrom2"), col("pos1"), col("pos2")]),
+                Err(_) => return,
+            };
+
+            let lf = if min_mapq > 0 {
+                lf.filter(col("mapq").gt_eq(min_mapq))
+            } else {
+                lf
+            };
+
+            let df = lf.collect().expect("Polars collect failed");
+            if df.height() == 0 { return; }
+
+            let c1_col = df.column("chrom1").unwrap().categorical().unwrap();
+            let c2_col = df.column("chrom2").unwrap().categorical().unwrap();
+            let p1_col = df.column("pos1").unwrap().u32().unwrap();
+            let p2_col = df.column("pos2").unwrap().u32().unwrap();
+
+            let rev1 = c1_col.get_rev_map();
+            let phys1_ca = c1_col.physical();
+            let max_id1 = phys1_ca.max().unwrap_or(0) as usize;
+            let mut lookup1 = vec![u32::MAX; max_id1 + 1];
+            for i in 0..=max_id1 {
+                if let Some(name) = rev1.get_optional(i as u32) {
+                    if let Some(&idx) = contig_idx.get(name) { lookup1[i] = idx; }
+                }
+            }
+            
+            let rev2 = c2_col.get_rev_map();
+            let phys2_ca = c2_col.physical();
+            let max_id2 = phys2_ca.max().unwrap_or(0) as usize;
+            let mut lookup2 = vec![u32::MAX; max_id2 + 1];
+            for i in 0..=max_id2 {
+                if let Some(name) = rev2.get_optional(i as u32) {
+                    if let Some(&idx) = contig_idx.get(name) { lookup2[i] = idx; }
+                }
+            }
+
+
+            let mut local_map: HashMap<(u32, u32), Vec<SmallIntVec>, FastHasher> = 
+                    HashMap::with_capacity_and_hasher(1024, FastHasher::default());
+            
+            phys1_ca.downcast_iter()
+                .zip(phys2_ca.downcast_iter())
+                .zip(p1_col.downcast_iter())
+                .zip(p2_col.downcast_iter())
+                .for_each(|(((c1, c2), p1), p2)| {
+                    for i in 0..c1.len() {
+                        let idx1 = lookup1[c1.value(i) as usize];
+                        let idx2 = lookup2[c2.value(i) as usize];
+                        if idx1 != u32::MAX && idx2 != u32::MAX {
+                            let key = if idx1 <= idx2 { (idx1, idx2) } else { (idx2, idx1) };
+                            let val = if idx1 <= idx2 {
+                                smallvec![p1.value(i), p2.value(i)]
+                            } else {
+                                smallvec![p2.value(i), p1.value(i)]
+                            };
+                            local_map.entry(key).or_default().push(val);
+                        }
+                    }
+            });
+
+            let mut shard_buckets: Vec<Vec<((u32, u32), Vec<SmallIntVec>)>> = (0..num_shards).map(|_| Vec::new()).collect();
+            for (key, val) in local_map {
+                let mut s = XxHash64::default();
+                key.hash(&mut s);
+                let shard_idx = (s.finish() % num_shards as u64) as usize;
+                shard_buckets[shard_idx].push((key, val));
+            }
+
+            for (idx, bucket) in shard_buckets.into_iter().enumerate() {
+                if bucket.is_empty() { continue; }
+                let mut lock = shards[idx].lock().unwrap();
+                for (key, val) in bucket {
+                    lock.entry(key).or_default().extend(val);
+                }
+            }
+        });
+
+        let mut data = HashMap::with_capacity_and_hasher(contig_idx.len() * 2, FastHasher::default());
+        let shards = Arc::try_unwrap(shards).expect("Arc unwrap failed");
+        for shard in shards {
+            let inner = shard.into_inner().unwrap();
+            data.extend(inner); 
+        }
 
         if output_split_contacts{
             log::info!("Calculating the distance between split contigs");
@@ -392,41 +424,28 @@ impl PQS {
     
             let writer = common_writer(format!("{}.split.contacts.gz", output_prefix.to_string()).as_str());
             let writer = Arc::new(Mutex::new(writer));
-            // data.par_iter().for_each(|(cp, vec) | {
-            //     if vec.len() < min_contacts as usize {
-            //         return;
-            //     }
-            //     let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
-            //     let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
-            //     let res = vec.iter().map(
-            //         |x| {
-            //             let pos1 = x[0];
-            //             let pos2 = x[1];
-            //             let split_index1 = (pos1 / (length1 / 2)) as u8;
-            //             let split_index2 = (pos2 / (length2 / 2)) as u8;
-                    
-            //             (split_index1, split_index2)
-            //         }
-            //     ).collect::<Vec<_>>();
-
-            //     let mut contact_hash = HashMap::with_capacity(4);
-            //     res.iter().for_each(|(split_idx1, split_idx2)| {
-            //         *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
-            //     });
-            data.par_iter().for_each(|(cp, (v1, v2)) | {
-                if v1.len() < min_contacts as usize {
+            data.par_iter().for_each(|(cp, vec) | {
+                if vec.len() < min_contacts as usize {
                     return;
                 }
                 let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
                 let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
+                let res = vec.iter().map(
+                    |x| {
+                        let pos1 = x[0];
+                        let pos2 = x[1];
+                        let split_index1 = (pos1 / (length1 / 2)) as u8;
+                        let split_index2 = (pos2 / (length2 / 2)) as u8;
+                    
+                        (split_index1, split_index2)
+                    }
+                ).collect::<Vec<_>>();
 
-                // 使用 zip 同步遍历两个坐标向量
                 let mut contact_hash = HashMap::with_capacity(4);
-                v1.iter().zip(v2.iter()).for_each(|(&pos1, &pos2)| {
-                    let split_index1 = (pos1 / (length1 / 2)) as u8;
-                    let split_index2 = (pos2 / (length2 / 2)) as u8;
-                    *contact_hash.entry((split_index1, split_index2)).or_insert(0) += 1;
+                res.iter().for_each(|(split_idx1, split_idx2)| {
+                    *contact_hash.entry((split_idx1, split_idx2)).or_insert(0) += 1;
                 });
+                
                 let mut buffer = Vec::with_capacity(4);
                 contact_hash.iter().for_each(|(cp, count)| {
                     if count >= &min_contacts {
@@ -457,52 +476,36 @@ impl PQS {
                                                             (chrom, vec![0; num_bins])
                                                         }).collect();
             
-            // data.iter().for_each(|(cp, vec)| {
-            //     let res = vec.iter().map(
-            //         |x| {
-            //             let pos1 = x[0];
-            //             let pos2 = x[1];
-            //             let split_index1 = (pos1 / binsize) as u32;
-            //             let split_index2 = (pos2 / binsize) as u32;
+            data.iter().for_each(|(cp, vec)| {
+                let res = vec.iter().map(
+                    |x| {
+                        let pos1 = x[0];
+                        let pos2 = x[1];
+                        let split_index1 = (pos1 / binsize) as u32;
+                        let split_index2 = (pos2 / binsize) as u32;
                         
-            //             (split_index1, split_index2)
-            //         }
-            //     ).collect::<Vec<_>>();
-                
-            //     res.iter().for_each(|(split_index1, split_index2)| {
-            //         if let Some(v) = depth.get_mut(&cp.0) {
-            //             if let Some(v) = v.get_mut(*split_index1 as usize) {
-            //                 *v += 1;
-            //             }
-                
-            //         }
-
-            //         if let Some(v) = depth.get_mut(&cp.1) {
-            //             if let Some(v) = v.get_mut(*split_index2 as usize) {
-            //                 *v += 1;
-            //             }
-            //         }
-
-            //         // *depth.get_mut(&cp.0).unwrap().get_mut(*split_index1 as usize).unwrap() += 1;
-            //         // *depth.get_mut(&cp.1).unwrap().get_mut(*split_index2 as usize).unwrap() += 1;
-            //     });
-                
-            // });
-            data.iter().for_each(|(cp, (v1, v2))| {
-                // v1 对应 cp.0 的深度
-                if let Some(depth_v) = depth.get_mut(&cp.0) {
-                    for &pos in v1 {
-                        let bin = (pos / binsize) as usize;
-                        if let Some(v) = depth_v.get_mut(bin) { *v += 1; }
+                        (split_index1, split_index2)
                     }
-                }
-                // v2 对应 cp.1 的深度
-                if let Some(depth_v) = depth.get_mut(&cp.1) {
-                    for &pos in v2 {
-                        let bin = (pos / binsize) as usize;
-                        if let Some(v) = depth_v.get_mut(bin) { *v += 1; }
+                ).collect::<Vec<_>>();
+                
+                res.iter().for_each(|(split_index1, split_index2)| {
+                    if let Some(v) = depth.get_mut(&cp.0) {
+                        if let Some(v) = v.get_mut(*split_index1 as usize) {
+                            *v += 1;
+                        }
+                
                     }
-                }
+
+                    if let Some(v) = depth.get_mut(&cp.1) {
+                        if let Some(v) = v.get_mut(*split_index2 as usize) {
+                            *v += 1;
+                        }
+                    }
+
+                    // *depth.get_mut(&cp.0).unwrap().get_mut(*split_index1 as usize).unwrap() += 1;
+                    // *depth.get_mut(&cp.1).unwrap().get_mut(*split_index2 as usize).unwrap() += 1;
+                });
+                
             });
 
             let depth: BTreeMap<_, _> = depth.into_iter().collect();
@@ -545,12 +548,15 @@ impl PQS {
             let bin_depths: HashMap<(u32, u32), u32> = data.par_iter()
                 .fold(
                     || HashMap::new(),
-                    |mut acc: HashMap<(u32, u32), u32>, ((c1, c2), (v1, v2))| {
-                        for &pos1 in v1 {
-                            *acc.entry((*c1, pos1 / binsize)).or_insert(0) += 1;
-                        }
-                        for &pos2 in v2 {
-                            *acc.entry((*c2, pos2 / binsize)).or_insert(0) += 1;
+                    |mut acc: HashMap<(u32, u32), u32>, ((c1, c2), vec)| {
+                        for pair in vec {
+                            let pos1 = pair[0];
+                            let pos2 = pair[1];
+                            let bin1 = pos1 / binsize;
+                            let bin2 = pos2 / binsize;
+
+                            *acc.entry((*c1, bin1)).or_insert(0) += 1;
+                            *acc.entry((*c2, bin2)).or_insert(0) += 1;
                         }
                         acc
                     }
@@ -599,25 +605,23 @@ impl PQS {
         let wtr = Arc::new(Mutex::new(wtr));
         let blacklist = Arc::new(blacklist);
 
-        data.par_iter().for_each(|(cp, (v1, v2))| {
+        data.par_iter().for_each(|(cp, vec)| {
             if cp.0 == cp.1 { return; }
 
             let (contig1, length1) = idx_contig_sizes.get(&cp.0).unwrap();
             let (contig2, length2) = idx_contig_sizes.get(&cp.1).unwrap();
 
-            let filtered_pairs: Vec<(u32, u32)> = v1.iter().zip(v2.iter())
-                .filter_map(|(&p1, &p2)| {
-                    if !disable_filter && !blacklist.is_empty() {
-                        let b1 = p1 / binsize;
-                        let b2 = p2 / binsize;
-                        if blacklist.contains(&(cp.0, b1)) || blacklist.contains(&(cp.1, b2)) {
-                            return None;
-                        }
-                    }
-                    Some((p1, p2))
-                }).collect();
+            let filtered_vec: Vec<&SmallIntVec> = if !disable_filter && !blacklist.is_empty() {
+                vec.iter().filter(|pair| {
+                    let bin1 = pair[0] / binsize;
+                    let bin2 = pair[1] / binsize;
+                    !blacklist.contains(&(cp.0, bin1)) && !blacklist.contains(&(cp.1, bin2))
+                }).collect()
+            } else {
+                vec.iter().collect()
+            };
 
-            let count = filtered_pairs.len();
+            let count = filtered_vec.len();
             if count < min_contacts as usize { return; }
 
             let mut buffer = String::with_capacity(count * 40);
@@ -632,12 +636,12 @@ impl PQS {
                 };
                 buffer.push_str(&header);
                 
-                for (idx, (p1, p2)) in filtered_pairs.iter().enumerate() {
+                for (idx, pair) in filtered_vec.iter().enumerate() {
                     let val = match i {
-                        0 => length1.wrapping_sub(*p1).wrapping_add(*p2),
-                        1 => length1.wrapping_sub(*p1).wrapping_add(*length2).wrapping_sub(*p2),
-                        2 => p1.wrapping_add(*p2),
-                        _ => p1.wrapping_add(*length2).wrapping_sub(*p2),
+                        0 => length1.wrapping_sub(pair[0]).wrapping_add(pair[1]),
+                        1 => length1.wrapping_sub(pair[0]).wrapping_add(*length2).wrapping_sub(pair[1]),
+                        2 => pair[0].wrapping_add(pair[1]),
+                        _ => pair[0].wrapping_add(*length2).wrapping_sub(pair[1]),
                     };
                     buffer.push_str(itoa_buf.format(val));
                     if idx < count - 1 { buffer.push(' '); }
@@ -1502,38 +1506,6 @@ impl PQS {
                             };
                         
                             if let (Some((new_chrom1, new_pos1)), Some((new_chrom2, new_pos2))) = (new1, new2) {
-                                
-                                // if new_chrom1 <= new_chrom2 {
-                                //     if let Some(read_idx) = read_idx {
-                                //         read_id_vec.push(read_idx.to_string());
-                                //     }
-
-                                //     if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
-                                //         strand1_vec.push(rev_map3.get(*strand1));
-                                //         strand2_vec.push(rev_map4.get(*strand2));
-                                //         mapq_vec.push(mapq.clone());
-                                //     }
-
-                                //     chrom1_vec.push(new_chrom1);
-                                //     pos1_vec.push(new_pos1);
-                                //     chrom2_vec.push(new_chrom2);
-                                //     pos2_vec.push(new_pos2);
-                                // } else {
-                                //     if let Some(read_idx) = read_idx {
-                                //         read_id_vec.push(read_idx.to_string());
-                                //     }
-                                    
-                                //     if let (Some(strand1), Some(strand2), Some(mapq)) = (strand1, strand2, mapq) {
-                                //         strand1_vec.push(rev_map3.get(*strand1));
-                                //         strand2_vec.push(rev_map4.get(*strand2));
-                                //         mapq_vec.push(mapq.clone());
-                                //     }
-
-                                //     chrom1_vec.push(new_chrom2);
-                                //     pos1_vec.push(new_pos2);
-                                //     chrom2_vec.push(new_chrom1);
-                                //     pos2_vec.push(new_pos1);
-                                // }
 
                                 if let Some(read_idx) = read_idx {
                                     read_id_vec.push(read_idx.to_string());
@@ -1641,139 +1613,6 @@ impl PQS {
 
     }
 
-    // pub fn intersect(&self, hcr_bed: &String, invert: bool,
-    //                 min_mapq: u8, output: &String) -> anyResult<()> {
-        
-    //     unsafe {
-    //         std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
- 
-    //     }
-    //     enable_string_cache();  
-    //     let bed = Bed3::new(hcr_bed);
-    //     let interval_hash = bed.to_interval_hash();
-        
-    //     let files = if min_mapq == 0 {
-    //         collect_parquet_files(format!("{}/q0", self.file).as_str())
-    //     } else {
-    //         collect_parquet_files(format!("{}/q1", self.file).as_str())
-    //     };
-
-    //     log::info!("Calculating the intersection of contacts with regions");
-
-    //     let _ = std::fs::create_dir_all(output);
-    //     let _ = std::fs::create_dir_all(format!("{}/q0", output));
-    //     let _ = std::fs::create_dir_all(format!("{}/q1", output));
-
-    //     let _ = std::fs::copy(format!("{}/_contigsizes", self.file), format!("{}/_contigsizes", output));
-    //     let _ = std::fs::copy(format!("{}/_metadata", self.file), format!("{}/_metadata", output));
-    //     let _ = std::fs::copy(format!("{}/_readme", self.file), format!("{}/_readme", output));
-
-    //     let output_q_dir = if min_mapq == 0 {
-    //         format!("{}/q0", output)
-    //     } else {
-    //         format!("{}/q1", output)
-    //     };
-
-    //     let copy_q_dir = if min_mapq == 0 {
-    //         format!("{}/q1", output)
-    //     } else {
-    //         format!("{}/q0", output)
-    //     };
-
-        
-    //     files.chunks(500).for_each(|file_chunk| {
-    //         file_chunk.par_iter().for_each(|file| {
-    //             let mut df = LazyFrame::scan_parquet(file.clone(),  ScanArgsParquet::default()).unwrap();
-
-    //             if min_mapq > 1 {
-    //                 df = df.clone().filter(col("mapq").gt_eq(min_mapq));
-    //             }
-
-    //             let df = df.collect().unwrap();
-
-    //             let cat_col = df.column("chrom1").unwrap().categorical().unwrap();
-    //             let rev_map1 = cat_col.get_rev_map();
-
-    //             let cat_col = df.column("chrom2").unwrap().categorical().unwrap();
-    //             let rev_map2 = cat_col.get_rev_map();
-
-    //             let nrows = df.height();
-
-    //             let mut data: Vec<bool> = Vec::with_capacity(nrows);
-
-    //             for idx in 0..nrows {
-    //                 let row = df.get(idx).unwrap();
-    //                 let chrom1 = match row.get(1) {
-    //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
-    //                     _ => None
-    //                 };
-                    
-    //                 let chrom2 = match row.get(3) {
-    //                     Some(AnyValue::Categorical(v, _, _)) => Some(v),
-    //                     _ => None
-    //                 };
-
-    //                 let pos1 = match row.get(2) {
-    //                     Some(AnyValue::UInt32(v)) => Some(v),
-    //                     _ => None
-    //                 };
-                    
-    //                 let pos2 = match row.get(4) {
-    //                     Some(AnyValue::UInt32(v)) => Some(v),
-    //                     _ => None
-    //                 };
-                
-    //                 if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) = (chrom1, chrom2, pos1, pos2) {
-    //                     let chrom1 = rev_map1.get(*chrom1);
-    //                     let chrom2 = rev_map2.get(*chrom2);
-    //                     let pos1 = *pos1 as usize;
-    //                     let pos2 = *pos2 as usize;
-
-    //                     let is_in_regions = interval_hash.get(chrom1).map_or(false, |interval1| {
-    //                         interval_hash.get(chrom2).map_or(false, |interval2| {
-    //                             interval1.count(pos1, pos1 + 1) > 0 && interval2.count(pos2, pos2 + 1) > 0
-    //                         })
-    //                     });
-    //                     if is_in_regions ^ invert {
-    //                         data.push(true);
-    //                     } else {
-    //                         data.push(false);
-    //                     }
-    //                 } else {
-    //                     data.push(false);
-    //                 }
-    //             }
-
-    //             let data = Series::new("intersect".into(), data);
-                
-    //             let mut df = df.filter(
-    //                 data.bool().unwrap()
-    //             ).unwrap();
-                
-    //             let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-    //             let new_file = format!("{}/{}", output_q_dir, file_name);
-        
-    //             let mut new_file = File::create(new_file).unwrap();
-    //             ParquetWriter::new(&mut new_file)
-    //                 .finish(&mut df)
-    //                 .unwrap();
-    //         })
-    //     });
-        
-    //     let files = collect_parquet_files(format!("{}", output_q_dir).as_str());
-
-    //     files.par_iter().for_each(|file| {
-    //         let file_name = Path::new(file).file_name().unwrap().to_str().unwrap();
-    //         let new_file = format!("{}/{}", copy_q_dir, file_name);
-    //         let _ = std::fs::copy(file, new_file);
-    //     });
-
-    //     log::info!("Successful output intersect file `{}`", output);
-        
-    //     Ok(())
-    // }
-
-
     pub fn intersect(&self, hcr_bed: &String, invert: bool,
                     min_mapq: u8, threads: usize,
                     output: &String) -> anyResult<()> {
@@ -1849,28 +1688,52 @@ impl PQS {
                 }
             }
 
-            let mask_iter = chrom1_col.physical().into_iter()
-                    .zip(pos1_col.into_iter())
-                    .zip(chrom2_col.physical().into_iter())
-                    .zip(pos2_col.into_iter())
-                    .map(|(((c1, p1), c2), p2)| {
-                        if let (Some(c1_idx), Some(p1_val), Some(c2_idx), Some(p2_val)) = (c1, p1, c2, p2) {
-                            let p1_val = p1_val as usize;
-                            let p2_val = p2_val as usize;
+            // let mask_iter = chrom1_col.physical().into_iter()
+            //         .zip(pos1_col.into_iter())
+            //         .zip(chrom2_col.physical().into_iter())
+            //         .zip(pos2_col.into_iter())
+            //         .map(|(((c1, p1), c2), p2)| {
+            //             if let (Some(c1_idx), Some(p1_val), Some(c2_idx), Some(p2_val)) = (c1, p1, c2, p2) {
+            //                 let p1_val = p1_val as usize;
+            //                 let p2_val = p2_val as usize;
 
-                            let is_in = lapper_cache1.get(&c1_idx).and_then(|&l| l).map_or(false, |l1| {
-                                l1.find(p1_val, p1_val + 1).next().is_some() && 
-                                lapper_cache2.get(&c2_idx).and_then(|&l| l).map_or(false, |l2| {
-                                    l2.find(p2_val, p2_val + 1).next().is_some()
-                                })
-                            });
-                            Some(is_in ^ invert)
-                        } else {
-                            Some(false)
-                        }
-                });
+            //                 let is_in = lapper_cache1.get(&c1_idx).and_then(|&l| l).map_or(false, |l1| {
+            //                     l1.find(p1_val, p1_val + 1).next().is_some() && 
+            //                     lapper_cache2.get(&c2_idx).and_then(|&l| l).map_or(false, |l2| {
+            //                         l2.find(p2_val, p2_val + 1).next().is_some()
+            //                     })
+            //                 });
+            //                 Some(is_in ^ invert)
+            //             } else {
+            //                 Some(false)
+            //             }
+            //     });
+            // let mask = BooleanChunked::from_iter(mask_iter);
+            let mask: BooleanChunked = (0..nrows)
+            .map(|i| {
+                let c1 = chrom1_col.physical().get(i);
+                let p1 = pos1_col.get(i);
+                let c2 = chrom2_col.physical().get(i);
+                let p2 = pos2_col.get(i);
+
+                if let (Some(c1_idx), Some(p1_val), Some(c2_idx), Some(p2_val)) = (c1, p1, c2, p2) {
+                    let p1_val = p1_val as usize;
+                    let p2_val = p2_val as usize;
+
+                    let is_in = lapper_cache1.get(&c1_idx).and_then(|&l| l).map_or(false, |l1| {
+                        l1.find(p1_val, p1_val + 1).next().is_some() && 
+                        lapper_cache2.get(&c2_idx).and_then(|&l| l).map_or(false, |l2| {
+                            l2.find(p2_val, p2_val + 1).next().is_some()
+                        })
+                    });
+                    is_in ^ invert
+                } else {
+                    false
+                }
+            })
+            .collect();
+            let mask = mask.with_name("mask".into());
                 
-            let mask = BooleanChunked::from_iter(mask_iter);
             
             drop(df_coords);
             drop(lapper_cache1);
@@ -1882,7 +1745,7 @@ impl PQS {
                 df_full = df_full.filter(col("mapq").gt_eq(min_mapq));
             }
 
-            let mut df_full = df_full.collect().unwrap();
+            let df_full = df_full.collect().unwrap();
             let mut filtered_df = df_full.filter(&mask).unwrap();
 
             drop(mask);

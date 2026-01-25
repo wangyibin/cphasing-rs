@@ -94,7 +94,7 @@ impl PairHeader {
                         let s: String = line.replace("#chromsize: ", "");
                         let s: Vec<&str> = s.split(" ").collect();
                         
-                        let size: u64 = s[1].clone().parse::<u64>().unwrap();
+                        let size: u64 = s[1].parse::<u64>().unwrap();
                         let chrom: String = s[0].to_string();
                         let c: ChromSizeRecord = ChromSizeRecord { chrom: chrom, size: size };
 
@@ -2192,7 +2192,7 @@ impl Pairs {
                 if record.starts_with("#chromsize") {
                     writeln!(wtr, "{}", record).unwrap();
                     let s: Vec<&str> = record.trim().split(" ").collect();
-                    let size: u64 = s[2].clone().parse::<u64>().unwrap();
+                    let size: u64 = s[2].parse::<u64>().unwrap();
                     let chrom: String = s[1].to_string();
                     if collapsed_contigs.contains_key(&chrom) {
                         let collapsed_contigs = collapsed_contigs.get(&chrom).unwrap();

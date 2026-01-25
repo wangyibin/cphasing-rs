@@ -1,4 +1,6 @@
-// generate the minimizer sketch of a sequence
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(non_snake_case)]
 use anyhow::Result as AnyResult;
 use std::cmp::Ordering;
 use std::collections::{ HashMap, HashSet };

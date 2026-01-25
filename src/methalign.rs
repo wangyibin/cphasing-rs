@@ -73,7 +73,6 @@ pub fn parse_bedgraph(bedgraph: &String, cov_cutoff: f64) -> anyResult<HashMap<S
 pub fn split_records(records: Vec<Record>) -> Vec<Vec<Record>> {
     let mut result: Vec<Vec<Record>> = Vec::new();
 
-    let mut flag = 0;
     let mut current_group: Vec<Record> = Vec::new();
     for record in records.into_iter() {
         let is_supplementary = record.is_supplementary();
@@ -232,7 +231,7 @@ fn aligned_pairs(rec: &bam::Record) -> Vec<(i64, i64)> {
             Cigar::Ins(l) => { q += *l as i64; }
             Cigar::Del(l) | Cigar::RefSkip(l) => { r += *l as i64; }
             Cigar::SoftClip(_) | Cigar::HardClip(_) | Cigar::Pad(_) => {}
-            _ => {}
+            // _ => {}
         }
     }
     v
@@ -597,7 +596,7 @@ fn count_5mc_consistency_split(
                 q += *l as i64;
                 while i < c_positions.len() && c_positions[i] < q { i += 1; }
             }
-            _ => {}
+            // _ => {}
         }
     }
 
@@ -1033,7 +1032,7 @@ fn process_batch_with_rayon(
 
     batch
         .into_par_iter()
-        .map(|(_, mut records)| {
+        .map(|(_, records)| {
             
             if records.is_empty() {
                 return Vec::<Record>::new();

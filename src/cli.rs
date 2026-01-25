@@ -10,7 +10,7 @@ use clap::{arg, Arg, ArgAction,
             Subcommand, 
             value_parser, ColorChoice};
 
-const VERSION: &str = "0.2.5";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 
 const STYLES: Styles = Styles::styled()

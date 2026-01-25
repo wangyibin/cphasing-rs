@@ -1,3 +1,7 @@
+## [v0.2.6] - 20250125
+#### bug fixes
+- fixed bug of `pairs-intersect` that report `Aborted (core dumped)`
+
 ## [v0.2.5] - 20250122
 #### Enhancement
 - `porec-break`, speed up this code by parallel
