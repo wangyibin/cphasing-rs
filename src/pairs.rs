@@ -25,6 +25,7 @@ use std::hash::{ Hash, Hasher };
 use std::path::Path;
 use std::thread;
 use std::sync::{ Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::io::{ Write, BufReader, BufRead, Read, Cursor };
 use serde::{ Deserialize, Serialize};
 use smallvec::{ smallvec, SmallVec };
@@ -2328,6 +2329,9 @@ impl Pairs {
         let mut wtr = common_writer(format!("{}/_readme", output).as_str());
         writeln!(wtr, "{}", _readme).unwrap();
         wtr.flush().unwrap();
+
+        let q0_total = std::sync::Arc::new(AtomicU64::new(0));
+        let q1_total = std::sync::Arc::new(AtomicU64::new(0));
     
 
         let (sender, receiver) = bounded::<Vec<(u32, String)>>(2048);
@@ -2367,6 +2371,9 @@ impl Pairs {
             let receiver = receiver.clone();
             let output = output.clone();
             let pos_dtype = pos_dtype.clone();
+            let q0_total_cl = std::sync::Arc::clone(&q0_total);
+            let q1_total_cl = std::sync::Arc::clone(&q1_total);
+
             handles.push(thread::spawn(move || {
                 while let Ok(records) = receiver.recv() {
                     if records.is_empty() {
@@ -2446,6 +2453,9 @@ impl Pairs {
                                 ])
                                 .collect()
                                 .unwrap();
+
+                            let q0_n = df.height() as u64;
+                            q0_total_cl.fetch_add(q0_n, Ordering::Relaxed);
                             
                             {
                                 let path = format!("{}/q0/{}.parquet", output, chunk_id);
@@ -2459,6 +2469,8 @@ impl Pairs {
                             {
                                 let mask = df.column("mapq").unwrap().u8().unwrap().gt_eq(1);
                                 let mut df_filtered = df.filter(&mask).unwrap();
+                                let q1_n = df_filtered.height() as u64;
+                                q1_total_cl.fetch_add(q1_n, Ordering::Relaxed);
                                 if df_filtered.height() > 0 {
                                     let path = format!("{}/q1/{}.parquet", output, chunk_id);
                                     let mut file = File::create(path).unwrap();
@@ -2514,6 +2526,9 @@ impl Pairs {
                                 ])
                                 .collect()
                                 .unwrap();
+
+                            let q0_n = df.height() as u64;
+                            q0_total_cl.fetch_add(q0_n, Ordering::Relaxed);
                             
                             {
                                 let path = format!("{}/q0/{}.parquet", output, chunk_id);
@@ -2525,6 +2540,8 @@ impl Pairs {
                             {
                                 let mask = df.column("mapq").unwrap().u8().unwrap().gt_eq(1);
                                 let mut df_filtered = df.filter(&mask).unwrap();
+                                let q1_n = df_filtered.height() as u64;
+                                q1_total_cl.fetch_add(q1_n, Ordering::Relaxed);
                                 if df_filtered.height() > 0 {
                                     let path = format!("{}/q1/{}.parquet", output, chunk_id);
                                     let mut file = File::create(path).unwrap();
@@ -2543,6 +2560,14 @@ impl Pairs {
         for handle in handles {
             handle.join().unwrap();
         }
+
+        let q0_n = q0_total.load(Ordering::Relaxed);
+        let q1_n = q1_total.load(Ordering::Relaxed);
+
+        let mut wtr = common_writer(format!("{}/_metadata_counts", output).as_str());
+        writeln!(wtr, "q0_records\t{}", q0_n).unwrap();
+        writeln!(wtr, "q1_records\t{}", q1_n).unwrap();
+        wtr.flush().unwrap();
     }
 
     // pub fn to_pqs2(&mut self, chunksize: usize, output: &String) {

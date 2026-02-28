@@ -2,6 +2,8 @@
 authors = ["wangyibin <yibinwang96@outlook.com>"]
 channels = ["conda-forge"]
 preview = ["pixi-build"]
+homepage = "https://github.com/wangyibin/cphasing-rs"
+repository = "https://github.com/wangyibin/cphasing-rs"
 description = "Library of C-Phasing, a polyploid genome phasing and scaffolding software"
 platforms = ["linux-64", "linux-aarch64"]
 

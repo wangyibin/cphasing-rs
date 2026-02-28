@@ -116,8 +116,13 @@ impl Fastx {
         let mut chrom_size = HashMap::new();
         while let Some(record) = reader.next() {
             let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
-            
+            let id_full = std::str::from_utf8(seq_rec.id())?;
+            let id = id_full
+                .split_whitespace()
+                .next()
+                .unwrap_or(id_full)
+                .to_string();
+
             chrom_size.insert(id, seq_rec.num_bases() as u64);
         }
         Ok(chrom_size)
@@ -130,7 +135,12 @@ impl Fastx {
 
         while let Some(record) = reader.next() {
             let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+            let id_full = std::str::from_utf8(seq_rec.id())?;
+            let id = id_full
+                .split_whitespace()
+                .next()
+                .unwrap_or(id_full)
+                .to_string();
             let seq = String::from_utf8(seq_rec.seq().to_vec())?;
             chrom_seqs.insert(id, seq);
         }
@@ -411,7 +421,12 @@ impl Fastx {
         
         while let Some(record) = reader.next() {
             let seq_rec = record.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let id = std::str::from_utf8(seq_rec.id())?.to_owned();
+            let id_full = std::str::from_utf8(seq_rec.id())?;
+            let id = id_full
+                .split_whitespace()
+                .next()
+                .unwrap_or(id_full)
+                .to_string();
             let seq = Arc::new(seq_rec.normalize(false).into_owned());
             
             let seq_len = seq.len();

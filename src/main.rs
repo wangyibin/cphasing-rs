@@ -187,6 +187,7 @@ fn main() {
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
+            let partial_whitelist = sub_matches.get_one::<bool>("PARTIAL_WHITELIST").expect("error");
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
@@ -209,36 +210,12 @@ fn main() {
                 }
             }
 
-            // let mut whitehash2: HashSet<&String> = HashSet::new();
-            // for x in whitehash.iter() {
-            //     whitehash2.insert(x);
-            // }
-            // let whitehash = Arc::new(whitehash);
 
-          
-            // let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
             let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
             if first_cluster != "none" {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
               
-
-                // let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
-                // lines.into_iter().for_each(|line| {
-                //     // split tab
-                //     let mut line = line.split("\t");
-                //     let group = line.next().unwrap().to_string();
-                //     let _count = line.next().unwrap().to_string();
-                //     // split next with space
-                //     let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
-                   
-                //     let mut contigs: HashSet<String> = contigs.into_iter().map(|x| x.to_string()).collect();
-                //     if whitehash.len() > 0 {
-                //         contigs = contigs.intersection(&whitehash).map(|x| x.to_string()).collect();
-                //     }
-                   
-                //     first_cluster_hashmap.insert(group, contigs);
-                // });
                 let pairs: Vec<(String, HashSet<String>)> = reader
                     .lines()
                     .par_bridge()
@@ -277,59 +254,9 @@ fn main() {
 
             }
 
-            // Arc::new(Mutex::new(HashMap::new())) to HashMap
-            // let first_cluster_hashmap = Arc::clone(&first_cluster_hashmap);
-            // let first_cluster_hashmap = first_cluster_hashmap.lock().unwrap();
-            // let first_cluster_hashmap = first_cluster_hashmap.clone();
-
             if first_cluster != "none" {
                 let mut writer = common_writer(&prunetable);
                 log::set_max_level(log::LevelFilter::Off);
-                // let mut kpruners: HashMap<String, KPruner> = first_cluster_hashmap
-                //             .keys().map(|x| (x.to_string(), KPruner::new(
-                //                 &alleletable, &contacts, &prunetable, &count_re_opt,
-                //                 normalization_method))).collect();
-                // let mut results = vec![];
-                // for (k, v) in first_cluster_hashmap {
-                //     let tmp_output = format!("{}.kprune.tmp", k);
-                //     let mut tmp_writer = common_writer(&tmp_output);
-                //     log::info!("Pruning cluster `{}`", k);
-                //     let kpruner = kpruners.get_mut(&k).unwrap();
-                //     let _whitehash: HashSet<String> = v.into_iter().collect();
-                //     let mut _whitehash2: HashSet<&String> = HashSet::new();
-                //     for x in _whitehash.iter() {
-                //         _whitehash2.insert(&x);
-                //     }
-                //     kpruner.prune(&method.as_str(), &_whitehash2, &mut tmp_writer );
-                //     results.push((k, tmp_output));
-                // }
-                // log::set_max_level(log::LevelFilter::Info);
-
-                // // write kpruners prunetable into a file
-                // for result in results {
-                //     let (k, tmp_output) = result;
-                //     let reader = common_reader(&tmp_output);
-                //     let reader = BufReader::new(reader);
-                //     for line in reader.lines() {
-                //         let line = line.unwrap();
-                //         writer.write(format!("{}\n", line).as_bytes()).unwrap();
-                //     }
-
-                //     std::fs::remove_file(&tmp_output).unwrap();
-                // }
-
-                // let mut allelic_counts: u32 = 0;
-                // let mut cross_allelic_counts: u32 = 0;
-                // for (_, v) in kpruners {
-                //     allelic_counts += v.allelic_counts;
-                //     cross_allelic_counts += v.cross_allelic_counts;
-                //     // v.prunetable.write(&mut wtr);
-                // }
-                // log::info!("Allelic counts: {}", allelic_counts);
-                // log::info!("Cross-allelic counts: {}", cross_allelic_counts);
-
-
-                // let clusters: Vec<(String, HashSet<String>)> = first_cluster_hashmap.into_iter().collect();
                 let results: Vec<(String, String, u32, u32)> = first_cluster_hashmap
                     .into_par_iter()
                     .map(|(k, v)| {
@@ -346,7 +273,7 @@ fn main() {
                         let white_refs: HashSet<&String> = v.iter().collect();
 
 
-                        kpruner.prune(&method.as_str(), &white_refs, &mut tmp_writer);
+                        kpruner.prune(&method.as_str(), &white_refs, &mut tmp_writer, *partial_whitelist);
                         (k, tmp_output, kpruner.allelic_counts, kpruner.cross_allelic_counts)
                     })
                     .collect();
@@ -379,7 +306,7 @@ fn main() {
                 }
 
                 let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, &count_re_opt, normalization_method);
-                kpruner.prune(&method.as_str(), &whitehash2, &mut writer);
+                kpruner.prune(&method.as_str(), &whitehash2, &mut writer, *partial_whitelist);
             }
             
             log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
@@ -1104,7 +1031,7 @@ fn main() {
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let disable_filter = sub_matches.get_one::<bool>("DISABLE_FILTER").expect("error");
             let max_depth_ratio = sub_matches.get_one::<f64>("MAX_DEPTH_RATIO").expect("error");
-
+            let max_q0_ratio = sub_matches.get_one::<f64>("MAX_Q0_RATIO").expect("error");
             
             
             ThreadPoolBuilder::new()
@@ -1128,7 +1055,8 @@ fn main() {
                                     *output_depth, *binsize,
                                     *threads,
                                     *disable_filter,
-                                    *max_depth_ratio
+                                    *max_depth_ratio,
+                                    *max_q0_ratio,
                                     );
                     },
                     false => {
@@ -1288,6 +1216,7 @@ fn main() {
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let edge_length = sub_matches.get_one::<u64>("EDGE_LENGTH").expect("error");
+            let max_q0_ratio = sub_matches.get_one::<f64>("MAX_Q0_RATIO").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
@@ -1309,7 +1238,7 @@ fn main() {
                             log::info!("Output path {} existed, removing it first.", output);
                             std::fs::remove_dir_all(&output).unwrap();
                         }
-                        let _ = p.intersect(&bed, *invert, *min_quality, *threads, &output);
+                        let _ = p.intersect(&bed, *invert, *min_quality, *threads, *max_q0_ratio, &output);
                     },
                     false => {
                         log::error!("The input directory is not a PQS directory.");

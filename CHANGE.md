@@ -1,3 +1,8 @@
+## [v0.2.7] - 20250224
+#### bug fixes
+- fixed bug that `pairs-dup` reported `chunk_size` must not be zero
+- fixed bug of `bam2paf` that output error position of reads 
+- fixed bug that `split-clm` can not parse dupplicated contigs
 ## [v0.2.6] - 20250125
 #### bug fixes
 - fixed bug of `pairs-intersect` that report `Aborted (core dumped)`

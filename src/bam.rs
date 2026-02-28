@@ -177,75 +177,6 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
 
 }
 
-// fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
-//     let mut query_start = 0;
-//     let mut query_end = 0;
-//     let mut query_pos = 0;
-//     let mut query_length = 0;
-//     for cigar in record.cigar().iter() {
-//         match cigar.char() {
-//             'M' | '=' | 'X' | 'I' => {
-//                 if query_start == 0 {
-//                     query_start = query_pos;
-//                 }
-//                 query_pos += cigar.len();
-//                 query_length += cigar.len();
-//                 query_end += cigar.len()
-//             }
-//             'S' | 'H' => {
-//                 if query_start == 0 {
-//                     query_start = query_pos + cigar.len();
-//                 }
-//                 query_pos += cigar.len();
-//                 query_length += cigar.len();
-//             }
-//             'D' | 'N' | 'P' => {
-
-//             }
-//             _ => {}
-//         }
-//     }
-//     // query_end = query_pos;
-//     query_end = query_start + query_end;
-
-//     (query_start, query_end, query_length)
-// }
-
-fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
-    let mut qstart: u32 = 0;
-    let mut qend_used: u32 = 0;   
-    let mut qpos: u32 = 0;        
-    let mut qlen: u32 = 0;          
-    for op in record.cigar().iter() {
-        match op {
-            Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
-                if qstart == 0 { qstart = qpos; }
-                qpos += *l as u32;
-                qlen += *l as u32;
-                qend_used += *l as u32;
-            }
-            Cigar::Ins(l) => {
-                if qstart == 0 { qstart = qpos; }
-                qpos += *l as u32;
-                qlen += *l as u32;
-                qend_used += *l as u32;
-            }
-            Cigar::SoftClip(l) | Cigar::HardClip(l) => {
-                if qstart == 0 { qstart = qpos + (*l as u32); }
-                qpos += *l as u32;
-                qlen += *l as u32;
-            }
-            Cigar::Del(_) | Cigar::RefSkip(_) | Cigar::Pad(_) => {
-
-            }
-            // _ => {}
-        }
-    }
-    let qend = qstart + qend_used;
-    (qstart, qend, qlen)
-}
-
-
 fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
     let mut match_len: i64 = 0;
     let mut aln_len: i64 = 0;
@@ -296,6 +227,53 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
     }
     let qend = qstart + qend_consumed;
     (match_len, aln_len, ins_len, del_len, qstart, qend, qlen)
+}
+
+
+fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
+    let mut qlen: u32 = 0;
+
+    for op in record.cigar().iter() {
+        match op {
+            Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) | 
+            Cigar::Ins(l) | Cigar::SoftClip(l) | Cigar::HardClip(l) => {
+                qlen += *l as u32;
+            }
+            _ => {}
+        }
+    }
+
+    let mut bam_start: u32 = 0;
+    let mut bam_end: u32 = 0;
+    let mut current_pos_on_read: u32 = 0;
+    let mut is_first_match = true;
+
+    for op in record.cigar().iter() {
+        let l = op.len() as u32;
+        match op {
+            Cigar::HardClip(_) => {
+                current_pos_on_read += l;
+            }
+            Cigar::SoftClip(_) => {
+                current_pos_on_read += l;
+            }
+            Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_) | Cigar::Ins(_) => {
+                if is_first_match {
+                    bam_start = current_pos_on_read;
+                    is_first_match = false;
+                }
+                current_pos_on_read += l;
+                bam_end = current_pos_on_read; 
+            }
+            _ => {}
+        }
+    }
+
+    if record.is_reverse() {
+        (qlen - bam_end, qlen - bam_start, qlen)
+    } else {
+        (bam_start, bam_end, qlen)
+    }
 }
 
 pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary: bool) {
@@ -386,7 +364,6 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         let tend = record.reference_end();
         let mapq = record.mapq();
 
-        // PAF: qname qlen qstart qend strand tname tlen tstart tend mlen alen mapq NM AS flag
         use std::io::Write;
         writeln!(
             writer,

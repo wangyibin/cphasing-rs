@@ -17,6 +17,7 @@ use std::sync::{ Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::fs::{ File, OpenOptions };
 use twox_hash::XxHash64;
+use rand::Rng;
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 use polars::prelude::*;
@@ -98,6 +99,84 @@ pub const _METADATA: &str = r#"
 
 
 
+fn read_metadata_counts(pqs_dir: &str) -> Option<(u64, u64)> {
+    // returns (q1_records, q0_records) if valid and >0
+    let path = format!("{}/_metadata_counts", pqs_dir);
+
+    if !std::path::Path::new(&path).exists() {
+        return None;
+    }
+
+
+    let f = common_reader(&path);
+    let rdr = BufReader::new(f);
+
+    let mut q0: Option<u64> = None;
+    let mut q1: Option<u64> = None;
+
+    for line in rdr.lines().flatten() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // expected: "q0_records\t123"  or "q1_records  456"
+        let mut it = line.split_whitespace();
+        let k = it.next().unwrap_or("");
+        let v = it.next().unwrap_or("");
+        if v.is_empty() {
+            continue;
+        }
+        if k == "q0_records" {
+            q0 = v.parse::<u64>().ok();
+        } else if k == "q1_records" {
+            q1 = v.parse::<u64>().ok();
+        }
+    }
+
+    match (q1, q0) {
+        (Some(q1), Some(q0)) => Some((q1, q0)),
+        _ => None,
+    }
+}
+
+
+fn write_metadata_counts(pqs_dir: &str, q0_records: u64, q1_records: u64) -> anyResult<()> {
+    let mut wtr = common_writer(format!("{}/_metadata_counts", pqs_dir).as_str());
+    writeln!(wtr, "q0_records\t{}", q0_records)?;
+    writeln!(wtr, "q1_records\t{}", q1_records)?;
+    wtr.flush()?;
+    Ok(())
+}
+
+fn copy_metadata_counts(src_dir: &str, dst_dir: &str) -> anyResult<()> {
+    let src = format!("{}/_metadata_counts", src_dir);
+    let dst = format!("{}/_metadata_counts", dst_dir);
+    if Path::new(&src).exists() {
+        std::fs::copy(src, dst)?;
+    }
+    Ok(())
+}
+
+fn sample_df_by_prob(mut df: DataFrame, prob: f64, seed: u64) -> PolarsResult<DataFrame> {
+    if prob >= 1.0 || df.height() == 0 {
+        return Ok(df);
+    }
+    if prob <= 0.0 {
+        return Ok(df.head(Some(0)));
+    }
+
+    let p = prob.max(0.0).min(1.0);
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+
+    let mut mask: Vec<bool> = Vec::with_capacity(df.height());
+    for _ in 0..df.height() {
+        mask.push(rng.gen_bool(p));
+    }
+
+    let mask = BooleanChunked::from_slice("mask".into(), &mask);
+    df.filter(&mask)
+}
+
 #[derive(Debug, Clone)]
 pub struct PQS {
     pub file: String,
@@ -150,7 +229,8 @@ impl PQS {
         binsize: u32,
         threads: usize,
         disable_filter: bool,
-        max_depth_ratio: f64
+        max_depth_ratio: f64,
+        max_q0_ratio: f64
     ) -> anyResult<()> {
         use hashbrown::HashMap;
         use twox_hash::XxHash64;
@@ -175,6 +255,61 @@ impl PQS {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
         };
 
+        let mut q1_count = 0;
+        let mut q0_only_count = 0;
+        if min_mapq == 0 {
+            if let Some((q1, q0_total)) = read_metadata_counts(self.file.as_str()) {
+                q1_count = q1;
+                q0_only_count = q0_total.saturating_sub(q1);
+                log::info!(
+                    "Loaded counts from _metadata_counts: q1_records={}, q0_total_records={}, q0_only_records={}",
+                    q1_count, q0_total, q0_only_count
+                );
+            } else {
+                // fallback: scan parquet
+                log::info!("Scanning q0 files to calculate sampling ratio...");
+                let counts: Vec<(u64, u64)> = files.par_iter().map(|file| {
+                    let mut lf = match LazyFrame::scan_parquet(file, ScanArgsParquet::default()) {
+                        Ok(lf) => lf,
+                        Err(_) => return (0, 0),
+                    };
+                    let has_mq = lf.collect_schema().map(|s| s.contains("mapq")).unwrap_or(false);
+                    if !has_mq { return (0, 0); }
+
+                    let df = lf.select([col("mapq")]).collect().unwrap_or_else(|_| DataFrame::empty());
+                    let mq = df.column("mapq").ok().and_then(|s| s.u8().ok());
+                    if mq.is_none() { return (0, 0); }
+                    let mq = mq.unwrap();
+
+                    let mut c1: u64 = 0;
+                    let mut c0: u64 = 0;
+                    for v in mq.into_no_null_iter() {
+                        if v >= 1 { c1 += 1; } else { c0 += 1; }
+                    }
+                    (c1, c0)
+                }).collect();
+                for (q1, q0) in counts { q1_count += q1; q0_only_count += q0; }
+            }
+        }
+
+        let q0_sample_prob = if min_mapq == 0 && q0_only_count > 0 {
+            if max_q0_ratio == 0.0 {
+                1.0
+            } else {
+                let target = (q1_count as f64 * max_q0_ratio).min(q0_only_count as f64);
+                (target / q0_only_count as f64).min(1.0)
+            }
+        } else {
+            1.0
+        };
+
+        if min_mapq == 0 {
+                log::info!("Q1 count: {}, Q0-only count: {}, Sampling prob: {:.4}", q1_count, q0_only_count, q0_sample_prob);
+        }
+
+
+
+
         let contigsize_file = format!("{}/_contigsizes", self.file);
         let reader = common_reader(&contigsize_file);
         let mut contigsizes = HashMap::new();
@@ -186,10 +321,13 @@ impl PQS {
                 contigsizes.insert(contig, size);
         }
 
+        let mut sorted_names: Vec<_> = contigsizes.keys().cloned().collect();
+        sorted_names.sort();
+
         let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = 
-                contigsizes.keys().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
+            sorted_names.iter().enumerate().map(|(i, k)| (k.clone(), i as u32)).collect();
         let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = 
-                contigsizes.keys().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
+            sorted_names.iter().enumerate().map(|(i, k)| (i as u32, k.clone())).collect();
         let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = 
                 contigsizes.iter().map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone())).collect();
         let idx_contig_sizes: HashMap<u32, (String, u32), BuildHasherDefault<XxHash64>> = 
@@ -327,18 +465,19 @@ impl PQS {
         let contig_idx = Arc::new(contig_idx);
 
         files.par_iter().for_each(|file| {
-            let lf = match LazyFrame::scan_parquet(file, ScanArgsParquet::default()) {
-                Ok(lf) => lf.select([col("chrom1"), col("chrom2"), col("pos1"), col("pos2")]),
+            let mut lf = match LazyFrame::scan_parquet(file, ScanArgsParquet::default()) {
+                Ok(lf) => lf,
                 Err(_) => return,
             };
 
-            let lf = if min_mapq > 0 {
-                lf.filter(col("mapq").gt_eq(min_mapq))
+            let has_mapq = lf.collect_schema().map(|s| s.contains("mapq")).unwrap_or(false);
+            let select_cols = if has_mapq {
+                vec![col("chrom1"), col("chrom2"), col("pos1"), col("pos2"), col("mapq")]
             } else {
-                lf
+                vec![col("chrom1"), col("chrom2"), col("pos1"), col("pos2")]
             };
 
-            let df = lf.collect().expect("Polars collect failed");
+            let df = lf.select(select_cols).collect().expect("Polars collect failed");
             if df.height() == 0 { return; }
 
             let c1_col = df.column("chrom1").unwrap().categorical().unwrap();
@@ -346,6 +485,8 @@ impl PQS {
             let p1_col = df.column("pos1").unwrap().u32().unwrap();
             let p2_col = df.column("pos2").unwrap().u32().unwrap();
 
+            let mapq_col = if has_mapq { Some(df.column("mapq").unwrap().u8().unwrap()) } else { None };
+            
             let rev1 = c1_col.get_rev_map();
             let phys1_ca = c1_col.physical();
             let max_id1 = phys1_ca.max().unwrap_or(0) as usize;
@@ -369,13 +510,26 @@ impl PQS {
 
             let mut local_map: HashMap<(u32, u32), Vec<SmallIntVec>, FastHasher> = 
                     HashMap::with_capacity_and_hasher(1024, FastHasher::default());
-            
+            let seed = 42; 
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
             phys1_ca.downcast_iter()
                 .zip(phys2_ca.downcast_iter())
                 .zip(p1_col.downcast_iter())
                 .zip(p2_col.downcast_iter())
-                .for_each(|(((c1, c2), p1), p2)| {
+                .enumerate().for_each(|(chunk_idx, (((c1, c2), p1), p2))| {
+                    let mq_chunk = mapq_col.as_ref().map(|mq| mq.downcast_iter().nth(chunk_idx).unwrap());
                     for i in 0..c1.len() {
+                        if let Some(mq) = mq_chunk {
+                            let m = mq.value(i);
+                            if m == 0 && min_mapq == 0 {
+                                if q0_sample_prob < 1.0 && !rng.gen_bool(q0_sample_prob) {
+                                    continue;
+                                }
+                            } else if m < min_quality {
+                                continue;
+                            }
+                        }
+
                         let idx1 = lookup1[c1.value(i) as usize];
                         let idx2 = lookup2[c2.value(i) as usize];
                         if idx1 != u32::MAX && idx2 != u32::MAX {
@@ -389,6 +543,8 @@ impl PQS {
                         }
                     }
             });
+
+
 
             let mut shard_buckets: Vec<Vec<((u32, u32), Vec<SmallIntVec>)>> = (0..num_shards).map(|_| Vec::new()).collect();
             for (key, val) in local_map {
@@ -421,7 +577,7 @@ impl PQS {
                 .par_iter()
                 .map(|(k, v)| (*k, *v / 2))
                 .collect(); 
-    
+           
             let writer = common_writer(format!("{}.split.contacts.gz", output_prefix.to_string()).as_str());
             let writer = Arc::new(Mutex::new(writer));
             data.par_iter().for_each(|(cp, vec) | {
@@ -457,7 +613,7 @@ impl PQS {
                 let mut writer = writer.lock().unwrap();
                 writer.write_all(buffer.as_bytes()).unwrap();
 
-            });
+            }); 
 
             log::info!("Successful output split contacts file `{}`", 
                                 &format!("{}.split.contacts.gz", output_prefix.to_string()));
@@ -542,7 +698,7 @@ impl PQS {
 
         let mut blacklist: HashSet<(u32, u32)> = HashSet::new();
 
-        if !disable_filter {
+        if !disable_filter && max_depth_ratio > 0.0 {
             log::info!("Identifying high depth regions...");
             
             let bin_depths: HashMap<(u32, u32), u32> = data.par_iter()
@@ -624,7 +780,11 @@ impl PQS {
             let count = filtered_vec.len();
             if count < min_contacts as usize { return; }
 
-            let mut buffer = String::with_capacity(count * 40);
+            let p1: Vec<u32> = filtered_vec.iter().map(|v| v[0]).collect();
+            let p2: Vec<u32> = filtered_vec.iter().map(|v| v[1]).collect();
+
+            
+            let mut output_buffer = String::with_capacity(count * 50);
             let mut itoa_buf = itoa::Buffer::new();
 
             for i in 0..4 {
@@ -634,23 +794,75 @@ impl PQS {
                     2 => format!("{}- {}+\t{}\t", contig1, contig2, count),
                     _ => format!("{}- {}-\t{}\t", contig1, contig2, count),
                 };
-                buffer.push_str(&header);
-                
-                for (idx, pair) in filtered_vec.iter().enumerate() {
-                    let val = match i {
-                        0 => length1.wrapping_sub(pair[0]).wrapping_add(pair[1]),
-                        1 => length1.wrapping_sub(pair[0]).wrapping_add(*length2).wrapping_sub(pair[1]),
-                        2 => pair[0].wrapping_add(pair[1]),
-                        _ => pair[0].wrapping_add(*length2).wrapping_sub(pair[1]),
-                    };
-                    buffer.push_str(itoa_buf.format(val));
-                    if idx < count - 1 { buffer.push(' '); }
+                output_buffer.push_str(&header);
+
+                let mut results = vec![0u32; count];
+                let mut chunks_iter = results.chunks_exact_mut(8);
+                let p1_chunks = p1.chunks_exact(8);
+                let p2_chunks = p2.chunks_exact(8);
+
+                for ((res_c, p1_c), p2_c) in chunks_iter.by_ref().zip(p1_chunks).zip(p2_chunks) {
+                    for j in 0..8 {
+                        res_c[j] = match i {
+                            0 => length1.wrapping_sub(p1_c[j]).wrapping_add(p2_c[j]),
+                            1 => length1.wrapping_sub(p1_c[j]).wrapping_add(*length2).wrapping_sub(p2_c[j]),
+                            2 => p1_c[j].wrapping_add(p2_c[j]),
+                            _ => p1_c[j].wrapping_add(*length2).wrapping_sub(p2_c[j]),
+                        };
+                    }
                 }
-                buffer.push('\n');
+                
+                let rem_res = chunks_iter.into_remainder();
+                let rem_p1 = p1.chunks_exact(8).remainder();
+                let rem_p2 = p2.chunks_exact(8).remainder();
+
+                for k in 0..rem_res.len() {
+                    rem_res[k] = match i {
+                        0 => length1.wrapping_sub(rem_p1[k]).wrapping_add(rem_p2[k]),
+                        1 => length1.wrapping_sub(rem_p1[k]).wrapping_add(*length2).wrapping_sub(rem_p2[k]),
+                        2 => rem_p1[k].wrapping_add(rem_p2[k]),
+                        _ => rem_p1[k].wrapping_add(*length2).wrapping_sub(rem_p2[k]),
+                    };
+                }
+
+                for (idx, val) in results.iter().enumerate() {
+                    output_buffer.push_str(itoa_buf.format(*val));
+                    if idx < count - 1 {
+                        output_buffer.push(' ');
+                    }
+                }
+                output_buffer.push('\n');
             }
+            let mut writer_lock = wtr.lock().unwrap();
+            writer_lock.write_all(output_buffer.as_bytes()).unwrap();
+
+            // let mut buffer = String::with_capacity(count * 40);
+            // let mut itoa_buf = itoa::Buffer::new();
+
+            // for i in 0..4 {
+            //     let header = match i {
+            //         0 => format!("{}+ {}+\t{}\t", contig1, contig2, count),
+            //         1 => format!("{}+ {}-\t{}\t", contig1, contig2, count),
+            //         2 => format!("{}- {}+\t{}\t", contig1, contig2, count),
+            //         _ => format!("{}- {}-\t{}\t", contig1, contig2, count),
+            //     };
+            //     buffer.push_str(&header);
+                
+            //     for (idx, pair) in filtered_vec.iter().enumerate() {
+            //         let val = match i {
+            //             0 => length1.wrapping_sub(pair[0]).wrapping_add(pair[1]),
+            //             1 => length1.wrapping_sub(pair[0]).wrapping_add(*length2).wrapping_sub(pair[1]),
+            //             2 => pair[0].wrapping_add(pair[1]),
+            //             _ => pair[0].wrapping_add(*length2).wrapping_sub(pair[1]),
+            //         };
+            //         buffer.push_str(itoa_buf.format(val));
+            //         if idx < count - 1 { buffer.push(' '); }
+            //     }
+            //     buffer.push('\n');
+            // }
             
-            let mut wtr = wtr.lock().unwrap();
-            wtr.write_all(buffer.as_bytes()).unwrap();
+            // let mut wtr = wtr.lock().unwrap();
+            // wtr.write_all(buffer.as_bytes()).unwrap();
         });
       
         drop(data);
@@ -1607,14 +1819,17 @@ impl PQS {
 
 
             });
-        
                 
         });
+
+        let _ = copy_metadata_counts(self.file.as_str(), output.as_str());
+
 
     }
 
     pub fn intersect(&self, hcr_bed: &String, invert: bool,
                     min_mapq: u8, threads: usize,
+                    max_q0_ratio: f64,
                     output: &String) -> anyResult<()> {
         unsafe {
             std::env::set_var("POLARS_MAX_THREADS", format!("{}", threads));
@@ -1631,6 +1846,38 @@ impl PQS {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
         };
 
+        let mut q1_count: u64 = 0;
+        let mut q0_only_count: u64 = 0;
+        if min_mapq == 0 {
+            if let Some((q1, q0_total)) = read_metadata_counts(self.file.as_str()) {
+                q1_count = q1;
+                q0_only_count = q0_total.saturating_sub(q1);
+                log::info!(
+                    "[intersect] Loaded counts: q1_records={}, q0_total_records={}, q0_only_records={}",
+                    q1_count, q0_total, q0_only_count
+                );
+            } else {
+                log::warn!("[intersect] Missing _metadata_counts; fallback to keep all q0-only (no sampling).");
+            }
+        }
+
+        let q0_sample_prob: f64 = if min_mapq == 0 && q0_only_count > 0 {
+            if max_q0_ratio <= 0.0 {
+                1.0
+            } else {
+                let target = (q1_count as f64 * max_q0_ratio).min(q0_only_count as f64);
+                (target / q0_only_count as f64).min(1.0)
+            }
+        } else {
+            1.0
+        };
+
+        if min_mapq == 0 {
+            log::info!(
+                "[intersect] max_q0_ratio={}, q0_sample_prob={:.4}",
+                max_q0_ratio, q0_sample_prob
+            );
+        }
         log::info!("Calculating the intersection of contacts with regions");
 
         let _ = std::fs::create_dir_all(output);
@@ -1640,6 +1887,9 @@ impl PQS {
         let _ = std::fs::copy(format!("{}/_contigsizes", self.file), format!("{}/_contigsizes", output));
         let _ = std::fs::copy(format!("{}/_metadata", self.file), format!("{}/_metadata", output));
         let _ = std::fs::copy(format!("{}/_readme", self.file), format!("{}/_readme", output));
+
+        let q0_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let q1_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let output_q_dir = if min_mapq == 0 { format!("{}/q0", output) } else { format!("{}/q1", output) };
         let copy_q_dir = if min_mapq == 0 { format!("{}/q1", output) } else { format!("{}/q0", output) };
@@ -1657,6 +1907,7 @@ impl PQS {
                 df = df.filter(col("mapq").gt_eq(min_mapq));
             }
 
+            
             let df_coords = df.clone()
                     .select([col("chrom1"), col("pos1"), col("chrom2"), col("pos2")])
                     .collect()
@@ -1688,27 +1939,6 @@ impl PQS {
                 }
             }
 
-            // let mask_iter = chrom1_col.physical().into_iter()
-            //         .zip(pos1_col.into_iter())
-            //         .zip(chrom2_col.physical().into_iter())
-            //         .zip(pos2_col.into_iter())
-            //         .map(|(((c1, p1), c2), p2)| {
-            //             if let (Some(c1_idx), Some(p1_val), Some(c2_idx), Some(p2_val)) = (c1, p1, c2, p2) {
-            //                 let p1_val = p1_val as usize;
-            //                 let p2_val = p2_val as usize;
-
-            //                 let is_in = lapper_cache1.get(&c1_idx).and_then(|&l| l).map_or(false, |l1| {
-            //                     l1.find(p1_val, p1_val + 1).next().is_some() && 
-            //                     lapper_cache2.get(&c2_idx).and_then(|&l| l).map_or(false, |l2| {
-            //                         l2.find(p2_val, p2_val + 1).next().is_some()
-            //                     })
-            //                 });
-            //                 Some(is_in ^ invert)
-            //             } else {
-            //                 Some(false)
-            //             }
-            //     });
-            // let mask = BooleanChunked::from_iter(mask_iter);
             let mask: BooleanChunked = (0..nrows)
             .map(|i| {
                 let c1 = chrom1_col.physical().get(i);
@@ -1738,18 +1968,46 @@ impl PQS {
             drop(df_coords);
             drop(lapper_cache1);
             drop(lapper_cache2);
-            let mut df_full = LazyFrame::scan_parquet(file.clone(), ScanArgsParquet::default())
-                    .unwrap();
-                
+
+            let mask_s = mask.into_series();
+            let mut lf = LazyFrame::scan_parquet(file.clone(), ScanArgsParquet::default()).unwrap();
             if min_mapq > 1 {
-                df_full = df_full.filter(col("mapq").gt_eq(min_mapq));
+                lf = lf.filter(col("mapq").gt_eq(min_mapq));
             }
 
-            let df_full = df_full.collect().unwrap();
-            let mut filtered_df = df_full.filter(&mask).unwrap();
+            let mut filtered_df = lf
+                .with_column(lit(mask_s).alias("mask"))
+                .filter(col("mask"))
+                .select([
+                    col("read_idx"),
+                    col("chrom1"),
+                    col("pos1"),
+                    col("chrom2"),
+                    col("pos2"),
+                    col("strand1"),
+                    col("strand2"),
+                    col("mapq")
+                ])
+                
+                .collect()
+                .unwrap();
 
-            drop(mask);
-            drop(df_full);
+            // let mut df_full = LazyFrame::scan_parquet(file.clone(), ScanArgsParquet::default())
+            //         .unwrap();
+                
+            // if min_mapq > 1 {
+            //     df_full = df_full.filter(col("mapq").gt_eq(min_mapq));
+            // }
+
+            // let df_full = df_full.collect().unwrap();
+            // let mut filtered_df = df_full.filter(&mask).unwrap();
+
+ 
+            // drop(df_full);
+
+            let q0_total_cl = Arc::clone(&q0_total);
+            let q1_total_cl = Arc::clone(&q1_total);
+
                 
             let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
             let main_output_path = format!("{}/{}", output_q_dir, file_name);
@@ -1757,17 +2015,44 @@ impl PQS {
             ParquetWriter::new(&mut main_file).finish(&mut filtered_df).unwrap();
 
             if min_mapq == 0 {
-                let q1_output_path = format!("{}/{}", copy_q_dir, file_name); 
-                
- 
-                let mut df_q1 = filtered_df.lazy()
-                    .filter(col("mapq").gt_eq(1))
-                    .collect()
+
+                let mut df_q1 = filtered_df
+                    .filter(&filtered_df.column("mapq").unwrap().u8().unwrap().gt_eq(1))  // keep mapq>=1
                     .unwrap();
-                
-                let mut q1_file = File::create(q1_output_path).unwrap();
+
+                let mut df_q0only = filtered_df
+                    .filter(&filtered_df.column("mapq").unwrap().u8().unwrap().equal(0u8)) // keep mapq==0
+                    .unwrap();
+
+                if q0_sample_prob < 1.0 && df_q0only.height() > 0 {
+                    df_q0only = sample_df_by_prob(df_q0only, q0_sample_prob, 0).unwrap();
+                }
+
+                let mut df_q0_out = if df_q0only.height() > 0 {
+                    df_q1.vstack(&df_q0only).unwrap()
+                } else {
+                    df_q1.clone()
+                };
+
+                let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
+                let q0_out_path = format!("{}/{}", output_q_dir, file_name);
+                let mut q0_file = File::create(&q0_out_path).unwrap();
+                ParquetWriter::new(&mut q0_file).finish(&mut df_q0_out).unwrap();
+
+                let q1_out_path = format!("{}/{}", copy_q_dir, file_name);
+                let mut q1_file = File::create(&q1_out_path).unwrap();
                 ParquetWriter::new(&mut q1_file).finish(&mut df_q1).unwrap();
+
+                q0_total_cl.fetch_add(df_q0_out.height() as u64, std::sync::atomic::Ordering::Relaxed);
+                q1_total_cl.fetch_add(df_q1.height() as u64, std::sync::atomic::Ordering::Relaxed);
+
+              
             }  else {
+             
+
+                q1_total_cl.fetch_add(filtered_df.height() as u64, std::sync::atomic::Ordering::Relaxed);
+                q0_total_cl.fetch_add(filtered_df.height() as u64, std::sync::atomic::Ordering::Relaxed);
+
                 let q0_output_path = format!("{}/{}", copy_q_dir, file_name);
                 let mut q0_file = File::create(q0_output_path).unwrap();
                 ParquetWriter::new(&mut q0_file).finish(&mut filtered_df).unwrap();
@@ -1785,6 +2070,10 @@ impl PQS {
         //     let new_file = format!("{}/{}", copy_q_dir, file_name);
         //     let _ = std::fs::copy(file, new_file);
         // });
+
+        let q0_n = q0_total.load(std::sync::atomic::Ordering::Relaxed);
+        let q1_n = q1_total.load(std::sync::atomic::Ordering::Relaxed);
+        write_metadata_counts(output.as_str(), q0_n, q1_n)?;
 
         log::info!("Successful output intersect file `{}`", output);
         Ok(())
@@ -1866,7 +2155,7 @@ impl PQS {
         let output_q_dir = format!("{}/q0", output);
         let copy_q_dir = format!("{}/q1", output);
         
-        let chunksize = files.len() / 10;
+        let chunksize = (files.len() / 10).max(1);
         files.par_chunks(chunksize).enumerate().for_each(|(chunk_idx, file_chunk)| {
             // log::info!("Processing chunk {}: {}", chunk_idx, file_chunk.len());
             let mut rng = StdRng::from_seed(seed_array);
@@ -1959,6 +2248,8 @@ impl PQS {
             })
 
         });
+
+        let _ = copy_metadata_counts(self.file.as_str(), output.as_str());
         
         log::info!("Successful output a contig duplicated pairs file into {}", output);
     }
@@ -2002,12 +2293,24 @@ pub fn merge_pqs(input: Vec<&String>, output: &String) {
     let mut q0_pq_files = Vec::new();
     let mut q1_pq_files = Vec::new();
 
+    let mut q0_total: u64 = 0;
+    let mut q1_total: u64 = 0;
+
     for file in input {
         let p = PQS::new(file);
         if !p.is_pqs() {
             log::warn!("{} is not a valid PQS directory, skipped.", file);
             continue;
         }
+
+        if let Some((q1, q0)) = read_metadata_counts(file.as_str()) {
+            q0_total = q0_total.saturating_add(q0);
+            q1_total = q1_total.saturating_add(q1);
+        } else {
+            log::warn!("No _metadata_counts in {}, merged output will miss these counts unless regenerated.", file);
+        }
+
+
         let q0 = format!("{}/q0", file);
         let q1 = format!("{}/q1", file);
 
@@ -2032,6 +2335,14 @@ pub fn merge_pqs(input: Vec<&String>, output: &String) {
             });
         }
     );
+
+    if q0_total > 0 || q1_total > 0 {
+        if let Err(e) = write_metadata_counts(output.as_str(), q0_total, q1_total) {
+            log::warn!("Failed to write _metadata_counts for merged PQS: {}", e);
+        }
+    } else {
+        log::warn!("Merged PQS: no counts found from inputs; _metadata_counts not written.");
+    }
     // q0_pq_files.into_par_iter().enumerate().for_each(|(idx, file)| {
     //     let output_file = format!("{}/q0/{}.parquet", output, idx);
     //     let _ = std::fs::copy(file, output_file);

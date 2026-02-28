@@ -12,5 +12,3 @@ Cargo.lock
 # pixi environments
 .pixi
 *.egg-info
-
-optimize/*

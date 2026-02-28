@@ -278,10 +278,18 @@ pub fn cli() -> Command {
                     Arg::new("WHITELIST")
                         .long("whitelist")
                         .short('w')
-                        .help("whitelist file, only keep the contigs in whitelist")
+                        .help("whitelist file, only keep the contig pairs in whitelist")
                         .value_parser(value_parser!(String))
                         .default_value("none")
                         )
+                .arg(
+                    Arg::new("PARTIAL_WHITELIST")
+                        .long("partial-whitelist")
+                        .short('p')
+                        .help("partial whitelist file, only keep the contig pairs with one contig in partial whitelist")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                )
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")
@@ -292,6 +300,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("prune")
+                .hide(true)
                 .about("Identity the allelic and cross-allelic contig pairs by raw allele table")
                 .arg(arg!(<ALLELETABLE> "raw allele table"))
                 .arg(arg!(<ALLELESTRANDTABLE> "allele table"))
@@ -607,6 +616,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("kmer")
+                .hide(true)
                 .about("some kmer operations")
                 .arg_required_else_help(true)
                 .allow_external_subcommands(true)
@@ -1346,6 +1356,13 @@ pub fn cli() -> Command {
                         .help("The ratio threshold for high depth filtering (e.g., 3.0 means > 3 * mean_depth).")
                 )
                 .arg(
+                    Arg::new("MAX_Q0_RATIO")
+                        .long("max-q0-ratio")
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.0")
+                        .help("The ratio threshold for contacts (MAPQ=0) (e.g., 3.0 means Q0_data > 3 * Q1_data ), only effect for pairs.pqs and mapq=0.")
+                )
+                .arg(
                     Arg::new("THREADS")
                         .long("threads")
                         .short('t')
@@ -1648,6 +1665,13 @@ pub fn cli() -> Command {
                         .default_value("0")
                         .hide(true)
                         .help("remove the alignments located in the edge of contigs")
+                )
+                .arg(
+                    Arg::new("MAX_Q0_RATIO")
+                        .long("max-q0-ratio")
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.0")
+                        .help("The ratio threshold for contacts (MAPQ=0) (e.g., 3.0 means Q0_data > 3 * Q1_data ), only effect for pairs.pqs and mapq=0.")
                 )
                 .arg(
                     Arg::new("THREADS")

@@ -2183,8 +2183,6 @@ impl PAFTable {
         let num_chroms = chrom_names.len();
         let chrom_map = Arc::new(chrom_map);
 
-        // 2. Channel for raw byte blocks
-        // Change: Send Vec<u8> (raw bytes) instead of parsed PAFLine objects
         let (sender, receiver) = bounded::<Vec<u8>>(100);
         
         let mut handles = Vec::new();
@@ -2193,8 +2191,7 @@ impl PAFTable {
             let chrom_map = chrom_map.clone();
             handles.push(thread::spawn(move || {
                 let mut local_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
-                
-                // Helper to parse integer from bytes quickly
+    
                 fn fast_parse_u64(bytes: &[u8]) -> Option<u64> {
                     let mut n = 0;
                     for &b in bytes {
@@ -2206,7 +2203,7 @@ impl PAFTable {
 
                 while let Ok(data) = receiver.recv() {
                     let mut start_idx = 0;
-                    // Split lines by '\n' manually
+
                     while start_idx < data.len() {
                         let end_idx = match data[start_idx..].iter().position(|&b| b == b'\n') {
                             Some(pos) => start_idx + pos,
@@ -2217,34 +2214,18 @@ impl PAFTable {
 
                         if line.is_empty() || line[0] == b'#' { continue; }
 
-                        // Manual column splitting by '\t' to avoid allocation
-                        // PAF columns needed: 
-                        // 5: target name (str), 7: t_start (int), 8: t_end (int), 11: mapq (int)
-                        
+
                         let mut iter = line.split(|&b| b == b'\t');
                         
-                        // Skip first 5 columns: qname, qlen, qstart, qend, strand
                         if iter.nth(4).is_none() { continue; } 
-                        
-                        // Column 5: Target Name
                         let target_bytes = match iter.next() { Some(v) => v, None => continue };
                         
-                        // Only convert to string if we need to look it up (allocating here is unavoidable unless we hash bytes directly)
-                        // Optimization: Check mapq first to avoid string alloc if mapq is low
-                        
-                        // Skip 6: tlen
                         if iter.next().is_none() { continue; }
-
-                        // Column 7: Target Start
                         let t_start_bytes = match iter.next() { Some(v) => v, None => continue };
-                        
-                        // Column 8: Target End
                         let t_end_bytes = match iter.next() { Some(v) => v, None => continue };
-                        
-                        // Skip 9, 10
+                    
                         if iter.nth(1).is_none() { continue; }
                         
-                        // Column 11: MAPQ
                         let mapq_bytes = match iter.next() { Some(v) => v, None => continue };
                         let mapq = match fast_parse_u64(mapq_bytes) { Some(v) => v as u8, None => continue };
 
@@ -2260,11 +2241,9 @@ impl PAFTable {
                             if is_secondary { continue; }
                         }
 
-                        // Now parse coordinates
                         let t_start = match fast_parse_u64(t_start_bytes) { Some(v) => v, None => continue };
                         let t_end = match fast_parse_u64(t_end_bytes) { Some(v) => v, None => continue };
 
-                        // Look up chromosome ID using str (std::str::from_utf8 is zero-copy reference)
                         if let Ok(target_str) = std::str::from_utf8(target_bytes) {
                                 if let Some(&idx) = chrom_map.get(target_str) {
                                 local_events[idx].push((t_start as u32, 1));
@@ -2277,17 +2256,14 @@ impl PAFTable {
             }));
         }
         
-        // 3. Main Thread: Raw Byte Reading
         {
-            let mut input = common_reader(&self.file); // Raw reader, not BufReader if possible, or large BufReader
+            let mut input = common_reader(&self.file); 
             
-            // 512 KB buffer size
             const BUF_SIZE: usize = 512 * 1024; 
             let mut buffer = vec![0u8; BUF_SIZE];
             let mut leftover = Vec::with_capacity(1024);
 
             loop {
-                // Read into buffer
                 let bytes_read = input.read(&mut buffer).unwrap_or(0);
                 if bytes_read == 0 {
                     break;
@@ -2316,7 +2292,6 @@ impl PAFTable {
                     sender.send(to_send).unwrap();
                 }
             }
-            // Send remaining leftover if any
             if !leftover.is_empty() {
                 sender.send(leftover).unwrap();
             }
@@ -2324,7 +2299,6 @@ impl PAFTable {
         
         drop(sender);
 
-        // ... existing aggregation and writing logic ...
         let mut global_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
 
         for handle in handles {
@@ -2351,23 +2325,61 @@ impl PAFTable {
 
                 events.par_sort_unstable_by_key(|e| e.0);
 
-                let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
-                prefix_sum.push(0);
+                // let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
+                // prefix_sum.push(0);
                 
+                // let mut current_cov = 0i32;
+                // let mut prev_pos = 0usize;
+                // let mut running_sum = 0i64;
+
+                // for (pos, delta) in events {
+                //     let pos = pos as usize;
+                //     if pos >= chrom_len { break; }
+                    
+                //     if pos > prev_pos {
+                //         let cov = current_cov as i64;
+                //         let count = pos - prev_pos;
+                //         for _ in 0..count {
+                //             running_sum += cov;
+                //             prefix_sum.push(running_sum);
+                //         }
+                //     }
+                //     current_cov += delta;
+                //     prev_pos = pos;
+                // }
+                
+                // if prev_pos < chrom_len {
+                //     let cov = current_cov as i64;
+                //     let count = chrom_len - prev_pos;
+                //     for _ in 0..count {
+                //         running_sum += cov;
+                //         prefix_sum.push(running_sum);
+                //     }
+                // }
+
+                // let mut output_buf = String::with_capacity(64 * 1024);
+                // let mut start = 0usize;
+
+                // while start < chrom_len {
+                //     let end = std::cmp::min(start + window_size, chrom_len);
+                //     let len = end - start;
+                //     if len == 0 { break; }
+                    
+                //     let sum = prefix_sum[end] - prefix_sum[start];
+                //     let mean = sum as f64 / len as f64;
+                    
+                //     write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean).unwrap();
+                let mut coverage = vec![0i32; chrom_len];
                 let mut current_cov = 0i32;
                 let mut prev_pos = 0usize;
-                let mut running_sum = 0i64;
 
                 for (pos, delta) in events {
                     let pos = pos as usize;
                     if pos >= chrom_len { break; }
                     
                     if pos > prev_pos {
-                        let cov = current_cov as i64;
-                        let count = pos - prev_pos;
-                        for _ in 0..count {
-                            running_sum += cov;
-                            prefix_sum.push(running_sum);
+                        for k in prev_pos..pos {
+                            coverage[k] = current_cov;
                         }
                     }
                     current_cov += delta;
@@ -2375,27 +2387,36 @@ impl PAFTable {
                 }
                 
                 if prev_pos < chrom_len {
-                    let cov = current_cov as i64;
-                    let count = chrom_len - prev_pos;
-                    for _ in 0..count {
-                        running_sum += cov;
-                        prefix_sum.push(running_sum);
+                    for k in prev_pos..chrom_len {
+                        coverage[k] = current_cov;
                     }
                 }
 
                 let mut output_buf = String::with_capacity(64 * 1024);
                 let mut start = 0usize;
+                
+                let mut window_buf = Vec::with_capacity(window_size);
 
                 while start < chrom_len {
                     let end = std::cmp::min(start + window_size, chrom_len);
                     let len = end - start;
                     if len == 0 { break; }
                     
-                    let sum = prefix_sum[end] - prefix_sum[start];
-                    let mean = sum as f64 / len as f64;
+    
+                    window_buf.clear();
+                    window_buf.extend_from_slice(&coverage[start..end]);
                     
-                    write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean).unwrap();
-
+                    let mid = len / 2;
+                    let (_, &mut median_val, _) = window_buf.select_nth_unstable(mid);
+                    
+                    let median = if len % 2 == 0 {
+                        let max_lower = *window_buf[..mid].iter().max().unwrap();
+                        (median_val as f64 + max_lower as f64) / 2.0
+                    } else {
+                        median_val as f64
+                    };
+                    
+                    write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, median).unwrap();
                     if output_buf.len() > 60 * 1024 {
                         tx.send(std::mem::take(&mut output_buf)).unwrap();
                         output_buf = String::with_capacity(64 * 1024);

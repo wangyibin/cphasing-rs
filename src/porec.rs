@@ -13,6 +13,7 @@ use std::error::Error;
 use std::path::Path;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering as AtomOrdering };
 use std::io::{ Write, BufReader, BufRead };
 use std::fmt::Write as FmtWrite;
 use serde::{ Deserialize, Serialize};
@@ -692,7 +693,8 @@ impl PoreCTable {
         wtr.write_all(_metadata.as_bytes()).unwrap();
         wtr.flush().unwrap();
         
-
+        let q0_total = Arc::new(AtomicU64::new(0));
+        let q1_total = Arc::new(AtomicU64::new(0));
         let mut concatemer_summary: ConcatemerSummary = ConcatemerSummary::new();
         let (sender, receiver) = bounded::<(usize, Vec<Concatemer>)>(200);
 
@@ -721,6 +723,9 @@ impl PoreCTable {
         for _ in 0..num_workers {
             let rx = receiver.clone();
             let output = output.clone();
+            let q0_total = Arc::clone(&q0_total);
+            let q1_total = Arc::clone(&q1_total);
+
             handles.push(thread::spawn(move || {
                 while let Ok((chunk_id, records, mut current_id)) = rx.recv() {
       
@@ -785,14 +790,19 @@ impl PoreCTable {
                         ])
                         .collect().unwrap();
 
-
+                        q0_total.fetch_add(df.height() as u64, AtomOrdering::Relaxed);
                     let path0 = format!("{}/q0/{}.parquet", output, chunk_id);
                     ParquetWriter::new(File::create(path0).unwrap()).finish(&mut df).unwrap();
                     
                     let mut df_q1 = df.lazy().filter(col("mapq").gt_eq(1)).collect().unwrap();
-                    let path1 = format!("{}/q1/{}.parquet", output, chunk_id);
-                    ParquetWriter::new(File::create(path1).unwrap()).finish(&mut df_q1).unwrap();
+                    q1_total.fetch_add(df_q1.height() as u64, AtomOrdering::Relaxed);
+
+                    if df_q1.height() > 0 {
+                        let path1 = format!("{}/q1/{}.parquet", output, chunk_id);
+                        ParquetWriter::new(File::create(path1).unwrap()).finish(&mut df_q1).unwrap();
+                    }
                 }
+                  
             }));
         }
 
@@ -863,6 +873,17 @@ impl PoreCTable {
         
         drop(sender);
         for handle in handles { handle.join().unwrap(); }
+
+        {
+            let q0_n = q0_total.load(AtomOrdering::Relaxed);
+            let q1_n = q1_total.load(AtomOrdering::Relaxed);
+
+            let mut wtr = common_writer(format!("{}/_metadata_counts", output).as_str());
+            writeln!(wtr, "q0_records\t{}", q0_n).unwrap();
+            writeln!(wtr, "q1_records\t{}", q1_n).unwrap();
+            wtr.flush().unwrap();
+        }
+
         Ok(())
     }
 
