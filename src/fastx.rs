@@ -249,44 +249,98 @@ impl Fastx {
     //     Ok((chrom_count, chrom_length))
     // }
 
+    // pub fn count_re(&self, patterns: &String) -> AnyResult<(hashHashMap<String, u64>, hashHashMap<String, u64>)> {
+    //     use aho_corasick::AhoCorasick;
+    //     use rayon::iter::{ParallelBridge, ParallelIterator};
+
+    //     let pattern_vec: Vec<String> = patterns.split(',').map(|s| s.to_uppercase()).collect();
+    //     let ac = AhoCorasick::new(&pattern_vec).unwrap();
+
+    //     let chrom_count = Arc::new(Mutex::new(hashHashMap::new()));
+    //     let chrom_length = Arc::new(Mutex::new(hashHashMap::new()));
+
+    //     let reader = common_reader(&self.file);
+    //     let fasta_reader = bio::io::fasta::Reader::new(reader);
+
+    //     fasta_reader.records().par_bridge().for_each(|result| {
+    //         if let Ok(record) = result {
+    //             let id = record.id().to_owned();
+    //             let mut seq = record.seq().to_vec();
+    //             seq.make_ascii_uppercase();
+
+    //             let mut local_count = 0u64;
+    //             for _ in ac.find_iter(&seq) {
+    //                 local_count += 1;
+    //             }
+
+    //             let seq_len = seq.len() as u64;
+
+    //             {
+    //                 let mut c_map = chrom_count.lock().unwrap();
+    //                 c_map.entry(id.clone()).or_insert(0).add_assign(local_count);
+                    
+    //                 let mut l_map = chrom_length.lock().unwrap();
+    //                 l_map.entry(id).or_insert(0).add_assign(seq_len);
+    //             }
+    //         }
+    //     });
+
+    //     let final_count = Arc::try_unwrap(chrom_count).unwrap().into_inner().unwrap();
+    //     let final_len = Arc::try_unwrap(chrom_length).unwrap().into_inner().unwrap();
+
+    //     Ok((final_count, final_len))
+    // }
+
     pub fn count_re(&self, patterns: &String) -> AnyResult<(hashHashMap<String, u64>, hashHashMap<String, u64>)> {
         use aho_corasick::AhoCorasick;
         use rayon::iter::{ParallelBridge, ParallelIterator};
 
-        let pattern_vec: Vec<String> = patterns.split(',').map(|s| s.to_uppercase()).collect();
+        let pattern_vec: Vec<String> = patterns
+            .split(',')
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty())
+            .collect();
         let ac = AhoCorasick::new(&pattern_vec).unwrap();
-
-        let chrom_count = Arc::new(Mutex::new(hashHashMap::new()));
-        let chrom_length = Arc::new(Mutex::new(hashHashMap::new()));
 
         let reader = common_reader(&self.file);
         let fasta_reader = bio::io::fasta::Reader::new(reader);
 
-        fasta_reader.records().par_bridge().for_each(|result| {
-            if let Ok(record) = result {
-                let id = record.id().to_owned();
-                let mut seq = record.seq().to_vec();
-                seq.make_ascii_uppercase();
+        let (final_count, final_len) = fasta_reader
+            .records()
+            .par_bridge()
+            .fold(
+                || (hashHashMap::new(), hashHashMap::new()), 
+                |(mut local_count_map, mut local_len_map), result| {
+                    if let Ok(record) = result {
+                        let id = record.id().to_owned();
+                        let mut seq = record.seq().to_vec();
+                        seq.make_ascii_uppercase();
 
-                let mut local_count = 0u64;
-                for _ in ac.find_iter(&seq) {
-                    local_count += 1;
+                        let mut local_count = 0u64;
+                        for _ in ac.find_iter(&seq) {
+                            local_count += 1;
+                        }
+
+                        let seq_len = seq.len() as u64;
+
+                        local_count_map.entry(id.clone()).or_insert(0).add_assign(local_count);
+                        local_len_map.entry(id).or_insert(0).add_assign(seq_len);
+                    }
+                    (local_count_map, local_len_map)
                 }
-
-                let seq_len = seq.len() as u64;
-
-                {
-                    let mut c_map = chrom_count.lock().unwrap();
-                    c_map.entry(id.clone()).or_insert(0).add_assign(local_count);
-                    
-                    let mut l_map = chrom_length.lock().unwrap();
-                    l_map.entry(id).or_insert(0).add_assign(seq_len);
+            )
+            .reduce(
+                || (hashHashMap::new(), hashHashMap::new()),
+                |(mut map_a1, mut map_a2), (map_b1, map_b2)| {
+                    for (k, v) in map_b1 {
+                        map_a1.entry(k).or_insert(0).add_assign(v);
+                    }
+                    for (k, v) in map_b2 {
+                        map_a2.entry(k).or_insert(0).add_assign(v);
+                    }
+                    (map_a1, map_a2)
                 }
-            }
-        });
-
-        let final_count = Arc::try_unwrap(chrom_count).unwrap().into_inner().unwrap();
-        let final_len = Arc::try_unwrap(chrom_length).unwrap().into_inner().unwrap();
+            );
 
         Ok((final_count, final_len))
     }

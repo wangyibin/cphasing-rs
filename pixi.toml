@@ -59,3 +59,8 @@ default = {features = [
     "build",
 ]}
 conda = {features = ["conda"]}
+
+[dependencies]
+xz = ">=5.8.3,<6"
+libdeflate = ">=1.25,<2"
+openssl = ">=3.6.2,<4"

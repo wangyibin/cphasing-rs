@@ -15,12 +15,16 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::error::Error;
 use std::sync::{Arc, Mutex, atomic::Ordering};
-use std::io::{ Write, BufReader, BufRead };
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::io::{ Read, Write, BufReader, BufRead };
 use std::fmt::{ Write as FmtWrite };
 use serde::{ Deserialize, Serialize};
 use std::time::{Instant, Duration};
 use rust_lapper::{Interval, Lapper};
 use rayon::prelude::*;
+use rand::prelude::*;
 
 use crate::bed::Bed3; 
 use crate::core::{ common_reader, common_writer, Prof };
@@ -581,7 +585,7 @@ impl PAFTable {
         Ok(iter)
     }
 
-    pub fn paf2table(&self, bed: &String,
+    pub fn paf2table_v0_3_0(&self, bed: &String,
             output: &String, min_quality: &u8, 
             min_identity: &f32,  min_length: &u32,
             max_order: &u32, 
@@ -895,12 +899,13 @@ impl PAFTable {
         Ok(())
     }
 
-    pub fn paf2table_fast(&self, bed: &String,
+    pub fn paf2table(&self, bed: &String,
             output: &String, min_quality: &u8, 
             min_identity: &f32,  min_length: &u32,
             max_order: &u32, 
             max_edge_length: &u64,
-            secondary: bool    
+            secondary: bool,
+            threads: usize,
         ) -> Result<(), Box<dyn Error>> {
             
         let min_quality = *min_quality;
@@ -914,12 +919,11 @@ impl PAFTable {
         let interval_hash = Arc::new(bed_obj.to_interval_hash());
         let is_filter_edges = max_edge_length > 0;
 
-        let num_threads = 20; 
+        let num_threads = threads;
         log::info!("Using {} threads for processing.", num_threads);
         
-        let (tx_raw, rx_raw) = bounded::<(u64, Vec<u8>)>(100); 
-        let (tx_writer, rx_writer) = bounded::<String>(1000);
-
+        let (tx_raw, rx_raw) = bounded::<Vec<u8>>(200); 
+        let (tx_writer, rx_writer) = bounded::<String>(2000);
 
         let output_clone = output.clone();
         let writer_handle = thread::spawn(move || {
@@ -935,6 +939,7 @@ impl PAFTable {
         let stats_sing = Arc::new(AtomicU64::new(0));
         let stats_low  = Arc::new(AtomicU64::new(0));
         let stats_comp = Arc::new(AtomicU64::new(0));
+        let global_read_idx = Arc::new(AtomicU64::new(1)); 
 
         for _ in 0..num_threads {
             let rx = rx_raw.clone();
@@ -944,15 +949,15 @@ impl PAFTable {
             let s_s = stats_sing.clone();
             let s_l = stats_low.clone();
             let s_c = stats_comp.clone();
+            let g_rid = global_read_idx.clone();
 
             handles.push(thread::spawn(move || {
                 let mut local_p=0; let mut local_s=0; let mut local_l=0; let mut local_c=0;
                 let mut output_buffer = String::with_capacity(WRITE_CHUNK);
                 
-                
-                fn parse_line(line: &[u8], min_q: u8, min_l: u32, min_id: f32, sec: bool) -> Option<(PoreCRecord, String)> {
+                fn parse_line_only(line: &[u8], min_q: u8, min_l: u32, min_id: f32, sec: bool) -> Option<PoreCRecord> {
                     let mut iter = line.split(|&b| b == b'\t');
-                    let q_bytes = iter.next()?;
+                    let _q_bytes = iter.next()?;
                     
                     let qlen: u32 = fast_parse_int(iter.next()?)? as u32;
                     let qs: u32   = fast_parse_int(iter.next()?)? as u32;
@@ -978,71 +983,72 @@ impl PAFTable {
 
                     let q_cov = qe - qs;
                     let ident = if aln > 0 { mat as f32 / aln as f32 } else { 0.0 };
-                        let fr = if q_cov < min_l || ident < min_id {
-                            LOW_MQ_STR
+                    let fr = if q_cov < min_l || ident < min_id {
+                        LOW_MQ_STR
                     } else {
-                            PASS_STR
+                        PASS_STR
                     };
 
                     let t_str = unsafe { String::from_utf8_unchecked(t_bytes.to_vec()) };
-                    let q_str = unsafe { String::from_utf8_unchecked(q_bytes.to_vec()) };
 
                     Some(PoreCRecord {
-                            read_idx: 0, 
-                            query_length: qlen, 
-                            query_start: qs, query_end: qe, query_strand: strand_c,
-                            target: t_str, target_length: tlen,
-                            target_start: ts, target_end: te,
-                            mapq: mapq, identity: ident, filter_reason: fr.to_string(),
-                    }).map(|r| (r, q_str))
+                        read_idx: 0, 
+                        query_length: qlen, 
+                        query_start: qs, query_end: qe, query_strand: strand_c,
+                        target: t_str, target_length: tlen,
+                        target_start: ts, target_end: te,
+                        mapq: mapq, identity: ident, filter_reason: fr.to_string(),
+                    })
                 }
 
-                while let Ok((start_idx, batch_bytes)) = rx.recv() {
-                    let mut current_idx = start_idx;
-                    
+                while let Ok(batch_bytes) = rx.recv() {
                     let mut start = 0;
                     let mut current_group: Vec<PoreCRecord> = Vec::with_capacity(32);
-                    let mut old_q_str = String::new();
+                    // 优化 1：彻底消灭 String，改用零分配的 &[u8] 切片判定 Read 切换
+                    let mut old_q_bytes: &[u8] = &[];
                     
                     while start < batch_bytes.len() {
                         let end = match batch_bytes[start..].iter().position(|&b| b == b'\n') {
-                                Some(p) => start + p,
-                                None => batch_bytes.len(),
+                            Some(p) => start + p,
+                            None => batch_bytes.len(),
                         };
                         let line = &batch_bytes[start..end];
                         start = end + 1; 
                         
-                        if line.is_empty() { continue; }
-                    
-                        if let Some((mut pcr, q_str)) = parse_line(line, min_quality, min_length, min_identity, secondary) {
-                            
-                            let is_switch = !old_q_str.is_empty() && old_q_str != q_str;
-                            
-                            if is_switch {
+                        if line.is_empty() || line[0] == b'#' { continue; }
                         
-                                for r in &mut current_group { r.read_idx = current_idx; }
-                                
+                        let tab_pos = match line.iter().position(|&b| b == b'\t') {
+                            Some(p) => p, None => continue,
+                        };
+                        let q_bytes = &line[..tab_pos];
+                        
+                        let is_switch = !old_q_bytes.is_empty() && old_q_bytes != q_bytes;
+                        if is_switch {
+                            if !current_group.is_empty() {
+                                // 优化 2：多核并行无锁 fetch_add 抢占分配全局唯一 ID，完全免除主线程调度负担
+                                let rid = g_rid.fetch_add(1, Ordering::Relaxed);
+                                for r in &mut current_group { r.read_idx = rid; }
                                 process_group(&mut current_group, &ih, is_filter_digest, is_filter_edges, max_edge_length, max_order, &mut output_buffer, &mut local_p, &mut local_s, &mut local_l, &mut local_c);
                                 
                                 if output_buffer.len() >= WRITE_CHUNK {
                                     tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
                                     output_buffer = String::with_capacity(WRITE_CHUNK);
                                 }
-                                
-                    
-                                current_idx += 1;
                             }
-                            
-                            if old_q_str.is_empty() || is_switch {
-                                old_q_str = q_str;
-                            }
+                            old_q_bytes = q_bytes;
+                        } else if old_q_bytes.is_empty() {
+                            old_q_bytes = q_bytes;
+                        }
+
+                        if let Some(pcr) = parse_line_only(line, min_quality, min_length, min_identity, secondary) {
                             current_group.push(pcr);
                         }
                     }
                     
                     if !current_group.is_empty() {
-                            for r in &mut current_group { r.read_idx = current_idx; }
-                            process_group(&mut current_group, &ih, is_filter_digest, is_filter_edges, max_edge_length, max_order, &mut output_buffer, &mut local_p, &mut local_s, &mut local_l, &mut local_c);
+                        let rid = g_rid.fetch_add(1, Ordering::Relaxed);
+                        for r in &mut current_group { r.read_idx = rid; }
+                        process_group(&mut current_group, &ih, is_filter_digest, is_filter_edges, max_edge_length, max_order, &mut output_buffer, &mut local_p, &mut local_s, &mut local_l, &mut local_c);
                     }
                     
                     if output_buffer.len() >= WRITE_CHUNK {
@@ -1063,87 +1069,72 @@ impl PAFTable {
         drop(tx_writer);
 
         let mut reader = common_reader(&self.file);
-        const IO_BUF_SIZE: usize = 1024 * 1024; // 1MB read buffer
-        let mut buffer = vec![0u8; IO_BUF_SIZE];
-        let mut leftover = Vec::new();
-
         const BATCH_SIZE_LIMIT: usize = 16 * 1024 * 1024; 
-        let mut current_batch = Vec::with_capacity(BATCH_SIZE_LIMIT + IO_BUF_SIZE);
-        
-        let mut old_query_bytes = Vec::with_capacity(128);
-        let mut first = true;
-        
-        let mut total_groups: u64 = 0;
-        let mut batch_start_idx: u64 = 0;
+        let mut buffer = vec![0u8; BATCH_SIZE_LIMIT * 2];
+        let mut bytes_in_buffer = 0;
 
-        loop {
-            let n = reader.read(&mut buffer).unwrap_or(0);
-            if n == 0 { break; }
-
-            let data = if !leftover.is_empty() {
-                let mut v = Vec::with_capacity(leftover.len() + n);
-                v.extend_from_slice(&leftover);
-                v.extend_from_slice(&buffer[..n]);
-                leftover.clear();
-                Cow::Owned(v)
+        #[inline(always)]
+        fn get_qname(line: &[u8]) -> &[u8] {
+            if let Some(pos) = line.iter().position(|&b| b == b'\t') {
+                &line[..pos]
             } else {
-                Cow::Borrowed(&buffer[..n])
-            };
-            
-            let data_slice = &data;
-            let mut start_pos = 0;
-
-            while start_pos < data_slice.len() {
-                let end_pos = match data_slice[start_pos..].iter().position(|&b| b == b'\n') {
-                    Some(p) => start_pos + p,
-                    None => {
-                        leftover.extend_from_slice(&data_slice[start_pos..]);
-                        break; 
-                    }
-                };
-                let mut line = &data_slice[start_pos..end_pos];
-                start_pos = end_pos + 1;
-
-                if !line.is_empty() && line[line.len()-1] == b'\r' { line = &line[..line.len()-1]; }
-                if line.is_empty() || line[0] == b'#' { continue; }
-
-                let tab_pos = match line.iter().position(|&b| b == b'\t') {
-                    Some(p) => p, None => continue,
-                };
-                let q_bytes = &line[..tab_pos];
-
-                let is_switch = if first {
-                    first = false;
-                    old_query_bytes.extend_from_slice(q_bytes);
-                    false
-                } else {
-                    q_bytes != old_query_bytes.as_slice()
-                };
-
-                if is_switch {
-                    total_groups += 1;
-                    
-                    old_query_bytes.clear();
-                    old_query_bytes.extend_from_slice(q_bytes);
-
-                    if current_batch.len() >= BATCH_SIZE_LIMIT {
-                        tx_raw.send((batch_start_idx, std::mem::take(&mut current_batch))).unwrap();
-            
-                        batch_start_idx = total_groups;
-                        
-                        current_batch = Vec::with_capacity(BATCH_SIZE_LIMIT + IO_BUF_SIZE);
-                    }
-                }
-                
-                current_batch.extend_from_slice(line);
-                current_batch.push(b'\n');
+                line
             }
         }
-        
-        if !current_batch.is_empty() {
-            tx_raw.send((batch_start_idx, current_batch)).unwrap();
+
+        loop {
+            let bytes_read = reader.read(&mut buffer[bytes_in_buffer..]).unwrap_or(0);
+            if bytes_read == 0 && bytes_in_buffer == 0 {
+                break;
+            }
+            bytes_in_buffer += bytes_read;
+
+            let mut chunk_end = bytes_in_buffer;
+            if bytes_in_buffer > BATCH_SIZE_LIMIT {
+                if let Some(pos) = buffer[BATCH_SIZE_LIMIT..bytes_in_buffer].iter().position(|&b| b == b'\n') {
+                    let nl_idx = BATCH_SIZE_LIMIT + pos;
+                    let line_start = match buffer[..nl_idx].iter().rposition(|&b| b == b'\n') {
+                        Some(p) => p + 1,
+                        None => 0,
+                    };
+                    let q_last = get_qname(&buffer[line_start..nl_idx]);
+
+                    let mut scan_pos = nl_idx + 1;
+                    let mut found = false;
+                    while scan_pos < bytes_in_buffer {
+                        let next_nl = match buffer[scan_pos..bytes_in_buffer].iter().position(|&b| b == b'\n') {
+                            Some(p) => scan_pos + p,
+                            None => bytes_in_buffer,
+                        };
+                        let line = &buffer[scan_pos..next_nl];
+                        if !line.is_empty() && line[0] != b'#' {
+                            let q_cur = get_qname(line);
+                            if q_cur != q_last {
+                                chunk_end = scan_pos;
+                                found = true;
+                                break;
+                            }
+                        }
+                        scan_pos = next_nl + 1;
+                    }
+
+                    if !found && bytes_in_buffer < buffer.len() {
+                        continue;
+                    }
+                }
+            }
+
+            let chunk = &buffer[..chunk_end];
             
-            total_groups += 1;
+            // 优化 3：主线程除极其轻量级的边界定位外做 0 处理，不切行，不计数，秒级直发给下游通道
+            tx_raw.send(chunk.to_vec()).unwrap();
+
+            if chunk_end < bytes_in_buffer {
+                buffer.copy_within(chunk_end..bytes_in_buffer, 0);
+                bytes_in_buffer -= chunk_end;
+            } else {
+                bytes_in_buffer = 0;
+            }
         }
         drop(tx_raw);
 
@@ -1162,8 +1153,8 @@ impl PAFTable {
         summary.singleton = final_stats.1;
         summary.low_mq = final_stats.2;
         summary.complex = final_stats.3;
-    
-        summary.mapping = total_groups; 
+
+        summary.mapping = global_read_idx.load(Ordering::Relaxed).saturating_sub(1); 
 
         let output_prefix = if output == "-" {
             Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
@@ -1175,991 +1166,6 @@ impl PAFTable {
         log::info!("Successful output Pore-C table `{}` (raw-bytes-batched)", output);
         Ok(())
     }
-    
-    pub fn paf2table1(&self, bed: &String,
-            output: &String, min_quality: &u8, 
-            min_identity: &f32,  min_length: &u32,
-            max_order: &u32, 
-            max_edge_length: &u64,
-            secondary: bool    
-        ) -> Result<(), Box<dyn Error>> {
-        
-        type IvU8 = Interval<usize, u8>;
-        let min_quality = *min_quality;
-        let min_identity = *min_identity;
-        let min_length = *min_length;
-        let max_order = *max_order;
-        let max_edge_length = *max_edge_length;
-
-        let is_filter_digest = !bed.is_empty();
-        let bed = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
-        let interval_hash = bed.to_interval_hash();
-        let is_filter_edges = max_edge_length > 0;
-
-        let num_threads = 10;
-        log::info!("Using {} threads for processing.", num_threads);
-        let (sender, receiver) = bounded::<Vec<PoreCRecord>>(8192); 
-        let (writer_sender, writer_receiver) = bounded::<String>(8192); 
-
-        let mut handles = Vec::with_capacity(num_threads);
-        // let prof = std::sync::Arc::new(Prof::new());
-        
-
-        for _ in 0..num_threads {
-            let receiver: Receiver<Vec<PoreCRecord>> = receiver.clone();
-            let writer_sender = writer_sender.clone();
-            let interval_hash = interval_hash.clone();
-            // let prof_cl = prof.clone();
-
-            handles.push(thread::spawn(move || {
-                let init_cap = (max_order as usize) + 2;
-                let mut concatemer: Concatemer = Concatemer::with_capacity(init_cap);
-                let mut local_stats = (0, 0, 0, 0); // pass, singleton, low_mq, complex
-                let mut output_buffer = String::with_capacity(WRITE_CHUNK);
-                let mut current_read_idx: Option<u64> = None;
-                while let Ok(batch) = receiver.recv() {
-                    // for pcr in batch {
-                    //     match current_read_idx {
-                    //         Some(rid) if rid == pcr.read_idx => {
-                    //             concatemer.push(pcr);
-                    //         }
-                    //         Some(_) => {
-                    //             let (final_status, pass_indices) = concatemer.process(
-                    //                 is_filter_digest,
-                    //                 &interval_hash,
-                    //                 is_filter_edges,
-                    //                 max_edge_length,
-                    //                 max_order,
-                    //             );
-                    //             if final_status == PASS_STR {
-                    //                 for &idx in &pass_indices {
-                    //                     output_buffer.push_str(&concatemer.records[idx].to_string());
-                    //                     output_buffer.push('\n');
-                    //                 }
-                    //             }
-                    //             match final_status {
-                    //                 PASS_STR => local_stats.0 += 1,
-                    //                 SINGLETON_STR => local_stats.1 += 1,
-                    //                 LOW_MQ_STR => local_stats.2 += 1,
-                    //                 COMPLEX_STR => local_stats.3 += 1,
-                    //                 _ => {}
-                    //             }
-                    //             concatemer.clear();
-                    //             current_read_idx = Some(pcr.read_idx);
-                    //             concatemer.push(pcr);
-                    //         }
-                    //         None => {
-                    //             current_read_idx = Some(pcr.read_idx);
-                    //             concatemer.push(pcr);
-                    //         }
-                    //     }
-                    // }
-                    let mut groups: Vec<Vec<PoreCRecord>> = Vec::new();
-                    let mut cur: Vec<PoreCRecord> = Vec::new();
-                    let mut cur_idx: Option<u64> = None;
-                    for pcr in batch {
-                        match cur_idx {
-                            Some(rid) if rid == pcr.read_idx => cur.push(pcr),
-                            Some(_) => {
-                                groups.push(std::mem::take(&mut cur));
-                                cur_idx = Some(pcr.read_idx);
-                                cur.push(pcr);
-                            }
-                            None => {
-                                cur_idx = Some(pcr.read_idx);
-                                cur.push(pcr);
-                            }
-                        }
-                    }
-                    if !cur.is_empty() {
-                        groups.push(cur);
-                    }
-
-                    let results: Vec<(String, (u64, u64, u64, u64))> = groups
-                        .into_iter()
-                        .map(|grp| {
-                            let mut concatemer = Concatemer::with_capacity(grp.len() + 2);
-                            for r in grp {
-                                concatemer.push(r);
-                            }
-                            let (final_status, pass_indices) = concatemer.process(
-                                is_filter_digest,
-                                &interval_hash,
-                                is_filter_edges,
-                                max_edge_length,
-                                max_order,
-                            );
-     
-                            let mut out = String::new();
-                            if final_status == PASS_STR {
-                                for &idx in &pass_indices {
-                                    out.push_str(&concatemer.records[idx].to_string());
-                                    out.push('\n');
-                                }
-                                // out.reserve(pass_indices.len() * 128);
-                                // for &idx in &pass_indices {
-                                //     concatemer.records[idx].write_to(&mut out);
-                                // }
-                            }
-                            let stats = match final_status {
-                                PASS_STR      => (1, 0, 0, 0),
-                                SINGLETON_STR => (0, 1, 0, 0),
-                                LOW_MQ_STR    => (0, 0, 1, 0),
-                                COMPLEX_STR   => (0, 0, 0, 1),
-                                _             => (0, 0, 0, 0),
-                            };
-                            (out, stats)
-                        })
-                        .collect();
-                    for (chunk, (a, b, c, d)) in results {
-                        if !chunk.is_empty() {
-                            output_buffer.push_str(&chunk);
-                        }
-                        local_stats.0 += a;
-                        local_stats.1 += b;
-                        local_stats.2 += c;
-                        local_stats.3 += d;
-
-                        if output_buffer.len() >= WRITE_CHUNK {
-                            let chunk = std::mem::take(&mut output_buffer);
-                            writer_sender.send(chunk).unwrap();
-                            output_buffer = String::with_capacity(WRITE_CHUNK);
-                        }
-                    }
-
-
-                }
-
-                // if !concatemer.records.is_empty() {
-                //     let (final_status, pass_indices) = concatemer.process(
-                //         is_filter_digest,
-                //         &interval_hash,
-                //         is_filter_edges,
-                //         max_edge_length,
-                //         max_order,
-                //     );
-                //     if final_status == PASS_STR {
-                //         for &idx in &pass_indices {
-                //             output_buffer.push_str(&concatemer.records[idx].to_string());
-                //             output_buffer.push('\n');
-                //         }
-                //     }
-                //     match final_status {
-                //         PASS_STR => local_stats.0 += 1,
-                //         SINGLETON_STR => local_stats.1 += 1,
-                //         LOW_MQ_STR => local_stats.2 += 1,
-                //         COMPLEX_STR => local_stats.3 += 1,
-                //         _ => {}
-                //     }
-                // }
-                if !output_buffer.is_empty() {
-                    writer_sender.send(output_buffer).unwrap();
-                }
-                local_stats
-            }));
-        }
-        drop(writer_sender); // Drop the original sender for the writer
-
-        // Writer thread
-        let output_clone = output.clone();
-        // let prof_w = prof.clone();
-        let writer_handle = thread::spawn(move || {
-            let mut writer = common_writer(&output_clone);
-            while let Ok(data_string) = writer_receiver.recv() {
-                // let t0 = Instant::now();
-                writer.write_all(data_string.as_bytes()).unwrap();
-                // if prof_w.on {
-                //     Prof::add(&prof_w.writer_ns, t0.elapsed().as_nanos());
-                //     prof_w.out_bytes.fetch_add(data_string.len() as u64, Ordering::Relaxed);
-                // }
-            }
-        });
-
-        let mut rdr = self.parse2(secondary.clone())?;
-        let mut old_query: Option<String> = None;
-        let mut current_read_records: Vec<PoreCRecord> = Vec::new();
-        let mut read_idx: u64 = 0;
-        let mut batch_records: Vec<PoreCRecord> = Vec::with_capacity(RECORD_BATCH_SIZE);
-        let mut groups_in_batch: usize = 0;
-
-        for record in rdr {
-
-            let is_switch = match old_query.as_deref() {
-                Some(prev) => prev != record.query.as_str(),
-                None => false,
-            };
-            if is_switch && old_query.is_some() {
-                batch_records.extend(current_read_records.drain(..));
-                groups_in_batch += 1;
-                read_idx += 1;
-
-                if groups_in_batch >= GROUP_BATCH_SIZE || batch_records.len() >= RECORD_BATCH_SIZE {
-                    sender.send(std::mem::take(&mut batch_records)).unwrap();
-                    groups_in_batch = 0;
-                    batch_records = Vec::with_capacity(RECORD_BATCH_SIZE);
-                }
-            }
-            let length: u32 = record.query_end - record.query_start;
-            let identity = if record.alignment_length > 0 {
-                record.match_n as f32 / record.alignment_length as f32
-            } else {
-                0.0
-            };
-            let fr = if record.mapq < min_quality || length < min_length || identity < min_identity {
-                LOW_MQ_STR
-            } else {
-                PASS_STR
-            };
-            if old_query.is_none() || is_switch {
-                old_query = Some(record.query.clone());
-            }
-            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
-            current_read_records.push(pcr);
-        }
-
-        // Send the last group
-        if !current_read_records.is_empty() {
-            batch_records.extend(current_read_records.drain(..));
-            groups_in_batch += 1;
-            read_idx += 1;
-        }
-        if !batch_records.is_empty() {
-            sender.send(batch_records).unwrap();
-        }
-        drop(sender);
-        let mut read_pass_count: u64 = 0;
-        let mut read_singleton_count: u64 = 0;
-        let mut read_low_mq_count: u64 = 0;
-        let mut read_complex_count: u64 = 0;
-
-        for handle in handles {
-        let stats = handle.join().unwrap();
-            read_pass_count += stats.0;
-            read_singleton_count += stats.1;
-            read_low_mq_count += stats.2;
-            read_complex_count += stats.3;
-        }
-        writer_handle.join().unwrap();
-        // if prof.on {
-        //     let rd = prof.read_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let wp = prof.worker_proc_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let wf = prof.worker_fmt_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let ww = prof.writer_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let out_mb = prof.out_bytes.load(Ordering::Relaxed) as f64 / (1024.0*1024.0);
-        //     log::info!("PROFILE read+group: {:.3}s, worker process: {:.3}s, worker format: {:.3}s, write(compress): {:.3}s, wrote {:.1} MiB",
-        //                rd, wp, wf, ww, out_mb);
-        // }
-        let mut summary: ReadSummary = ReadSummary::new();
-        summary.pass = read_pass_count;
-        summary.singleton = read_singleton_count;
-        summary.low_mq = read_low_mq_count;
-        summary.mapping = read_idx;
-        summary.complex = read_complex_count;
-    
-        let output_prefix = if output == "-" {
-            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
-        } else {
-            Path::new(&output).with_extension("").to_str().unwrap().to_string()
-        };
-
-        summary.save(&format!("{}.read.summary", output_prefix));
-
-        log::info!("Successful output Pore-C table `{}`", output);
-        Ok(())
-    }
-
-    
-    pub fn paf2table3(&self, bed: &String,
-            output: &String, min_quality: &u8, 
-            min_identity: &f32,  min_length: &u32,
-            max_order: &u32, 
-            max_edge_length: &u64,
-            secondary: bool    
-        ) -> Result<(), Box<dyn Error>> {
-        
-        type IvU8 = Interval<usize, u8>;
-        let min_quality = *min_quality;
-        let min_identity = *min_identity;
-        let min_length = *min_length;
-        let max_order = *max_order;
-        let max_edge_length = *max_edge_length;
-
-        let is_filter_digest = !bed.is_empty();
-        let bed = if is_filter_digest { Bed3::new(bed) } else { Bed3::new(&String::from(".tmp.bed")) };
-        let interval_hash = bed.to_interval_hash();
-        let is_filter_edges = max_edge_length > 0;
-
-        let num_threads = 10;
-        log::info!("Using {} threads for processing.", num_threads);
-        let (sender, receiver) = bounded::<Vec<PoreCRecord>>(8192); // Channel for read groups
-        let (writer_sender, writer_receiver) = bounded::<String>(8192); // Channel for output strings
-
-        let mut handles = Vec::with_capacity(num_threads);
-        // let prof = std::sync::Arc::new(Prof::new());
-
-        for _ in 0..num_threads {
-            let receiver = receiver.clone();
-            let writer_sender = writer_sender.clone();
-            let interval_hash = interval_hash.clone(); // Clone for thread
-            // let prof_cl = prof.clone();
-
-            handles.push(thread::spawn(move || {
-                let init_cap = (max_order as usize) + 2;
-                let mut concatemer: Concatemer = Concatemer::with_capacity(init_cap);
-                let mut local_stats = (0, 0, 0, 0); // pass, singleton, low_mq, complex
-                let mut output_buffer = String::with_capacity(WRITE_CHUNK);
-                while let Ok(records) = receiver.recv() {
-                    for pcr in records {
-                        concatemer.push(pcr);
-                    }
-                    // let t0 = Instant::now();
-                    let (final_status, pass_indices) = concatemer.process(
-                        is_filter_digest,
-                        &interval_hash,
-                        is_filter_edges,
-                        max_edge_length,
-                        max_order,
-                    );
-                    // if prof_cl.on { Prof::add(&prof_cl.worker_proc_ns, t0.elapsed().as_nanos()); }
-                    // let t1 = Instant::now();
-                    // for pcr in concatemer.records.iter() {
-                    //     if pcr.filter_reason == PASS_STR {
-                    //         output_buffer.push_str(&pcr.to_string());
-                    //         output_buffer.push('\n');
-                    //     }
-                    // }
-                    if final_status == PASS_STR {
-                        for &idx in &pass_indices {
-                            let pcr = &concatemer.records[idx];
-                            output_buffer.push_str(&pcr.to_string());
-                            output_buffer.push('\n');
-                        }
-                    }
-                    // if prof_cl.on { Prof::add(&prof_cl.worker_fmt_ns, t1.elapsed().as_nanos()); }
-
-                    if output_buffer.len() >= WRITE_CHUNK {
-                        let chunk = std::mem::take(&mut output_buffer);
-                        writer_sender.send(chunk).unwrap();
-                        output_buffer = String::with_capacity(WRITE_CHUNK);
-                    }
-
-                    match final_status {
-                        PASS_STR => local_stats.0 += 1,
-                        SINGLETON_STR => local_stats.1 += 1,
-                        LOW_MQ_STR => local_stats.2 += 1,
-                        COMPLEX_STR => local_stats.3 += 1,
-                        _ => {},
-                    }
-                    concatemer.clear();
-                }
-
-                if !output_buffer.is_empty() {
-                    writer_sender.send(output_buffer).unwrap();
-                }
-                local_stats
-            }));
-        }
-        drop(writer_sender); // Drop the original sender for the writer
-
-        // Writer thread
-        let output_clone = output.clone();
-        // let prof_w = prof.clone();
-        let writer_handle = thread::spawn(move || {
-            let mut writer = common_writer(&output_clone);
-            while let Ok(data_string) = writer_receiver.recv() {
-                // let t0 = Instant::now();
-                writer.write_all(data_string.as_bytes()).unwrap();
-                // if prof_w.on {
-                //     Prof::add(&prof_w.writer_ns, t0.elapsed().as_nanos());
-                //     prof_w.out_bytes.fetch_add(data_string.len() as u64, Ordering::Relaxed);
-                // }
-            }
-        });
-
-        let mut rdr = self.parse2(secondary.clone())?;
-        let mut old_query: Option<String> = None;
-        let mut current_read_records: Vec<PoreCRecord> = Vec::new();
-        let mut read_idx: u64 = 0;
-
-        for record in rdr {
-            // let query_name = record.query.clone();
-
-            // if old_query.as_deref() != Some(&query_name) && old_query.is_some() {
-            //     sender.send(current_read_records).unwrap();
-            //     current_read_records = Vec::new();
-            //     read_idx += 1;
-            // }
-            let is_switch = match old_query.as_deref() {
-                Some(prev) => prev != record.query.as_str(),
-                None => false,
-            };
-            if is_switch && old_query.is_some() {
-                sender.send(current_read_records).unwrap();
-                current_read_records = Vec::new();
-                read_idx += 1;
-            }
-            let length: u32 = record.query_end - record.query_start;
-            let identity = if record.alignment_length > 0 { record.match_n as f32 / record.alignment_length as f32 } else { 0.0 };
-
-            let fr = if record.mapq < min_quality || length < min_length || identity < min_identity {
-                LOW_MQ_STR
-            } else {
-                PASS_STR
-            };
-
-            // old_query = Some(query_name);
-            if old_query.is_none() {
-                old_query = Some(record.query.clone());
-            } else if is_switch {
-                old_query = Some(record.query.clone());
-            }
-
-            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
-                current_read_records.push(pcr);
-        }
-
-        // Send the last group
-        if !current_read_records.is_empty() {
-            sender.send(current_read_records).unwrap();
-            read_idx += 1;
-        }
-        drop(sender); 
-        let mut read_pass_count: u64 = 0;
-        let mut read_singleton_count: u64 = 0;
-        let mut read_low_mq_count: u64 = 0;
-        let mut read_complex_count: u64 = 0;
-
-        for handle in handles {
-        let stats = handle.join().unwrap();
-            read_pass_count += stats.0;
-            read_singleton_count += stats.1;
-            read_low_mq_count += stats.2;
-            read_complex_count += stats.3;
-        }
-        writer_handle.join().unwrap();
-        // if prof.on {
-        //     let rd = prof.read_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let wp = prof.worker_proc_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let wf = prof.worker_fmt_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let ww = prof.writer_ns.load(Ordering::Relaxed) as f64 / 1e9;
-        //     let out_mb = prof.out_bytes.load(Ordering::Relaxed) as f64 / (1024.0*1024.0);
-        //     log::info!("PROFILE read+group: {:.3}s, worker process: {:.3}s, worker format: {:.3}s, write(compress): {:.3}s, wrote {:.1} MiB",
-        //                rd, wp, wf, ww, out_mb);
-        // }
-        let mut summary: ReadSummary = ReadSummary::new();
-        summary.pass = read_pass_count;
-        summary.singleton = read_singleton_count;
-        summary.low_mq = read_low_mq_count;
-        summary.mapping = read_idx;
-        summary.complex = read_complex_count;
-       
-        let output_prefix = if output == "-" {
-            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
-        } else {
-            Path::new(&output).with_extension("").to_str().unwrap().to_string()
-        };
-
-        summary.save(&format!("{}.read.summary", output_prefix));
-
-        log::info!("Successful output Pore-C table `{}`", output);
-        Ok(())
-    }
-
-
-    pub fn paf2table2(&self, bed: &String,
-                     output: &String, min_quality: &u8, 
-                     min_identity: &f32,  min_length: &u32,
-                     max_order: &u32, 
-                     max_edge_length: &u64,
-                     secondary: bool    
-                    ) -> Result<(), Box<dyn Error>> {
-        
-
-        type IvU8 = Interval<usize, u8>;
-        let min_quality = *min_quality;
-        let min_identity = *min_identity;
-        let min_length = *min_length;
-        let max_order = *max_order;
-        let max_edge_length = *max_edge_length;
-    
-        let is_filter_digest = if bed != "" { true } else { false };
-       
-        let bed = if is_filter_digest {
-            Bed3::new(bed)
-        } else {
-            Bed3::new(&String::from(".tmp.bed"))
-        };
-        
-        let interval_hash = bed.to_interval_hash();
-
-        let parse_result = self.parse2(secondary.clone());
-        
-        let mut rdr = match parse_result {
-            Ok(v) => v,
-            Err(error) => panic!("Error: Could not parse input file: {:?}", self.file_name()),
-        };
-        
-        let mut writer = common_writer(output);
-    
-        
-        let mut read_idx: u64 = 0;
-        
-        let mut filter_reason: &str = "";
-        let mut old_query: Option<String> = None;
-        let init_cap = (max_order as usize) + 2;
-        let mut concatemer: Concatemer = Concatemer::with_capacity(init_cap);
-        
-        let mut read_mapping_count: u64 = 0;
-        let mut read_pass_count: u64 = 0;
-        let mut read_singleton_count: u64 = 0;
-        let mut read_low_mq_count: u64 = 0;
-        let mut read_complex_count: u64 = 0;
-        let is_filter_edges = max_edge_length > 0;
-        for (line_num, record) in rdr.enumerate() {
-            // parse error to continue
-            
-            if old_query.as_deref() != Some(&record.query) && old_query.is_some() {
-                read_idx += 1;  
-                
-                if is_filter_digest {
-                    concatemer.filter_digest(&interval_hash);
-                }
-
-                if is_filter_edges {
-                    concatemer.filter_edges(max_edge_length);
-                }
-
-                if concatemer.is_singleton() {
-                    concatemer.parse_singleton();
-                }
-                
-                if concatemer.is_complex(max_order) {
-                    concatemer.parse_complex();
-                }
-
-                for pcr in concatemer.records.iter() {
-                    if pcr.filter_reason == PASS_STR {
-                       writer.write_all(pcr.to_string().as_bytes()).unwrap();
-                    }
-                }
-                
-                match concatemer.info() {
-                    "pass" => read_pass_count += 1,
-                    "singleton" => read_singleton_count += 1,
-                    "low_mq" => read_low_mq_count += 1,
-                    "complex" => read_complex_count += 1,
-                    _ => todo!(),
-                }
-                concatemer.clear();
-                
-            }
-            let length: u32 = record.query_end - record.query_start;
-            let identity = record.match_n as f32 / record.alignment_length as f32;
-            
-            let fr = if record.mapq < min_quality
-                 || length   < min_length
-                 || identity < min_identity
-            {
-                LOW_MQ_STR
-            } else {
-                PASS_STR
-            };
-
-            if old_query.as_deref() != Some(&record.query) {
-                old_query = Some(record.query.clone());
-            }
-            let pcr = PoreCRecord::from_paf_record(record, read_idx, identity, fr.to_string());
-            
-            concatemer.push(pcr);
-        }
-        
-        // parse last record
-        if concatemer.is_singleton() {
-            concatemer.parse_singleton();
-        }
-        for pcr in concatemer.records.iter() {
-            if pcr.filter_reason == PASS_STR {
-                writer.write_all(pcr.to_string().as_bytes()).unwrap();
-            }
-        }
-        match concatemer.info() {
-            "pass" => read_pass_count += 1,
-            "singleton" => read_singleton_count += 1,
-            "low_mq" => read_low_mq_count += 1,
-            "complex" => read_complex_count += 1,
-            _ => todo!(),
-        }
-        read_mapping_count = read_idx + 1;
-
-
-        let mut summary: ReadSummary = ReadSummary::new();
-        summary.pass = read_pass_count;
-        summary.singleton = read_singleton_count;
-        summary.low_mq = read_low_mq_count;
-        summary.mapping = read_mapping_count;
-        summary.complex = read_complex_count;
-
-        
-        let output_prefix = if output == "-" {
-            Path::new(&self.file).with_extension("").to_str().unwrap().to_string()
-        } else {
-            Path::new(&output).with_extension("").to_str().unwrap().to_string()
-        };
-
-     
-        summary.save(&format!("{}.read.summary", output_prefix));
-
-        log::info!("Successful output Pore-C table `{}`", output);
-        Ok(())
-    }
-
-    // pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
-    //             min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
-    //     let mut chromsize_map: HashMap<String, usize> = HashMap::new();
-    //     {
-    //         let input = common_reader(chromsize);
-    //         let buf = std::io::BufReader::new(input);
-    //         for line in buf.lines() {
-    //             let line = line?;
-    //             if line.trim().is_empty() || line.starts_with('#') {
-    //                 continue;
-    //             }
-
-    //             let mut spl = line.split_whitespace();
-    //             let chr = spl.next().unwrap_or("").to_string();
-    //             let size_str = spl.next().unwrap_or("0");
-    //             let size = size_str.parse::<usize>().unwrap_or(0);
-    //             chromsize_map.insert(chr, size);
-    //         }
-    //     }
-        
-    //     let mut coverage_diff_map: HashMap<String, BTreeMap<usize, i64>> = HashMap::new();
-    //     for (chr, _) in chromsize_map.iter() {
-    //         coverage_diff_map.insert(chr.clone(), BTreeMap::new());
-    //     }
-
-    //     let mut rdr = self.parse2(secondary)?;
-    //     let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
-        
-    //     let mut handles = Vec::new();
-    //     let mut coverage_diff_map = Arc::new(Mutex::new(coverage_diff_map));
-    //     for _ in 0..8 {
-    //         let receiver = receiver.clone();
-    //         let coverage_diff_map_clone = Arc::clone(&coverage_diff_map);
-    //         handles.push(thread::spawn(move || {
-    //             while let Ok(records) = receiver.recv() {
-    //                 let mut local_data = HashMap::new();
-    //                 for record in records {
-    //                     let mapq = record.mapq;
-    //                     if mapq < min_mapq {
-    //                         continue;
-    //                     }
-    //                     let chr = record.target.clone();
-    //                     let start = record.target_start as usize;
-    //                     let end = record.target_end as usize;
-
-    //                     let local_btm = local_data.entry(chr).or_insert_with(BTreeMap::new);
-    //                     *local_btm.entry(start).or_insert(0) += 1;
-    //                     *local_btm.entry(end).or_insert(0) -= 1;
-    //                 }
-
-    //                 let mut coverage_diff_map_locked = coverage_diff_map_clone.lock().unwrap();
-    //                 for (chr, local_btm) in local_data {
-    //                     let global_btm = coverage_diff_map_locked
-    //                         .entry(chr)
-    //                         .or_insert_with(BTreeMap::new);
-    //                     for (pos, delta) in local_btm {
-    //                         *global_btm.entry(pos).or_insert(0) += delta;
-    //                     }
-    //                 }
-
-    //             }
-    //         }))
-
-
-    //     }
-        
-    //     let mut batch = Vec::with_capacity(CHUNK_SIZE);
-    //     for record in rdr{
-    //         batch.push(record);
-    //         if batch.len() >= CHUNK_SIZE {
-    //             sender.send(batch).unwrap();
-    //             batch = Vec::with_capacity(CHUNK_SIZE);
-    //         }
-    //     }
-
-    //     if !batch.is_empty() {
-    //         sender.send(batch).unwrap();
-    //     }
-
-    //     drop(sender);
-
-    //     for handle in handles {
-    //         handle.join().unwrap();
-    //     }
-
-    //     let mut coverage_diff_map = Arc::try_unwrap(coverage_diff_map).unwrap().into_inner().unwrap();
-    //     if step_size == window_size {
-    //         let mut wtr = common_writer(output);
-    //         for (chr, chrom_length) in &chromsize_map {
-    //             if let Some(diff) = coverage_diff_map.get_mut(chr) {
-    //                 let mut running = 0i64;
-    //                 let mut prev_pos = 0usize;
-                    
-    //                 let mut bin_start = 0usize;
-    //                 let mut bin_sum = 0i64;
-    //                 let mut bin_count = 0usize;
-
-    //                 for (&pos, &delta) in diff.iter() {
-    //                     while prev_pos < pos && prev_pos < *chrom_length {
-    //                         bin_sum += running;
-    //                         bin_count += 1;
-    //                         prev_pos += 1;
-
-    //                         if prev_pos - bin_start == window_size {
-    //                             let mean_coverage = bin_sum as f64 / bin_count as f64;
-    //                             let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-    //                             wtr.write_all(line.as_bytes())?;
-
-    //                             bin_sum = 0;
-    //                             bin_count = 0;
-    //                             bin_start = prev_pos;
-    //                         }
-    //                     }
-        
-    //                     running += delta;
-    //                 }
-
-    //                 while prev_pos < *chrom_length {
-    //                     bin_sum += running;
-    //                     bin_count += 1;
-    //                     prev_pos += 1;
-
-    //                     if prev_pos - bin_start == window_size {
-    //                         let mean_coverage = bin_sum as f64 / bin_count as f64;
-    //                         let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-    //                         wtr.write_all(line.as_bytes())?;
-    //                         bin_sum = 0;
-    //                         bin_count = 0;
-    //                         bin_start = prev_pos;
-    //                     }
-    //                 }
-
-    //                 if bin_count > 0 {
-    //                     let mean_coverage = bin_sum as f64 / bin_count as f64;
-    //                     let line = format!("{}\t{}\t{}\t{:.3}\n", chr, bin_start, prev_pos, mean_coverage);
-    //                     wtr.write_all(line.as_bytes())?;
-    //                 }
-                    
-    //             }
-    //         }
-
-    //         log::info!(
-    //             "Successful output coverage (window {}bp) to `{}`",
-    //             window_size,
-    //             output
-    //         );
-
-    //     } else {
-
-    //         let mut wtr = common_writer(output);
-
-    //         for (chr, &chrom_len) in &chromsize_map {
-    //             let diff = match coverage_diff_map.get_mut(chr) {
-    //                 Some(d) => d,
-    //                 None => continue,
-    //             };
-
-    //             let mut coverage_vec = vec![0i64; chrom_len];
-    //             let mut running = 0i64;
-    //             let mut prev_pos = 0usize;
-    //             for (&pos, &delta) in diff.iter() {
-    //                 while prev_pos < pos && prev_pos < chrom_len {
-    //                     coverage_vec[prev_pos] = running;
-    //                     prev_pos += 1;
-    //                 }
-    //                 running += delta;
-    //             }
-    
-    //             while prev_pos < chrom_len {
-    //                 coverage_vec[prev_pos] = running;
-    //                 prev_pos += 1;
-    //             }
-
-    //             let mut prefix_sum = vec![0i64; chrom_len + 1];
-    //             for i in 0..chrom_len {
-    //                 prefix_sum[i+1] = prefix_sum[i] + coverage_vec[i];
-    //             }
-
-    //             let mut i = 0usize;
-    //             while i < chrom_len {
-    //                 let w_end = std::cmp::min(i + window_size, chrom_len);
-    //                 let total_cov = prefix_sum[w_end] - prefix_sum[i];
-    //                 let window_len = w_end - i;
-    //                 if window_len == 0 {
-    //                     break;
-    //                 }
-    //                 let mean_cov = total_cov as f64 / window_len as f64;
-
-    //                 let line = format!("{}\t{}\t{}\t{:.3}\n", chr, i, w_end, mean_cov);
-    //                 wtr.write_all(line.as_bytes())?;
-
-    //                 i += step_size; 
-    //             }
-    //         }
-
-    //         log::info!(
-    //             "Successful output coverage (window {}bp, step {}bp) to `{}`",
-    //             window_size,
-    //             step_size,
-    //             output
-    //         );
-    //     }
-
-    //     Ok(())
-    // }
-
-    // pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
-    //             min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
-    //     let mut chrom_names = Vec::new();
-    //     let mut chrom_sizes = Vec::new();
-    //     let mut chrom_map = HashMap::new();
-
-    //     {
-    //         let input = common_reader(chromsize);
-    //         let buf = std::io::BufReader::new(input);
-    //         for line in buf.lines() {
-    //             let line = line?;
-    //             if line.trim().is_empty() || line.starts_with('#') {
-    //                 continue;
-    //             }
-
-    //             let mut spl = line.split_whitespace();
-    //             let chr = spl.next().unwrap_or("").to_string();
-    //             let size_str = spl.next().unwrap_or("0");
-    //             let size = size_str.parse::<usize>().unwrap_or(0);
-    //             chrom_map.insert(chr.clone(), chrom_names.len());
-    //             chrom_names.push(chr);
-    //             chrom_sizes.push(size);
-    //         }
-    //     }
-        
-    //     let num_chroms = chrom_names.len();
-    //     let chrom_map = Arc::new(chrom_map);
-
-    //     let (sender, receiver) = bounded::<Vec<PAFLine>>(100);
-        
-    //     let mut handles = Vec::new();
-    //     for _ in 0..8 {
-    //         let receiver = receiver.clone();
-    //         let chrom_map = chrom_map.clone();
-    //         handles.push(thread::spawn(move || {
-               
-    //             let mut local_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
-    //             while let Ok(records) = receiver.recv() {
-    //                 for record in records {
-    //                     if record.mapq < min_mapq {
-    //                         continue;
-    //                     }
-    //                     if let Some(&idx) = chrom_map.get(&record.target) {
-    //                         local_events[idx].push((record.target_start as u32, 1));
-    //                         local_events[idx].push((record.target_end as u32, -1));
-    //                     }
-    //                 }
-    //             }
-    //             local_events
-    //         }));
-    //     }
-        
-    //     let rdr = self.parse2(secondary)?;
-    //     let mut batch = Vec::with_capacity(CHUNK_SIZE);
-    //     for record in rdr{
-    //         batch.push(record);
-    //         if batch.len() >= CHUNK_SIZE {
-    //             sender.send(batch).unwrap();
-    //             batch = Vec::with_capacity(CHUNK_SIZE);
-    //         }
-    //     }
-
-    //     if !batch.is_empty() {
-    //         sender.send(batch).unwrap();
-    //     }
-
-    //     drop(sender);
-
-    //     let mut global_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
-    //     for handle in handles {
-    //         let local_events = handle.join().unwrap();
-    //         for (i, events) in local_events.into_iter().enumerate() {
-    //             global_events[i].extend(events);
-    //         }
-    //     }
-
-    //     let mut wtr = common_writer(output);
-
-    //     for (i, mut events) in global_events.into_iter().enumerate() {
-    //         if events.is_empty() { continue; }
-    //         let chrom_len = chrom_sizes[i];
-    //         let chrom_name = &chrom_names[i];
-
-    //         events.par_sort_unstable_by_key(|e| e.0);
-
-    //         let mut coverage = vec![0i32; chrom_len];
-    //         let mut current_cov = 0i32;
-    //         let mut prev_pos = 0;
-
-    //         for (pos, delta) in events {
-    //             let pos = pos as usize;
-    //             if pos >= chrom_len { break; }
-                
-    //             if pos > prev_pos {
-    //                 for k in prev_pos..pos {
-    //                     coverage[k] = current_cov;
-    //                 }
-    //             }
-    //             current_cov += delta;
-    //             prev_pos = pos;
-    //         }
-    //         if prev_pos < chrom_len {
-    //             for k in prev_pos..chrom_len {
-    //                 coverage[k] = current_cov;
-    //             }
-    //         }
-
-
-    //         let mut prefix_sum = vec![0i64; chrom_len + 1];
-    //         let mut running = 0i64;
-    //         for (k, &cov) in coverage.iter().enumerate() {
-    //             running += cov as i64;
-    //             prefix_sum[k+1] = running;
-    //         }
-
-    //         let mut start = 0usize;
-    //         while start < chrom_len {
-    //             let end = std::cmp::min(start + window_size, chrom_len);
-    //             let len = end - start;
-    //             if len == 0 { break; }
-                
-    //             let sum = prefix_sum[end] - prefix_sum[start];
-    //             let mean = sum as f64 / len as f64;
-                
-    //             let line = format!("{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean);
-    //             wtr.write_all(line.as_bytes())?;
-
-    //             start += step_size;
-    //         }
-    //     }
-
-    //     log::info!(
-    //         "Successful output coverage (window {}bp, step {}bp) to `{}`",
-    //         window_size,
-    //         step_size,
-    //         output
-    //     );
-
-    //     Ok(())
-    // }
-
     pub fn to_depth(&self, chromsize: &String, window_size: usize, step_size: usize,
                 min_mapq: u8, secondary: bool, output: &String) -> Result<(), Box<dyn Error>> {
         let mut chrom_names = Vec::new();
@@ -2325,61 +1331,23 @@ impl PAFTable {
 
                 events.par_sort_unstable_by_key(|e| e.0);
 
-                // let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
-                // prefix_sum.push(0);
+                let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
+                prefix_sum.push(0);
                 
-                // let mut current_cov = 0i32;
-                // let mut prev_pos = 0usize;
-                // let mut running_sum = 0i64;
-
-                // for (pos, delta) in events {
-                //     let pos = pos as usize;
-                //     if pos >= chrom_len { break; }
-                    
-                //     if pos > prev_pos {
-                //         let cov = current_cov as i64;
-                //         let count = pos - prev_pos;
-                //         for _ in 0..count {
-                //             running_sum += cov;
-                //             prefix_sum.push(running_sum);
-                //         }
-                //     }
-                //     current_cov += delta;
-                //     prev_pos = pos;
-                // }
-                
-                // if prev_pos < chrom_len {
-                //     let cov = current_cov as i64;
-                //     let count = chrom_len - prev_pos;
-                //     for _ in 0..count {
-                //         running_sum += cov;
-                //         prefix_sum.push(running_sum);
-                //     }
-                // }
-
-                // let mut output_buf = String::with_capacity(64 * 1024);
-                // let mut start = 0usize;
-
-                // while start < chrom_len {
-                //     let end = std::cmp::min(start + window_size, chrom_len);
-                //     let len = end - start;
-                //     if len == 0 { break; }
-                    
-                //     let sum = prefix_sum[end] - prefix_sum[start];
-                //     let mean = sum as f64 / len as f64;
-                    
-                //     write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean).unwrap();
-                let mut coverage = vec![0i32; chrom_len];
                 let mut current_cov = 0i32;
                 let mut prev_pos = 0usize;
+                let mut running_sum = 0i64;
 
                 for (pos, delta) in events {
                     let pos = pos as usize;
                     if pos >= chrom_len { break; }
                     
                     if pos > prev_pos {
-                        for k in prev_pos..pos {
-                            coverage[k] = current_cov;
+                        let cov = current_cov as i64;
+                        let count = pos - prev_pos;
+                        for _ in 0..count {
+                            running_sum += cov;
+                            prefix_sum.push(running_sum);
                         }
                     }
                     current_cov += delta;
@@ -2387,36 +1355,74 @@ impl PAFTable {
                 }
                 
                 if prev_pos < chrom_len {
-                    for k in prev_pos..chrom_len {
-                        coverage[k] = current_cov;
+                    let cov = current_cov as i64;
+                    let count = chrom_len - prev_pos;
+                    for _ in 0..count {
+                        running_sum += cov;
+                        prefix_sum.push(running_sum);
                     }
                 }
 
                 let mut output_buf = String::with_capacity(64 * 1024);
                 let mut start = 0usize;
-                
-                let mut window_buf = Vec::with_capacity(window_size);
 
                 while start < chrom_len {
                     let end = std::cmp::min(start + window_size, chrom_len);
                     let len = end - start;
                     if len == 0 { break; }
                     
+                    let sum = prefix_sum[end] - prefix_sum[start];
+                    let mean = sum as f64 / len as f64;
+                    
+                    write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, mean).unwrap();
+                // let mut coverage = vec![0i32; chrom_len];
+                // let mut current_cov = 0i32;
+                // let mut prev_pos = 0usize;
+
+                // for (pos, delta) in events {
+                //     let pos = pos as usize;
+                //     if pos >= chrom_len { break; }
+                    
+                //     if pos > prev_pos {
+                //         for k in prev_pos..pos {
+                //             coverage[k] = current_cov;
+                //         }
+                //     }
+                //     current_cov += delta;
+                //     prev_pos = pos;
+                // }
+                
+                // if prev_pos < chrom_len {
+                //     for k in prev_pos..chrom_len {
+                //         coverage[k] = current_cov;
+                //     }
+                // }
+
+                // let mut output_buf = String::with_capacity(64 * 1024);
+                // let mut start = 0usize;
+                
+                // let mut window_buf = Vec::with_capacity(window_size);
+
+                // while start < chrom_len {
+                //     let end = std::cmp::min(start + window_size, chrom_len);
+                //     let len = end - start;
+                //     if len == 0 { break; }
+                    
     
-                    window_buf.clear();
-                    window_buf.extend_from_slice(&coverage[start..end]);
+                //     window_buf.clear();
+                //     window_buf.extend_from_slice(&coverage[start..end]);
                     
-                    let mid = len / 2;
-                    let (_, &mut median_val, _) = window_buf.select_nth_unstable(mid);
+                //     let mid = len / 2;
+                //     let (_, &mut median_val, _) = window_buf.select_nth_unstable(mid);
                     
-                    let median = if len % 2 == 0 {
-                        let max_lower = *window_buf[..mid].iter().max().unwrap();
-                        (median_val as f64 + max_lower as f64) / 2.0
-                    } else {
-                        median_val as f64
-                    };
+                //     let median = if len % 2 == 0 {
+                //         let max_lower = *window_buf[..mid].iter().max().unwrap();
+                //         (median_val as f64 + max_lower as f64) / 2.0
+                //     } else {
+                //         median_val as f64
+                //     };
                     
-                    write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, median).unwrap();
+                    // write!(output_buf, "{}\t{}\t{}\t{:.3}\n", chrom_name, start, end, median).unwrap();
                     if output_buf.len() > 60 * 1024 {
                         tx.send(std::mem::take(&mut output_buf)).unwrap();
                         output_buf = String::with_capacity(64 * 1024);
@@ -2436,6 +1442,1134 @@ impl PAFTable {
                 step_size,
                 output
             );
+        Ok(())
+    }
+
+
+    pub fn downsample_by_vpc_random(
+        &self,
+        output: &String,
+        seed: u64,
+        min_quality: u8,
+        min_identity: f32,
+        min_length: u32,
+        min_order: usize,
+        max_order: usize,
+        target_reads: Option<u64>,
+        target_pairs: Option<u64>,
+        target_bases: Option<u64>,
+        frac: Option<f64>,
+        frac_by_pairs: bool,
+        keep_comments: bool,
+    ) -> anyResult<()> {
+
+        if [
+            target_reads.is_some(),
+            target_pairs.is_some(),
+            target_bases.is_some(),
+            frac.is_some(),
+        ]
+        .into_iter()
+        .filter(|x| *x)
+        .count()
+            != 1
+        {
+            anyhow::bail!("Specify exactly one of --reads, --pairs, --bases, or --frac");
+        }
+        if let Some(f) = frac {
+            if !(0.0 < f && f <= 1.0) {
+                anyhow::bail!("--frac must be in (0, 1]");
+            }
+        }
+
+        #[inline]
+        fn pairs_of(order: usize) -> u64 {
+            let n = order as u64;
+            n.saturating_mul(n.saturating_sub(1)) / 2
+        }
+
+        #[inline]
+        fn hash_qname(q: &str) -> u64 {
+            let mut h = DefaultHasher::new();
+            q.hash(&mut h);
+            h.finish()
+        }
+
+        log::info!(
+            "PAF downsample pass1 scanning... (min_mapq={}, min_ident={}, min_len={}, order in [{}, {}))",
+            min_quality,
+            min_identity,
+            min_length,
+            min_order,
+            max_order
+        );
+
+        // pass1: scan per query order and pairs
+        let mut rdr = common_reader(&self.file);
+        let mut line = String::new();
+
+        let mut prev_q: Option<String> = None;
+        let mut cur_order: usize = 0;
+        let mut cur_qlen: u64 = 0;
+        let mut per_read: Vec<(u64, u32, u64, u64)> = Vec::new();
+
+        // let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut not_grouped = false;
+        let mut not_grouped_example_prev = String::new();
+        let mut not_grouped_example_cur = String::new();
+
+        while rdr.read_line(&mut line)? > 0 {
+            let t = line.trim_end();
+            if t.is_empty() || t.starts_with('#') {
+                line.clear();
+                continue;
+            }
+
+            let mut it = t.split('\t');
+            let qname = it.next().unwrap_or("").to_string();
+
+            if let Some(pq) = prev_q.as_ref() {
+                if pq != &qname {
+                    not_grouped = true;
+                    not_grouped_example_prev = pq.clone();
+                    not_grouped_example_cur = qname.clone();
+     
+                    // break;
+                }
+            }
+            // seen.insert(qname.clone());
+
+            let qlen = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let qstart = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let qend = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+
+            let _strand = it.next().unwrap_or("+");
+            let _tname = it.next();
+            let _tlen = it.next();
+            let _tstart = it.next();
+            let _tend = it.next();
+
+            let nmatch = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let alen = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let mapq = it.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+
+            let qcov = qend.saturating_sub(qstart);
+            let identity = if alen > 0 { nmatch as f32 / alen as f32 } else { 0.0 };
+
+            let is_eligible_piece =
+                mapq >= min_quality && qcov >= min_length && identity >= min_identity;
+
+            match prev_q.as_ref() {
+                None => {
+                    prev_q = Some(qname);
+                    cur_qlen = qlen;
+                    cur_order = if is_eligible_piece { 1 } else { 0 };
+                }
+                Some(pq) if *pq == qname => {
+                    if is_eligible_piece {
+                        cur_order += 1;
+                    }
+                }
+                Some(pq) => {
+                    if target_bases.is_some() || (cur_order >= min_order && cur_order < max_order) {
+                        let p = pairs_of(cur_order);
+                        per_read.push((hash_qname(pq), cur_order as u32, p, cur_qlen));
+                    }
+                    prev_q = Some(qname);
+                    cur_qlen = qlen; 
+                    cur_order = if is_eligible_piece { 1 } else { 0 };
+                }
+            }
+
+            line.clear();
+        }
+
+        if not_grouped {
+            log::warn!(
+                "Input PAF is NOT grouped by query name (qname appears in multiple blocks). \
+Example transition: prev_q='{}' then qname='{}' reappeared. \
+Please sort/group by 1st column before downsampling, e.g.:\n\
+  zcat in.paf.gz | sort -k1,1 -S 4G --parallel=8 | gzip -c > in.qsorted.paf.gz",
+                not_grouped_example_prev,
+                not_grouped_example_cur
+            );
+        }
+
+
+        // finalize last
+        if let Some(pq) = prev_q.take() {
+            if target_bases.is_some() || (cur_order >= min_order && cur_order < max_order) {
+                let p = pairs_of(cur_order);
+                per_read.push((hash_qname(&pq), cur_order as u32, p, cur_qlen));
+            }
+        }
+
+        let total_reads = per_read.len() as u64;
+        let total_pairs: u64 = per_read.iter().map(|x| x.2).sum();
+        let total_bases: u64 = per_read.iter().map(|x| x.3).sum();
+
+        log::info!(
+            "Eligible reads: {} ; eligible pairs: {} ; eligible bases: {}",
+            total_reads,
+            total_pairs,
+            total_bases
+        );
+
+
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        per_read.shuffle(&mut rng);
+
+        let mut chosen: HashSet<u64> = HashSet::new();
+
+        if let Some(k) = target_reads {
+            for (q, _ord, _p, _blen) in per_read.iter().take(k.min(total_reads) as usize) {
+                chosen.insert(q.clone());
+            }
+            log::info!("Selected reads: {}", chosen.len());
+        } else if let Some(tb) = target_bases {
+            let mut acc: u64 = 0;
+            for (q, _ord, _p, blen) in per_read.iter() {
+                if acc >= tb {
+                    break;
+                }
+                chosen.insert(q.clone());
+                acc = acc.saturating_add(*blen);
+            }
+            log::info!(
+                "Selected reads: {} (approx bases: {} / target {})",
+                chosen.len(),
+                acc,
+                tb
+            );
+        } else if let Some(tp) = target_pairs {
+            let mut acc: u64 = 0;
+            for (q, _ord, p, _blen) in per_read.iter() {
+                if acc >= tp {
+                    break;
+                }
+                chosen.insert(q.clone());
+                acc = acc.saturating_add(*p);
+            }
+            log::info!(
+                "Selected reads: {} (approx pairs: {} / target {})",
+                chosen.len(),
+                acc,
+                tp
+            );
+        } else if let Some(f) = frac {
+            let want_pairs = frac_by_pairs;
+            if want_pairs {
+                let target_p = ((total_pairs as f64) * f).round() as u64;
+                let mut acc: u64 = 0;
+                for (q, _ord, p, _blen) in per_read.iter() {
+                    if acc >= target_p {
+                        break;
+                    }
+                    chosen.insert(q.clone());
+                    acc = acc.saturating_add(*p);
+                }
+            } else {
+                let target_r = ((total_reads as f64) * f).round() as u64;
+                for (q, _ord, _p, _blen) in per_read.iter().take(target_r as usize) {
+                    chosen.insert(q.clone());
+                }
+            }
+        }
+
+        // pass2: write
+        log::info!("PAF downsample pass2 writing output to `{}`...", output);
+        let mut rdr2 = common_reader(&self.file);
+        let mut wtr = common_writer(output);
+        let mut line2 = String::new();
+
+        while rdr2.read_line(&mut line2)? > 0 {
+            let t = line2.trim_end();
+            if t.is_empty() {
+                line2.clear();
+                continue;
+            }
+            if t.starts_with('#') {
+                if keep_comments {
+                    wtr.write_all(line2.as_bytes())?;
+                }
+                line2.clear();
+                continue;
+            }
+
+            let qname = t.split('\t').next().unwrap_or("");
+            if chosen.contains(&hash_qname(qname)) {
+                wtr.write_all(line2.as_bytes())?;
+            }
+
+            line2.clear();
+        }
+
+        log::info!(
+            "PAF downsample finished. Output reads: {} (seed={})",
+            chosen.len(),
+            seed
+        );
+        Ok(())
+    }
+
+    pub fn downsample_by_vpc(
+        &self,
+        output: &String,
+        seed: u64,
+        min_quality: u8,
+        min_identity: f32,
+        min_length: u32,
+        min_order: usize,
+        max_order: usize,
+        target_reads: Option<u64>,
+        target_pairs: Option<u64>,
+        target_bases: Option<u64>,
+        frac: Option<f64>,
+        frac_by_pairs: bool,
+        keep_comments: bool,
+    ) -> anyResult<()> {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+        use std::io::{BufRead, Write};
+    
+        if [
+            target_reads.is_some(),
+            target_pairs.is_some(),
+            target_bases.is_some(),
+            frac.is_some(),
+        ]
+        .into_iter()
+        .filter(|x| *x)
+        .count()
+            != 1
+        {
+            anyhow::bail!("Specify exactly one of --reads, --pairs, --bases, or --frac");
+        }
+    
+        if let Some(f) = frac {
+            if !(0.0 < f && f <= 1.0) {
+                anyhow::bail!("--frac must be in (0, 1]");
+            }
+        }
+    
+        #[inline]
+        fn pairs_of(order: usize) -> u64 {
+            let n = order as u64;
+            n.saturating_mul(n.saturating_sub(1)) / 2
+        }
+    
+        #[inline]
+        fn parse_piece(
+            line: &str,
+            min_quality: u8,
+            min_identity: f32,
+            min_length: u32,
+        ) -> Option<(String, u64, bool)> {
+            let t = line.trim_end();
+            if t.is_empty() || t.starts_with('#') {
+                return None;
+            }
+    
+            let mut it = t.split('\t');
+    
+            let qname = it.next().unwrap_or("").to_string();
+            let qlen = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let qstart = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let qend = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    
+            let _strand = it.next();
+            let _tname = it.next();
+            let _tlen = it.next();
+            let _tstart = it.next();
+            let _tend = it.next();
+    
+            let nmatch = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let alen = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let mapq = it.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+    
+            let qcov = qend.saturating_sub(qstart);
+            let identity = if alen > 0 {
+                nmatch as f32 / alen as f32
+            } else {
+                0.0
+            };
+    
+            let is_eligible_piece =
+                mapq >= min_quality && qcov >= min_length && identity >= min_identity;
+    
+            Some((qname, qlen, is_eligible_piece))
+        }
+    
+        log::info!(
+            "PAF downsample pass1 scanning totals... (min_mapq={}, min_ident={}, min_len={}, order in [{}, {}))",
+            min_quality,
+            min_identity,
+            min_length,
+            min_order,
+            max_order
+        );
+    
+        // -------------------------
+        // pass1: only compute totals
+        // -------------------------
+        let mut rdr = common_reader(&self.file);
+        let mut line = String::new();
+    
+        let mut prev_q: Option<String> = None;
+        let mut cur_order: usize = 0;
+        let mut cur_qlen: u64 = 0;
+    
+        let mut total_reads: u64 = 0;
+        let mut total_pairs: u64 = 0;
+        let mut total_bases: u64 = 0;
+    
+        while rdr.read_line(&mut line)? > 0 {
+            if let Some((qname, qlen, is_eligible_piece)) =
+                parse_piece(&line, min_quality, min_identity, min_length)
+            {
+                match prev_q.as_ref() {
+                    None => {
+                        prev_q = Some(qname);
+                        cur_qlen = qlen;
+                        cur_order = if is_eligible_piece { 1 } else { 0 };
+                    }
+                    Some(pq) if *pq == qname => {
+                        if is_eligible_piece {
+                            cur_order += 1;
+                        }
+                    }
+                    Some(_) => {
+                        if target_bases.is_some()
+                            || (cur_order >= min_order && cur_order < max_order)
+                        {
+                            total_reads += 1;
+                            total_pairs = total_pairs.saturating_add(pairs_of(cur_order));
+                            total_bases = total_bases.saturating_add(cur_qlen);
+                        }
+    
+                        prev_q = Some(qname);
+                        cur_qlen = qlen;
+                        cur_order = if is_eligible_piece { 1 } else { 0 };
+                    }
+                }
+            }
+    
+            line.clear();
+        }
+    
+        if prev_q.take().is_some() {
+            if target_bases.is_some() || (cur_order >= min_order && cur_order < max_order) {
+                total_reads += 1;
+                total_pairs = total_pairs.saturating_add(pairs_of(cur_order));
+                total_bases = total_bases.saturating_add(cur_qlen);
+            }
+        }
+    
+        log::info!(
+            "Eligible reads: {} ; eligible pairs: {} ; eligible bases: {}",
+            total_reads,
+            total_pairs,
+            total_bases
+        );
+    
+        if total_reads == 0 {
+            log::warn!("No eligible reads found. Writing empty output.");
+            let _wtr = common_writer(output);
+            return Ok(());
+        }
+    
+        // Selection probability.
+        //
+        // This version avoids storing per_read and chosen.
+        // Therefore --reads / --pairs / --bases are approximate in expectation.
+        let keep_prob: f64 = if let Some(k) = target_reads {
+            (k as f64 / total_reads as f64).min(1.0)
+        } else if let Some(tb) = target_bases {
+            if total_bases == 0 {
+                0.0
+            } else {
+                (tb as f64 / total_bases as f64).min(1.0)
+            }
+        } else if let Some(tp) = target_pairs {
+            if total_pairs == 0 {
+                0.0
+            } else {
+                (tp as f64 / total_pairs as f64).min(1.0)
+            }
+        } else if let Some(f) = frac {
+            let _ = frac_by_pairs;
+            f
+        } else {
+            unreachable!()
+        };
+    
+        log::info!("Streaming selection probability: {:.6}", keep_prob);
+    
+        // -------------------------
+        // pass2: decide and write by block
+        // -------------------------
+        log::info!("PAF downsample pass2 streaming write to `{}`...", output);
+    
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rdr2 = common_reader(&self.file);
+        let mut wtr = common_writer(output);
+        let mut line2 = String::new();
+    
+        let mut prev_q2: Option<String> = None;
+        let mut cur_order2: usize = 0;
+        let mut cur_qlen2: u64 = 0;
+        let mut block_lines: Vec<String> = Vec::new();
+    
+        let mut out_reads: u64 = 0;
+        let mut out_pairs: u64 = 0;
+        let mut out_bases: u64 = 0;
+    
+        let mut flush_block = |
+            block_lines: &mut Vec<String>,
+            cur_order: usize,
+            cur_qlen: u64,
+            rng: &mut StdRng,
+            wtr: &mut dyn Write,
+            out_reads: &mut u64,
+            out_pairs: &mut u64,
+            out_bases: &mut u64,
+        | -> anyResult<()> {
+            if block_lines.is_empty() {
+                return Ok(());
+            }
+    
+            let eligible =
+                target_bases.is_some() || (cur_order >= min_order && cur_order < max_order);
+    
+            if eligible {
+                let keep = rng.r#gen::<f64>() < keep_prob;
+                if keep {
+                    for l in block_lines.iter() {
+                        wtr.write_all(l.as_bytes())?;
+                    }
+    
+                    *out_reads += 1;
+                    *out_pairs = out_pairs.saturating_add(pairs_of(cur_order));
+                    *out_bases = out_bases.saturating_add(cur_qlen);
+                }
+            }
+    
+            block_lines.clear();
+            Ok(())
+        };
+    
+        while rdr2.read_line(&mut line2)? > 0 {
+            let t = line2.trim_end();
+    
+            if t.is_empty() {
+                line2.clear();
+                continue;
+            }
+    
+            if t.starts_with('#') {
+                if keep_comments {
+                    wtr.write_all(line2.as_bytes())?;
+                }
+                line2.clear();
+                continue;
+            }
+    
+            if let Some((qname, qlen, is_eligible_piece)) =
+                parse_piece(&line2, min_quality, min_identity, min_length)
+            {
+                match prev_q2.as_ref() {
+                    None => {
+                        prev_q2 = Some(qname);
+                        cur_qlen2 = qlen;
+                        cur_order2 = if is_eligible_piece { 1 } else { 0 };
+                        block_lines.push(line2.clone());
+                    }
+                    Some(pq) if *pq == qname => {
+                        if is_eligible_piece {
+                            cur_order2 += 1;
+                        }
+                        block_lines.push(line2.clone());
+                    }
+                    Some(_) => {
+                        flush_block(
+                            &mut block_lines,
+                            cur_order2,
+                            cur_qlen2,
+                            &mut rng,
+                            &mut wtr,
+                            &mut out_reads,
+                            &mut out_pairs,
+                            &mut out_bases,
+                        )?;
+    
+                        prev_q2 = Some(qname);
+                        cur_qlen2 = qlen;
+                        cur_order2 = if is_eligible_piece { 1 } else { 0 };
+                        block_lines.push(line2.clone());
+                    }
+                }
+            }
+    
+            line2.clear();
+        }
+    
+        flush_block(
+            &mut block_lines,
+            cur_order2,
+            cur_qlen2,
+            &mut rng,
+            &mut wtr,
+            &mut out_reads,
+            &mut out_pairs,
+            &mut out_bases,
+        )?;
+    
+        log::info!(
+            "PAF downsample finished. Output reads: {} ; output pairs: {} ; output bases: {} ; seed={}",
+            out_reads,
+            out_pairs,
+            out_bases,
+            seed
+        );
+    
+        Ok(())
+    }
+
+    pub fn downsample_by_vpc_multi(
+        &self,
+        output: &String,
+        seed: u64,
+        min_quality: u8,
+        min_identity: f32,
+        min_length: u32,
+        min_order: usize,
+        max_order: usize,
+        target_reads: Option<u64>,
+        target_pairs: Option<u64>,
+        target_bases: Option<u64>,
+        frac: Option<f64>,
+        frac_by_pairs: bool,
+        keep_comments: bool,
+    ) -> anyResult<()> {
+        use anyhow::Context;
+        use crossbeam_channel::{bounded, Receiver, Sender};
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+        use std::collections::BTreeMap;
+        use std::io::{BufRead, Write};
+        use std::sync::Arc;
+        use std::thread;
+    
+        #[derive(Debug)]
+        struct Block {
+            idx: u64,
+            qname: String,
+            lines: Vec<String>,
+        }
+    
+        #[derive(Debug)]
+        struct ResultBlock {
+            idx: u64,
+            keep: bool,
+            lines: Vec<String>,
+            order: usize,
+            pairs: u64,
+            bases: u64,
+        }
+    
+        #[inline]
+        fn pairs_of(order: usize) -> u64 {
+            let n = order as u64;
+            n.saturating_mul(n.saturating_sub(1)) / 2
+        }
+    
+        #[inline]
+        fn parse_line(
+            line: &str,
+            min_quality: u8,
+            min_identity: f32,
+            min_length: u32,
+        ) -> Option<(String, u64, bool)> {
+            let t = line.trim_end();
+    
+            if t.is_empty() || t.starts_with('#') {
+                return None;
+            }
+    
+            let mut it = t.split('\t');
+    
+            let qname = it.next().unwrap_or("").to_string();
+            let qlen = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let qstart = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let qend = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    
+            let _strand = it.next();
+            let _tname = it.next();
+            let _tlen = it.next();
+            let _tstart = it.next();
+            let _tend = it.next();
+    
+            let nmatch = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let alen = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+            let mapq = it.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+    
+            let qcov = qend.saturating_sub(qstart);
+            let identity = if alen > 0 {
+                nmatch as f32 / alen as f32
+            } else {
+                0.0
+            };
+    
+            let eligible =
+                mapq >= min_quality && qcov >= min_length && identity >= min_identity;
+    
+            Some((qname, qlen, eligible))
+        }
+    
+        fn process_block(
+            block: Block,
+            min_quality: u8,
+            min_identity: f32,
+            min_length: u32,
+            min_order: usize,
+            max_order: usize,
+            target_bases: bool,
+            keep_prob: f64,
+            seed: u64,
+        ) -> ResultBlock {
+            let mut order: usize = 0;
+            let mut bases: u64 = 0;
+    
+            for line in &block.lines {
+                if let Some((_q, qlen, eligible_piece)) =
+                    parse_line(line, min_quality, min_identity, min_length)
+                {
+                    bases = qlen;
+                    if eligible_piece {
+                        order += 1;
+                    }
+                }
+            }
+    
+            let pairs = pairs_of(order);
+    
+            let eligible_read =
+                target_bases || (order >= min_order && order < max_order);
+    
+            // Deterministic per-block RNG.
+            // This avoids sharing one RNG across threads and keeps output reproducible.
+            let mut rng = StdRng::seed_from_u64(seed ^ block.idx.wrapping_mul(0x9E3779B97F4A7C15));
+            let keep = eligible_read && rng.r#gen::<f64>() < keep_prob;
+    
+            ResultBlock {
+                idx: block.idx,
+                keep,
+                lines: block.lines,
+                order,
+                pairs,
+                bases,
+            }
+        }
+    
+        if [
+            target_reads.is_some(),
+            target_pairs.is_some(),
+            target_bases.is_some(),
+            frac.is_some(),
+        ]
+        .into_iter()
+        .filter(|x| *x)
+        .count()
+            != 1
+        {
+            anyhow::bail!("Specify exactly one of --reads, --pairs, --bases, or --frac");
+        }
+    
+        if let Some(f) = frac {
+            if !(0.0 < f && f <= 1.0) {
+                anyhow::bail!("--frac must be in (0, 1]");
+            }
+        }
+    
+        log::info!(
+            "PAF downsample pass1 scanning totals... (min_mapq={}, min_ident={}, min_len={}, order in [{}, {}))",
+            min_quality,
+            min_identity,
+            min_length,
+            min_order,
+            max_order
+        );
+    
+        // -----------------------------
+        // pass1: streaming total count
+        // -----------------------------
+        let mut rdr = common_reader(&self.file);
+        let mut line = String::new();
+    
+        let mut prev_q: Option<String> = None;
+        let mut cur_order: usize = 0;
+        let mut cur_qlen: u64 = 0;
+    
+        let mut total_reads: u64 = 0;
+        let mut total_pairs: u64 = 0;
+        let mut total_bases: u64 = 0;
+    
+        while rdr.read_line(&mut line)? > 0 {
+            if let Some((qname, qlen, eligible_piece)) =
+                parse_line(&line, min_quality, min_identity, min_length)
+            {
+                match prev_q.as_ref() {
+                    None => {
+                        prev_q = Some(qname);
+                        cur_qlen = qlen;
+                        cur_order = if eligible_piece { 1 } else { 0 };
+                    }
+                    Some(pq) if *pq == qname => {
+                        if eligible_piece {
+                            cur_order += 1;
+                        }
+                    }
+                    Some(_) => {
+                        if target_bases.is_some()
+                            || (cur_order >= min_order && cur_order < max_order)
+                        {
+                            total_reads += 1;
+                            total_pairs = total_pairs.saturating_add(pairs_of(cur_order));
+                            total_bases = total_bases.saturating_add(cur_qlen);
+                        }
+    
+                        prev_q = Some(qname);
+                        cur_qlen = qlen;
+                        cur_order = if eligible_piece { 1 } else { 0 };
+                    }
+                }
+            }
+    
+            line.clear();
+        }
+    
+        if prev_q.take().is_some() {
+            if target_bases.is_some() || (cur_order >= min_order && cur_order < max_order) {
+                total_reads += 1;
+                total_pairs = total_pairs.saturating_add(pairs_of(cur_order));
+                total_bases = total_bases.saturating_add(cur_qlen);
+            }
+        }
+    
+        log::info!(
+            "Eligible reads: {} ; eligible pairs: {} ; eligible bases: {}",
+            total_reads,
+            total_pairs,
+            total_bases
+        );
+    
+        if total_reads == 0 {
+            log::warn!("No eligible reads found. Writing empty output.");
+            let _wtr = common_writer(output);
+            return Ok(());
+        }
+    
+        let keep_prob: f64 = if let Some(k) = target_reads {
+            (k as f64 / total_reads as f64).min(1.0)
+        } else if let Some(tb) = target_bases {
+            if total_bases == 0 {
+                0.0
+            } else {
+                (tb as f64 / total_bases as f64).min(1.0)
+            }
+        } else if let Some(tp) = target_pairs {
+            if total_pairs == 0 {
+                0.0
+            } else {
+                (tp as f64 / total_pairs as f64).min(1.0)
+            }
+        } else if let Some(f) = frac {
+            let _ = frac_by_pairs;
+            f
+        } else {
+            unreachable!()
+        };
+    
+        log::info!("Streaming selection probability: {:.6}", keep_prob);
+    
+        // -----------------------------
+        // pass2: producer-consumer
+        // -----------------------------
+        log::info!("PAF downsample pass2 producer-consumer writing `{}`...", output);
+    
+        let n_workers = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(4)
+            .max(1);
+    
+        log::info!("Using {} worker threads", n_workers);
+    
+        let (task_tx, task_rx): (Sender<Block>, Receiver<Block>) = bounded(n_workers * 4);
+        let (res_tx, res_rx): (Sender<ResultBlock>, Receiver<ResultBlock>) = bounded(n_workers * 4);
+    
+        let file = self.file.clone();
+        let output = output.clone();
+    
+        // Producer: read file and group by qname block.
+        let producer_handle = thread::spawn(move || -> anyResult<()> {
+            let mut rdr = common_reader(&file);
+            let mut line = String::new();
+    
+            let mut idx: u64 = 0;
+            let mut cur_q: Option<String> = None;
+            let mut cur_lines: Vec<String> = Vec::new();
+    
+            while rdr.read_line(&mut line)? > 0 {
+                let t = line.trim_end();
+    
+                if t.is_empty() {
+                    line.clear();
+                    continue;
+                }
+    
+                if t.starts_with('#') {
+                    // Comments are handled by writer only if they are emitted.
+                    // To keep implementation simple, comments are skipped here.
+                    line.clear();
+                    continue;
+                }
+    
+                let qname = t.split('\t').next().unwrap_or("").to_string();
+    
+                match cur_q.as_ref() {
+                    None => {
+                        cur_q = Some(qname);
+                        cur_lines.push(line.clone());
+                    }
+                    Some(q) if *q == qname => {
+                        cur_lines.push(line.clone());
+                    }
+                    Some(q) => {
+                        let block = Block {
+                            idx,
+                            qname: q.clone(),
+                            lines: std::mem::take(&mut cur_lines),
+                        };
+    
+                        task_tx
+                            .send(block)
+                            .context("failed to send block to workers")?;
+    
+                        idx += 1;
+                        cur_q = Some(qname);
+                        cur_lines.push(line.clone());
+                    }
+                }
+    
+                line.clear();
+            }
+    
+            if let Some(q) = cur_q.take() {
+                if !cur_lines.is_empty() {
+                    let block = Block {
+                        idx,
+                        qname: q,
+                        lines: cur_lines,
+                    };
+    
+                    task_tx
+                        .send(block)
+                        .context("failed to send final block to workers")?;
+                }
+            }
+    
+            Ok(())
+        });
+    
+        // Workers.
+        let mut worker_handles = Vec::new();
+        let target_bases_flag = target_bases.is_some();
+    
+        for worker_id in 0..n_workers {
+            let rx = task_rx.clone();
+            let tx = res_tx.clone();
+    
+            let handle = thread::spawn(move || -> anyResult<()> {
+                while let Ok(block) = rx.recv() {
+                    let res = process_block(
+                        block,
+                        min_quality,
+                        min_identity,
+                        min_length,
+                        min_order,
+                        max_order,
+                        target_bases_flag,
+                        keep_prob,
+                        seed ^ ((worker_id as u64) << 32),
+                    );
+    
+                    tx.send(res)
+                        .context("failed to send result block to writer")?;
+                }
+    
+                Ok(())
+            });
+    
+            worker_handles.push(handle);
+        }
+    
+        drop(task_rx);
+        drop(res_tx);
+    
+        // Consumer / writer: preserve original block order.
+        let mut wtr = common_writer(&output);
+        let mut pending: BTreeMap<u64, ResultBlock> = BTreeMap::new();
+        let mut next_idx: u64 = 0;
+    
+        let mut out_reads: u64 = 0;
+        let mut out_pairs: u64 = 0;
+        let mut out_bases: u64 = 0;
+    
+        for res in res_rx.iter() {
+            pending.insert(res.idx, res);
+    
+            while let Some(res) = pending.remove(&next_idx) {
+                if res.keep {
+                    for l in res.lines {
+                        wtr.write_all(l.as_bytes())?;
+                    }
+    
+                    out_reads += 1;
+                    out_pairs = out_pairs.saturating_add(res.pairs);
+                    out_bases = out_bases.saturating_add(res.bases);
+                }
+    
+                next_idx += 1;
+            }
+        }
+    
+        producer_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("producer thread panicked"))??;
+    
+        for h in worker_handles {
+            h.join()
+                .map_err(|_| anyhow::anyhow!("worker thread panicked"))??;
+        }
+    
+        log::info!(
+            "PAF downsample finished. Output reads: {} ; output pairs: {} ; output bases: {} ; seed={}",
+            out_reads,
+            out_pairs,
+            out_bases,
+            seed
+        );
+    
+        Ok(())
+    }
+
+    pub fn phase_reads(
+        &self,
+        contigs_group_file: &String,
+        output: &String,
+        min_mapq: u8,
+    ) -> anyResult<()> {
+        use std::collections::HashMap;
+        use std::io::{BufRead, Write};
+
+        let mut contig_to_group: HashMap<String, String> = HashMap::new();
+        {
+            let rdr = common_reader(contigs_group_file);
+            let buf = std::io::BufReader::new(rdr);
+            for line in buf.lines() {
+                let line = line?;
+                let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                if parts.len() >= 2 {
+                    // parts[0] = contig name, parts[1] = group name (e.g. Hap1)
+                    contig_to_group.insert(parts[0].to_string(), parts[1].to_string());
+                }
+            }
+        }
+        log::info!("Loaded {} contig-to-group mappings.", contig_to_group.len());
+
+        let mut rdr = common_reader(&self.file);
+        let mut wtr = common_writer(output);
+        let mut line = String::new();
+
+        let mut prev_q: Option<String> = None;
+        let mut group_scores: HashMap<String, u32> = HashMap::new();
+
+        let mut emit_read = |qname: &str, scores: &mut HashMap<String, u32>, w: &mut dyn Write| -> anyResult<()> {
+            if let Some((best_group, _)) = scores.iter().max_by_key(|entry| entry.1) {
+                writeln!(w, "{}\t{}", qname, best_group)?;
+            } else {
+                writeln!(w, "{}\tUnassigned", qname)?;
+            }
+            scores.clear();
+            Ok(())
+        };
+
+        log::info!("Scanning PAF file to phase reads...");
+
+        let mut total_reads = 0;
+        let mut phased_reads = 0;
+
+        while rdr.read_line(&mut line)? > 0 {
+            let t = line.trim_end();
+            if t.is_empty() || t.starts_with('#') {
+                line.clear();
+                continue;
+            }
+
+            let mut it = t.split('\t');
+            let qname = it.next().unwrap_or("").to_string();
+            
+            // 跳过不必要的列
+            it.next(); // qlen
+            it.next(); // qstart
+            it.next(); // qend
+            it.next(); // strand
+
+            let tname = it.next().unwrap_or("");
+            
+            it.next(); // tlen
+            it.next(); // tstart
+            it.next(); // tend
+            it.next(); // nmatch
+            it.next(); // alen
+            let mapq = it.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+
+            let is_switch = match prev_q.as_ref() {
+                Some(pq) => pq != &qname,
+                None => false,
+            };
+
+            if is_switch {
+                emit_read(prev_q.as_ref().unwrap(), &mut group_scores, &mut wtr)?;
+                total_reads += 1;
+                if !group_scores.is_empty() { phased_reads += 1; }
+                prev_q = Some(qname.clone());
+            } else if prev_q.is_none() {
+                prev_q = Some(qname.clone());
+            }
+
+            if mapq >= min_mapq {
+                if let Some(group) = contig_to_group.get(tname) {
+                    *group_scores.entry(group.clone()).or_insert(0) += 1;
+                }
+            }
+
+            line.clear();
+        }
+
+        if let Some(pq) = prev_q {
+            emit_read(&pq, &mut group_scores, &mut wtr)?;
+            total_reads += 1;
+            if !group_scores.is_empty() { phased_reads += 1; }
+        }
+
+        log::info!(
+            "Phasing finished. Total reads processed: {}, successfully assigned: {}",
+            total_reads, phased_reads
+        );
+        log::info!("Output written to: {}", output);
+
         Ok(())
     }
 }

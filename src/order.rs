@@ -637,10 +637,6 @@ pub fn run_lkh_optimizer(
         idx_to_id.push(id);
     }
 
-    // Construct distance matrix for LKH
-    // Dummy node at the end
-    // Dimension: N + 1
-    // Distances scaled to [0, 100000]
     let dim = num_contigs + 1;
     let mut dist_matrix = vec![vec![0; dim]; dim];
     
@@ -648,42 +644,6 @@ pub fn run_lkh_optimizer(
     const SCALE_FACTOR: f64 = 100_000.0;
     // Maximum distance for no-contact pairs
     const MAX_DIST: u32 = 10_000_000; 
-
-    // for (u, neighbors) in contacts.iter().enumerate() {
-    //     if let Some(&u_idx) = id_to_idx.get(&u) {
-    //         let length_u = *contigsizes_idx.get(&u_idx).unwrap_or(&1) as f64;
-    //         for (&v, &weight) in neighbors {
-    //             if let Some(&v_idx) = id_to_idx.get(&v) {
-    //                 if u_idx == v_idx { continue; }
-    //                 let length_v = *contigsizes_idx.get(&v_idx).unwrap_or(&1) as f64;
-
-    //                 let dist = if weight > 0.0 {
-    //                     let w = weight as f64;
-    //                     let min_len = length_u.min(length_v);
-    //                     let boost_factor = if min_len < 50_000.0 {
-    //                         (50_000.0 / min_len.max(100.0)).sqrt()
-       
-    //                     } else {
-    //                         1.0
-    //                     };
-    //                     let w_norm = w * boost_factor;
-
-    //                     let log_w = (w_norm + 1.0).ln();
-    //                     let max_log = 20.0; 
-    //                     let norm = (log_w / max_log).min(1.0);
-                        
-    //                     ((1.0 - norm) * SCALE_FACTOR) as u32
-                  
-    //                 } else {
-    //                     MAX_DIST
-    //                 };
-                   
-    //                 dist_matrix[u_idx][v_idx] = dist;
-    //                 dist_matrix[v_idx][u_idx] = dist;
-    //             }
-    //         }
-    //     }
-    // }
 
     let mut max_weights = vec![1.0; num_contigs];
     for (u, neighbors) in contacts.iter().enumerate() {
@@ -695,22 +655,29 @@ pub fn run_lkh_optimizer(
 
     for (u, neighbors) in contacts.iter().enumerate() {
         if let Some(&u_idx) = id_to_idx.get(&u) {
-            
+            let length_u = *contigsizes_idx.get(&u_idx).unwrap_or(&1) as f64;
             for (&v, &weight) in neighbors {
                 if let Some(&v_idx) = id_to_idx.get(&v) {
                     if u_idx == v_idx { continue; }
                     
                     
-                    let w = weight as f64;
-                    let score_u = w / max_weights[u_idx];
-                    let score_v = w / max_weights[v_idx];
+                    // let w = weight as f64;
+                    // let score_u = w / max_weights[u_idx];
+                    // let score_v = w / max_weights[v_idx];
 
-                    let combined_score = (score_u * score_v).sqrt();
+                    // let combined_score = (score_u * score_v).sqrt();
                     
     
-                    let dist_val = (1.0 - combined_score.powf(0.5)) * SCALE_FACTOR;
+                    // let dist_val = (1.0 - combined_score.powf(0.5)) * SCALE_FACTOR;
                     
-                    let dist = dist_val.max(1.0) as u32;
+                    // let dist = dist_val.max(1.0) as u32;
+                    let length_v = *contigsizes_idx.get(&v_idx).unwrap_or(&1) as f64;
+                    let w = weight as f64;
+
+                    let density = w / (length_u + length_v);
+                    
+                    let dist_val = SCALE_FACTOR / (1.0 + 5.0 * 1e5 * density);
+                    let dist = dist_val.max(1.0).min(SCALE_FACTOR) as u32;
                    
                     dist_matrix[u_idx][v_idx] = dist;
                     dist_matrix[v_idx][u_idx] = dist;
@@ -718,48 +685,6 @@ pub fn run_lkh_optimizer(
             }
         }
     }
-    // let mut max_weights = vec![1.0; num_contigs];
-    // for (u, neighbors) in contacts.iter().enumerate() {
-    //     if let Some(&u_idx) = id_to_idx.get(&u) {
-    //         let max_w = neighbors.values().cloned().fold(0u32, |a, b| a.max(b as u32));
-    //         max_weights[u_idx] = max_w as f64;
-    //     }
-    // }
-
-    // for (u, neighbors) in contacts.iter().enumerate() {
-    //     if let Some(&u_idx) = id_to_idx.get(&u) {
-    //         let length_u = *contigsizes_idx.get(&u_idx).unwrap_or(&1) as f64;
-            
-    //         for (&v, &weight) in neighbors {
-    //             if let Some(&v_idx) = id_to_idx.get(&v) {
-    //                 if u_idx == v_idx { continue; }
-    //                 let length_v = *contigsizes_idx.get(&v_idx).unwrap_or(&1) as f64;
-                    
-    //                 let w = weight as f64;
-    //                 let score_u = w / max_weights[u_idx];
-    //                 let score_v = w / max_weights[v_idx];
-                    
-
-    //                 let min_len = length_u.min(length_v);
-    //                 let len_penalty = if min_len < 10_000.0 {
-    //                     0.5 + 0.5 * (min_len / 10_000.0)
-    //                 } else {
-    //                     1.0
-    //                 };
-
-    //                 let combined_score = (score_u * score_v).sqrt() * len_penalty;
-                    
-
-    //                 let dist_val = (1.0 - combined_score.powf(0.5)) * SCALE_FACTOR;
-                    
-    //                 let dist = dist_val.max(1.0) as u32;
-                   
-    //                 dist_matrix[u_idx][v_idx] = dist;
-    //                 dist_matrix[v_idx][u_idx] = dist;
-    //             }
-    //         }
-    //     }
-    // }
 
     for i in 0..num_contigs {
         dist_matrix[num_contigs][i] = 0;
@@ -845,10 +770,7 @@ pub fn run_lkh_optimizer(
 pub fn run_lkh_optimizer_dual_node(
     tour: &Tour,
     contigsizes: IndexMap<usize, usize>,
-    matrix: &ContactMatrix, // 注意：这里需要更详细的 SplitContacts 信息，目前的 ContactMatrix 可能不够
-    // 如果 matrix 只包含 contig 级别的互作，我们需要 split contacts 数据
-    // 假设 matrix 已经被修改为包含 split 互作，或者我们需要传入 split_contacts
-    // 为了演示，这里假设我们能从 matrix 获取端点互作，或者我们需要修改函数签名传入 split_contacts
+    matrix: &ContactMatrix, 
     split_contacts: &crate::splitcontacts::SplitContacts, 
     contig2idx: &HashMap<String, usize>,
     iterations: usize,
@@ -857,7 +779,6 @@ pub fn run_lkh_optimizer_dual_node(
     let num_contigs = contigsizes.len();
     log::info!("Starting LKH Dual-Node optimization with {} contigs ({} nodes)...", num_contigs, num_contigs * 2);
 
-    // 1. 映射 ID
     let mut id_to_idx = HashMap::new();
     let mut idx_to_id = Vec::with_capacity(num_contigs);
     for (i, id) in tour.contigs.clone().into_iter().enumerate() {
@@ -865,16 +786,15 @@ pub fn run_lkh_optimizer_dual_node(
         idx_to_id.push(id);
     }
 
-    // 2. 构建距离矩阵 (2N + 1 维度，最后是 Dummy)
     let num_nodes = 2 * num_contigs;
     let dim = num_nodes + 1;
     let mut dist_matrix = vec![vec![0; dim]; dim];
     
-    const SCALE_FACTOR: f64 = 100_000.0;
-    const MAX_DIST: u32 = 10_000_000; 
-    const INTERNAL_DIST: u32 = 0; // 强制连接 Head-Tail
+    const SCALE_FACTOR: f64 = 1_000.0;
+    const BASE_OFFSET: u32 = 2_000; 
+    const MAX_DIST: u32 = 100_000; 
+    const INTERNAL_DIST: u32 = 1; 
 
-    // 初始化为最大距离
     for i in 0..dim {
         for j in 0..dim {
             if i != j {
@@ -883,7 +803,6 @@ pub fn run_lkh_optimizer_dual_node(
         }
     }
 
-    // 3. 设置 Contig 内部距离 (Head <-> Tail)
     for i in 0..num_contigs {
         let head = 2 * i;
         let tail = 2 * i + 1;
@@ -891,14 +810,6 @@ pub fn run_lkh_optimizer_dual_node(
         dist_matrix[tail][head] = INTERNAL_DIST;
     }
 
-    // 4. 填充 Contig 间距离
-    // 我们需要遍历 SplitContacts 来获取端点间的互作
-    // 假设 split_contacts.data 的 key 是 (ContigName, ContigName)，value 是 [0-0, 0-1, 1-0, 1-1]
-    // 0 代表 Head (Start), 1 代表 Tail (End)
-    
-    // 预计算最大权重用于归一化 (可选，但推荐)
-    let mut max_weights: Vec<f64> = vec![1.0; num_nodes];
-    // 这里简化处理，直接用绝对值转换，或者您可以实现类似之前的相对强度逻辑
     for (pair, counts) in &split_contacts.data {
         let c1_name = &pair.Contig1;
         let c2_name = &pair.Contig2;
@@ -912,159 +823,82 @@ pub fn run_lkh_optimizer_dual_node(
                 let v_head = 2 * v_idx;
                 let v_tail = 2 * v_idx + 1;
 
-                // counts: [0-0, 0-1, 1-0, 1-1] -> [H-H, H-T, T-H, T-T]
                 let w_hh = counts[0];
                 let w_ht = counts[1];
                 let w_th = counts[2];
                 let w_tt = counts[3];
 
-                // 更新 u_head 的最大权重
-                max_weights[u_head] = max_weights[u_head].max(w_hh).max(w_ht);
-                // 更新 u_tail 的最大权重
-                max_weights[u_tail] = max_weights[u_tail].max(w_th).max(w_tt);
-                // 更新 v_head 的最大权重
-                max_weights[v_head] = max_weights[v_head].max(w_hh).max(w_th);
-                // 更新 v_tail 的最大权重
-                max_weights[v_tail] = max_weights[v_tail].max(w_ht).max(w_tt);
-            }
-        }
-    }
+                let total_w = w_hh + w_ht + w_th + w_tt;
+                let max_pair_w = w_hh.max(w_ht).max(w_th).max(w_tt);
 
-    for (pair, counts) in &split_contacts.data {
-        let c1_name = &pair.Contig1;
-        let c2_name = &pair.Contig2;
+                let length_u = *contigsizes.get(&u_orig_idx).unwrap_or(&1) as f64;
+                let length_v = *contigsizes.get(&v_orig_idx).unwrap_or(&1) as f64;
 
-        if let (Some(&u_orig_idx), Some(&v_orig_idx)) = (contig2idx.get(c1_name), contig2idx.get(c2_name)) {
-            // 转换到当前 tour 的索引
-            if let (Some(&u_idx), Some(&v_idx)) = (id_to_idx.get(&u_orig_idx), id_to_idx.get(&v_orig_idx)) {
-                if u_idx == v_idx { continue; }
-
-                // u 的节点: 2*u_idx (Head), 2*u_idx+1 (Tail)
-                let u_head = 2 * u_idx;
-                let u_tail = 2 * u_idx + 1;
-                let v_head = 2 * v_idx;
-                let v_tail = 2 * v_idx + 1;
-
-                // counts: [0-0, 0-1, 1-0, 1-1] -> [H-H, H-T, T-H, T-T]
-                let w_hh = counts[0];
-                let w_ht = counts[1];
-                let w_th = counts[2];
-                let w_tt = counts[3];
-                let weight_to_dist = |w: f64| -> u32 {
-                    if w <= 0.0 { return MAX_DIST; }
-                    // 简单的对数转换，您可以替换为更复杂的归一化
-                    let log_w = (w + 1.0).ln();
-                    let max_log = 15.0; // 经验值
-                    let norm = (log_w / max_log).min(1.0);
-                    ((1.0 - norm) * SCALE_FACTOR) as u32
+                let weight_to_dist = |w: f64, len_u: f64, len_v: f64| -> u32 {
+                    let effective_w = if w <= 0.0 {
+                        if total_w > 0.0 {
+                            (max_pair_w * 0.01).max(0.1)
+                        } else {
+                            return MAX_DIST;
+                        }
+                    } else {
+                        w
+                    };
+                    let density = effective_w / (len_u + len_v);
+                    let dist_val = SCALE_FACTOR / (1.0 + 5.0 * 1e5 * density);
+                    (BASE_OFFSET + dist_val.max(1.0).min(SCALE_FACTOR) as u32)
                 };
-
-                // 填充矩阵 (对称)
                 // Head-Head
-                let d_hh = weight_to_dist(w_hh);
+                let d_hh = weight_to_dist(w_hh, length_u, length_v);
                 if d_hh < dist_matrix[u_head][v_head] {
                     dist_matrix[u_head][v_head] = d_hh;
                     dist_matrix[v_head][u_head] = d_hh;
                 }
 
                 // Head-Tail
-                let d_ht = weight_to_dist(w_ht);
+                let d_ht = weight_to_dist(w_ht, length_u, length_v);
                 if d_ht < dist_matrix[u_head][v_tail] {
                     dist_matrix[u_head][v_tail] = d_ht;
                     dist_matrix[v_tail][u_head] = d_ht;
                 }
 
                 // Tail-Head
-                let d_th = weight_to_dist(w_th);
+                let d_th = weight_to_dist(w_th, length_u, length_v);
                 if d_th < dist_matrix[u_tail][v_head] {
                     dist_matrix[u_tail][v_head] = d_th;
                     dist_matrix[v_head][u_tail] = d_th;
                 }
 
                 // Tail-Tail
-                let d_tt = weight_to_dist(w_tt);
+                let d_tt = weight_to_dist(w_tt, length_u, length_v);
                 if d_tt < dist_matrix[u_tail][v_tail] {
                     dist_matrix[u_tail][v_tail] = d_tt;
                     dist_matrix[v_tail][u_tail] = d_tt;
                 }
-                // 辅助函数：权重转距离
-                // let calc_dist = |w: f64, node_a: usize, node_b: usize| -> u32 {
-                //     if w <= 0.0 { return MAX_DIST; }
-                    
-                //     // 相对强度归一化
-                //     let score_a = w / max_weights[node_a];
-                //     let score_b = w / max_weights[node_b];
-                    
-                //     // 几何平均综合得分
-                //     let combined_score = (score_a * score_b).sqrt();
-                    
-                //     // 转换为距离 (使用平方根拉伸差异)
-                //     let dist_val = (1.0 - combined_score.powf(0.5)) * SCALE_FACTOR;
-                //     dist_val.max(1.0) as u32
-                // };
-
-
-                // // 填充矩阵 (对称)
-                // // Head-Head
-                // let d_hh = calc_dist(w_hh, u_head, v_head);
-                // if d_hh < dist_matrix[u_head][v_head] {
-                //     dist_matrix[u_head][v_head] = d_hh;
-                //     dist_matrix[v_head][u_head] = d_hh;
-                // }
-
-                // // Head-Tail
-                // let d_ht = calc_dist(w_ht, u_head, v_tail);
-                // if d_ht < dist_matrix[u_head][v_tail] {
-                //     dist_matrix[u_head][v_tail] = d_ht;
-                //     dist_matrix[v_tail][u_head] = d_ht;
-                // }
-
-                // // Tail-Head
-                // let d_th = calc_dist(w_th, u_tail, v_head);
-                // if d_th < dist_matrix[u_tail][v_head] {
-                //     dist_matrix[u_tail][v_head] = d_th;
-                //     dist_matrix[v_head][u_tail] = d_th;
-                // }
-
-                // // Tail-Tail
-                // let d_tt = calc_dist(w_tt, u_tail, v_tail);
-                // if d_tt < dist_matrix[u_tail][v_tail] {
-                //     dist_matrix[u_tail][v_tail] = d_tt;
-                //     dist_matrix[v_tail][u_tail] = d_tt;
-                // }
+               
             }
         }
     }
 
-    // 5. Dummy 节点连接
     let dummy_idx = num_nodes;
     for i in 0..num_nodes {
         dist_matrix[dummy_idx][i] = 0;
         dist_matrix[i][dummy_idx] = 0;
     }
 
-    // 6. 求解 TSP
     let contig_dist_matrix = DistanceMatrix::new(dist_matrix);
     log::info!("Solving Dual-Node TSP...");
     let mut results = contig_dist_matrix.solve(iterations);
 
-    // 7. 解析结果
-    // 找到 Dummy 的位置并旋转，使其成为起点/终点
     let dummy_pos = results.iter().position(|&x| x == dummy_idx).unwrap();
     results.rotate_left(dummy_pos);
     
-    // 移除 Dummy
     let path: Vec<usize> = results.into_iter().filter(|&x| x != dummy_idx).collect();
 
-    // 验证路径有效性并提取 Contig 顺序和方向
     let mut optimized_order = Vec::with_capacity(num_contigs);
     let mut optimized_signs = Vec::with_capacity(num_contigs);
     let mut visited = vec![false; num_contigs];
 
-    // 遍历路径，每次处理两个节点 (一个 Contig)
-    // 理想情况下，路径应该是 (u_node1, u_node2), (v_node1, v_node2)...
-    // 其中 node1 和 node2 属于同一个 Contig
-    
     let mut i = 0;
     while i < path.len() - 1 {
         let n1 = path[i];
@@ -1086,11 +920,9 @@ pub fn run_lkh_optimizer_dual_node(
             }
             i += 2;
         } else {
-
             if !visited[c1] {
                 optimized_order.push(idx_to_id[c1]);
                 visited[c1] = true;
-      
                 optimized_signs.push(true); 
             }
             i += 1;
@@ -1105,13 +937,45 @@ pub fn run_lkh_optimizer_dual_node(
             optimized_signs.push(true);
         }
     }
+    for &id in &tour.contigs {
+        if !visited[*id_to_idx.get(&id).unwrap()] {
+            optimized_order.push(id);
+            optimized_signs.push(true);
+        }
+    }
+
+    let mut final_tour = Tour {
+        contigs: optimized_order,
+        signs: optimized_signs,
+    };
+
+    let mut orig_index_map = HashMap::with_capacity(tour.contigs.len());
+    for (idx, &id) in tour.contigs.iter().enumerate() {
+        orig_index_map.insert(id, idx);
+    }
+
+    let mapped_indices: Vec<usize> = final_tour.contigs.iter()
+        .map(|id| *orig_index_map.get(id).unwrap_or(&0))
+        .collect();
+
+    let mut increases = 0;
+    let mut decreases = 0;
+    for window in mapped_indices.windows(2) {
+        if window[0] < window[1] {
+            increases += 1;
+        } else if window[0] > window[1] {
+            decreases += 1;
+        }
+    }
+
+    if decreases > increases {
+        log::info!("Detected LKH reverse traversal. Reversing tour to restore correct order and signs...");
+        final_tour.reverse();
+    }
 
     log::info!("Dual-Node optimization finished.");
 
-    Tour {
-        contigs: optimized_order,
-        signs: optimized_signs,
-    }
+    final_tour
 }
 
 
@@ -1732,9 +1596,18 @@ pub fn run_evolove_optimizer(
 
     log::info!("Optimization finished. Best Score: {:.4}", best_fitness_score);
 
+    let mut sign_map = HashMap::with_capacity(tour.contigs.len());
+    for (i, &id) in tour.contigs.iter().enumerate() {
+        sign_map.insert(id, tour.signs[i]);
+    }
+
+    let final_signs: Vec<bool> = best_genes.iter()
+        .map(|&id| *sign_map.get(&id).unwrap_or(&true))
+        .collect();
+
     Tour {
-        contigs: best_genes.clone(),
-        signs: vec![true; num_contigs],
+        contigs: best_genes,
+        signs: final_signs,
     }
 }
 
@@ -1836,6 +1709,8 @@ pub fn run_hybrid(
     resume: bool,
     seed: u64,
     threads: usize,
+    split_contacts: Option<&crate::splitcontacts::SplitContacts>,
+    contig2idx: Option<&HashMap<String, usize>>,
 ) -> Tour {
  
     let matrix = ContactMatrix::new(
@@ -1849,13 +1724,22 @@ pub fn run_hybrid(
         
     let best_tour = if is_lkh {
         log::info!("Ordering score before optimization: {:?}", calculate_fitness(&best_tour.contigs, &matrix));
-        let tour = run_lkh_optimizer(
-            &best_tour,
-            contigsizes.clone(), 
-            &matrix,
-            10,
-            seed,
-        );
+        // let tour = run_lkh_optimizer(
+        //     &best_tour,
+        //     contigsizes.clone(), 
+        //     &matrix,
+        //     10,
+        //     seed,
+        // );
+        let tour = run_lkh_optimizer_dual_node(
+                &best_tour,
+                contigsizes.clone(),
+                &matrix,
+                split_contacts.expect("REASON"),
+                contig2idx.expect("REASON"),
+                10,
+                seed,
+            );
         log::info!("Ordering score after LKH optimization: {:?}", calculate_fitness(&tour.contigs, &matrix));
         tour
     } else {

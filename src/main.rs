@@ -7,11 +7,7 @@ use indexmap::IndexMap;
 use rayon::ThreadPoolBuilder;
 use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
-use cphasing::bam::{ split_bam, bam2pairs, 
-                     bam2fastq, bam2fasta,
-                     bamstat, bamstat_hic,
-                     bamstat_porec,
-                     bam2paf, slide2raw};
+use cphasing::bam::*;
 use cphasing::cli::cli;
 use cphasing::clm::{Clm, merge_clm};
 use cphasing::core::{ 
@@ -24,12 +20,12 @@ use cphasing::cutsite::cut_site;
 use cphasing::fastx::{ Fastx, split_fastq };
 use cphasing::methy::{ modbam2fastq, modify_fasta };
 use cphasing::paf::PAFTable;
-use cphasing::pairs::{ Pairs, merge_pairs };
+use cphasing::pairs::*;
 use cphasing::porec::{
         PoreCTable, merge_porec_tables };
 use cphasing::kprune::{ PruneTable, KPruner };
 use cphasing::prune::{ Pruner };
-use cphasing::pqs::{ PQS, merge_pqs };
+use cphasing::pqs::*;
 use cphasing::simulation::{ 
         simulation_from_split_read, simulate_porec,
         simulate_hic };
@@ -455,15 +451,31 @@ fn main() {
             split_bam(&input_bam, &output_prefix, *record_num).unwrap();
         }
         Some(("mergeclm", sub_matches)) => {
-            let clm_dir = sub_matches.get_one::<String>("CLM_DIR").expect("required");
+            let inputs: Vec<_> = sub_matches.get_many::<String>("INPUTS").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mut clm_files = std::fs::read_dir(&clm_dir).unwrap()
-                .map(|x| x.unwrap().path().to_str().unwrap().to_string())
-                .collect::<Vec<String>>();
-            
-            // filter out non-clm files
-            clm_files = clm_files.into_iter().filter(|x| x.ends_with(".clm")).collect();
+            let mut clm_files = Vec::new();
+            for input in inputs {
+                let path = std::path::Path::new(input);
+                if path.is_dir() {
+                    for entry in std::fs::read_dir(path).unwrap() {
+                        let entry = entry.unwrap();
+                        let path_str = entry.path().to_str().unwrap().to_string();
+                        if path_str.ends_with(".clm") || path_str.ends_with(".clm.gz") {
+                            clm_files.push(path_str);
+                        }
+                    }
+                } else if path.is_file() {
+                    clm_files.push(input.to_string());
+                } else {
+                    log::warn!("Input `{}` is neither a file nor a directory, ignored.", input);
+                }
+            }
+
+            if clm_files.is_empty() {
+                log::error!("No clm files found in the given inputs.");
+                std::process::exit(1);
+            }
 
             merge_clm(clm_files, &output).unwrap();
 
@@ -705,11 +717,13 @@ fn main() {
                 std::process::exit(1);
             }
             
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output_raw = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output = output_raw.strip_suffix("/").unwrap_or(output_raw).to_string();
             let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mut prt = PoreCTable::new(&table);
 
             if output.ends_with(".pqs") {
@@ -724,7 +738,7 @@ fn main() {
                     log::info!("Output directory {} already exists. Removing it first.", output);
                     std::fs::remove_dir_all(&output).unwrap();
                 }
-                prt.to_pairs_pqs(&chromsizes, &output, *chunksize, *min_quality, *min_order, *max_order).unwrap();
+                prt.to_pairs_pqs(&chromsizes, &output, *chunksize, *min_quality, *min_order, *max_order, *threads).unwrap();
             } else {
                 prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
             }
@@ -744,10 +758,11 @@ fn main() {
         Some(("porec-dup", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut prt = PoreCTable::new(&table);
-            prt.dup(&collapsed_list, 123, &output);
+            prt.dup(&collapsed_list, 123, &output, *threads);
 
         }
         Some(("porec-merge", sub_matches)) => {
@@ -755,6 +770,85 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             
             merge_porec_tables(tables, output)
+        }
+        Some(("porec2reads", m)) => {
+            // let table = m.get_one::<String>("TABLE").unwrap();
+            // let fasta = m.get_one::<String>("FASTA").unwrap();
+            // let out_prefix = m.get_one::<String>("OUTPUT").unwrap();
+            // let length_arg = *m.get_one::<usize>("LENGTH").unwrap();
+            
+           
+            // let read_len = if length_arg == 0 { None } else { Some(length_arg) };
+            
+            // let mut porec_table = PoreCTable::new(table);
+            // porec_table.to_pe_pair_reads(fasta, out_prefix, read_len).unwrap();
+            let table = m.get_one::<String>("TABLE").unwrap();
+            let fasta = m.get_one::<String>("FASTA").unwrap();
+            let out_prefix = m.get_one::<String>("OUTPUT").unwrap();
+            let length_arg = *m.get_one::<usize>("LENGTH").unwrap();
+            
+           
+            let read_len = if length_arg == 0 { None } else { Some(length_arg) };
+            
+            let read_len = if length_arg == 0 { None } else { Some(length_arg) };
+                        
+            let mut temp_files = Vec::new();
+
+            let actual_table = if table.ends_with(".bam") {
+                let tmp_paf = format!("{}.tmp.paf", out_prefix);
+                let tmp_porec = format!("{}.tmp.porec.gz", out_prefix);
+                let threads = *m.get_one::<usize>("THREADS").unwrap_or(&4);
+                let min_quality = *m.get_one::<u8>("MIN_MAPQ").unwrap_or(&1);
+                let min_identity = *m.get_one::<f32>("MIN_IDENTITY").unwrap_or(&0.0);
+                let min_length = *m.get_one::<u32>("MIN_LENGTH").unwrap_or(&0);
+                let max_edge = *m.get_one::<u64>("MAX_EDGE").unwrap_or(&100000);
+                let max_order = *m.get_one::<u32>("MAX_ORDER").unwrap_or(&1000);
+                let secondary = *m.get_one::<bool>("SECONDARY").unwrap_or(&false);
+                std::fs::remove_file(&tmp_paf).ok();
+                std::fs::remove_file(&tmp_porec).ok();
+
+                temp_files.push(tmp_paf.clone());
+                temp_files.push(tmp_porec.clone());
+
+                // 1. BAM -> PAF
+                bam2paf(table, &tmp_paf, threads, secondary);
+                
+                // 2. PAF -> PoreC
+                let pt = PAFTable::new(&tmp_paf);
+                let empty_string = String::new();
+                pt.paf2table(&empty_string, &tmp_porec, &min_quality, &min_identity, 
+                                &min_length, &max_order, &max_edge, secondary, threads).unwrap();
+
+                tmp_porec
+            } else if table.ends_with(".paf") || table.ends_with(".paf.gz") {
+                let tmp_porec = format!("{}.tmp.porec.gz", out_prefix);
+                let threads = *m.get_one::<usize>("THREADS").unwrap_or(&4);
+                let min_quality = *m.get_one::<u8>("MIN_MAPQ").unwrap_or(&1);
+                let min_identity = *m.get_one::<f32>("MIN_IDENTITY").unwrap_or(&0.0);
+                let min_length = *m.get_one::<u32>("MIN_LENGTH").unwrap_or(&0);
+                let max_edge = *m.get_one::<u64>("MAX_EDGE").unwrap_or(&100000);
+                let max_order = *m.get_one::<u32>("MAX_ORDER").unwrap_or(&1000);
+                let secondary = *m.get_one::<bool>("SECONDARY").unwrap_or(&false);
+                std::fs::remove_file(&tmp_porec).ok();
+                temp_files.push(tmp_porec.clone());
+
+                let pt = PAFTable::new(table);
+                let empty_string = String::new();
+                pt.paf2table(&empty_string, &tmp_porec, &min_quality, &min_identity, 
+                                &min_length, &max_order, &max_edge, secondary, threads).unwrap();
+
+                tmp_porec
+            } else {
+                table.to_string()
+            };
+
+            let mut porec_table = PoreCTable::new(&actual_table);
+            porec_table.to_pe_pair_reads(fasta, out_prefix, read_len).unwrap();
+
+            for tmp in temp_files {
+                std::fs::remove_file(tmp).ok();
+            }
+            
         }
         Some(("porec-intersect", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
@@ -775,6 +869,178 @@ fn main() {
             // prt.intersect(&bed, *invert, &output);
             prt.intersect_multi_threads(&bed, *invert, &output);
         }
+              
+        Some(("paf-downsample", sub_matches)) => {
+            let paf = sub_matches.get_one::<String>("PAF").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mode = sub_matches.get_one::<String>("MODE").expect("error").as_str();
+            let by = sub_matches.get_one::<String>("BY").expect("error").as_str();
+
+            let pairs = *sub_matches.get_one::<u64>("PAIRS").expect("error");
+            let reads = *sub_matches.get_one::<u64>("READS").expect("error");
+            let frac = *sub_matches.get_one::<f64>("FRAC").expect("error");
+            let bases = *sub_matches.get_one::<u64>("BASES").expect("error");
+            let seed = *sub_matches.get_one::<u64>("SEED").expect("error");
+            let min_quality = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let min_identity = *sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
+            let min_length = *sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
+            let min_order = *sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
+            let max_order = *sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
+            let keep_comments = *sub_matches.get_one::<bool>("KEEP_COMMENTS").unwrap_or(&false);
+
+            // translate args into Option targets (same as porec-downsample)
+            let (target_reads, target_pairs, target_bases, frac_opt) = match mode {
+                "pairs" => {
+                    if pairs == 0 {
+                        log::error!("--mode pairs requires --pairs > 0");
+                        std::process::exit(1);
+                    }
+                    (None, Some(pairs), None, None)
+                }
+                "reads" => {
+                    if reads == 0 {
+                        log::error!("--mode reads requires --reads > 0");
+                        std::process::exit(1);
+                    }
+                    (Some(reads), None, None, None)
+                }
+                "bases" => {
+                    if bases == 0 {
+                        log::error!("--mode bases requires --bases > 0");
+                        std::process::exit(1);
+                    }
+                    (None, None, Some(bases), None)
+                }
+                "frac" => {
+                    if !(0.0 < frac && frac <= 1.0) {
+                        log::error!("--mode frac requires --frac in (0,1]");
+                        std::process::exit(1);
+                    }
+                    (None, None, None, Some(frac))
+                }
+                _ => {
+                    log::error!("Invalid --mode: {}", mode);
+                    std::process::exit(1);
+                }
+            };
+            let frac_by_pairs = match by {
+                "pairs" => true,
+                "reads" => false,
+                _ => {
+                    log::error!("Invalid --by: {}", by);
+                    std::process::exit(1);
+                }
+            };
+
+            let pt = PAFTable::new(&paf);
+            pt.downsample_by_vpc(
+                &output.to_string(),
+                seed,
+                min_quality,
+                min_identity,
+                min_length,
+                min_order,
+                max_order,
+                target_reads,
+                target_pairs,
+                target_bases,
+                frac_opt,
+                frac_by_pairs,
+                keep_comments,
+            )
+            .unwrap();
+        }
+        Some(("porec-downsample", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            let mode = sub_matches.get_one::<String>("MODE").expect("error").as_str();
+            let by = sub_matches.get_one::<String>("BY").expect("error").as_str();
+
+            let pairs = *sub_matches.get_one::<u64>("PAIRS").expect("error");
+            let reads = *sub_matches.get_one::<u64>("READS").expect("error");
+            let frac = *sub_matches.get_one::<f64>("FRAC").expect("error");
+
+            let seed = *sub_matches.get_one::<u64>("SEED").expect("error");
+            let min_mapq = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let min_order = *sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
+            let max_order = *sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
+
+            // translate args into Option targets
+            let (target_reads, target_pairs, frac_opt) = match mode {
+                "pairs" => {
+                    if pairs == 0 {
+                        log::error!("--mode pairs requires --pairs > 0");
+                        std::process::exit(1);
+                    }
+                    (None, Some(pairs), None)
+                }
+                "reads" => {
+                    if reads == 0 {
+                        log::error!("--mode reads requires --reads > 0");
+                        std::process::exit(1);
+                    }
+                    (Some(reads), None, None)
+                }
+                "frac" => {
+                    if !(0.0 < frac && frac <= 1.0) {
+                        log::error!("--mode frac requires --frac in (0,1]");
+                        std::process::exit(1);
+                    }
+                    (None, None, Some(frac))
+                }
+                _ => {
+                    log::error!("Invalid --mode: {}", mode);
+                    std::process::exit(1);
+                }
+            };
+
+            let frac_by_pairs = match by {
+                "pairs" => true,
+                "reads" => false,
+                _ => {
+                    log::error!("Invalid --by: {}", by);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prt = PoreCTable::new(&table);
+            prt.downsample(
+                &output.to_string(),
+                seed,
+                min_mapq,
+                min_order,
+                max_order,
+                target_reads,
+                target_pairs,
+                frac_opt,
+                frac_by_pairs,
+            )
+            .unwrap();
+        }
+
+        Some(("porec2depth", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let window_size = sub_matches.get_one::<usize>("WINSIZE").expect("error");
+            let mut step_size = *sub_matches.get_one::<usize>("STEPSIZE").expect("error");
+            let min_mapq = *sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+            ThreadPoolBuilder::new()
+                .num_threads(*threads)
+                .build_global()
+                .unwrap();
+
+            if step_size == 0 {
+                step_size = *window_size;
+            }
+
+            let mut prt = PoreCTable::new(&table);
+            prt.to_depth(&chromsizes, *window_size, step_size, min_mapq, &output).unwrap();
+        }
         Some(("paf2pairs", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
@@ -789,10 +1055,10 @@ fn main() {
             let max_order = sub_matches.get_one::<u32>("MAX_ORDER").expect("error");
             let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output_raw = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output = output_raw.strip_suffix("/").unwrap_or(output_raw).to_string();
 
             let pt = PAFTable::new(&paf);
-            
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
             let prefix: &str = prefix.strip_suffix(".pairs.pqs").unwrap_or(prefix);
@@ -811,7 +1077,7 @@ fn main() {
                     log::info!("Output directory {} already exists. Removing it first.", output);
                     std::fs::remove_dir_all(&output).unwrap();
                 }
-                prt.to_pairs_pqs(&chromsizes, &output, 1000000, *min_quality, *min_order, *max_order as usize).unwrap();
+                prt.to_pairs_pqs(&chromsizes, &output, 1000000, *min_quality, *min_order, *max_order as usize, *threads).unwrap();
                
                
             } else {
@@ -826,18 +1092,69 @@ fn main() {
             let number = sub_matches.get_one::<usize>("NUMBER").expect("error");
             let seed = sub_matches.get_one::<usize>("SEED").expect("error");  
 
-            match (percent, number) {
+            let min_mapq = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
+
+
+            match (*percent, *number) {
                 (0.0, 0) => {
-                    eprintln!("Either percent or number must be greater than 0.");
+                    log::error!("Either percent or number must be greater than 0.");
                     std::process::exit(1);
                 }
                 (0.0, _) => {
-                    Pairs::new(&pairs).downsample(*number, *percent, *seed, &output);
+                    if Path::new(pairs).is_dir() {
+                        let p = PQS::new(pairs);
+                        match p.is_pqs() {
+                            true => {
+                                if Path::new(output).exists() {
+                                    log::info!("Output directory {} already exists. Removing it first.", output);
+                                    std::fs::remove_dir_all(output).unwrap();
+                                }
+                                // ✅ prefer using unified downsample for PQS (supports mapq + threads)
+                                downsample_pqs(
+                                    pairs,
+                                    output,
+                                    Some(*number as u64),
+                                    None,
+                                    *seed as u64,
+                                    min_mapq,
+                                    threads,
+                                ).unwrap();
+                            }
+                            false => log::error!("The input directory is not a PQS directory."),
+                        }
+                    } else {
+                        // Pairs text format path (no min_mapq support here yet)
+                        Pairs::new(pairs).downsample(*number, *percent, *seed, output);
+                    }
                 }
                 (_, _) => {
-                    Pairs::new(&pairs).downsample(*number, *percent, *seed, &output);
+                    if Path::new(pairs).is_dir() {
+                        let p = PQS::new(pairs);
+                        match p.is_pqs() {
+                            true => {
+                                if Path::new(output).exists() {
+                                    log::info!("Output directory {} already exists. Removing it first.", output);
+                                    std::fs::remove_dir_all(output).unwrap();
+                                }
+                                downsample_pqs(
+                                    pairs,
+                                    output,
+                                    None,
+                                    Some(*percent),
+                                    *seed as u64,
+                                    min_mapq,
+                                    threads,
+                                ).unwrap();
+                            }
+                            false => log::error!("The input directory is not a PQS directory."),
+                        }
+                    } else {
+                        Pairs::new(pairs).downsample(*number, *percent, *seed, output);
+                    }
                 }
             }
+
         }
         Some(("pairs-merge", sub_matches)) => {
             
@@ -1135,6 +1452,51 @@ fn main() {
             }
             pairs.to_pqs(*chunksize, &output);
         }
+        Some(("bam-chr2ctg", sub_m)) => {
+            let input = sub_m.get_one::<String>("INPUT").unwrap();
+            let bed = sub_m.get_one::<String>("BED").unwrap();
+            let output = sub_m.get_one::<String>("OUTPUT").unwrap();
+            let threads = *sub_m.get_one::<usize>("THREADS").unwrap();
+
+            chr_to_ctg(input, bed, output, threads).unwrap();
+        }
+        Some(("porec-chr2ctg", sub_m)) => {
+            let input = sub_m.get_one::<String>("INPUT").unwrap();
+            let bed = sub_m.get_one::<String>("BED").unwrap();
+            let output = sub_m.get_one::<String>("OUTPUT").unwrap();
+            let threads = *sub_m.get_one::<usize>("THREADS").unwrap();
+
+            let mut prt = PoreCTable::new(input);
+            prt.chr_porec_to_contig_porec(bed, output, threads).unwrap();
+        }
+        Some(("pqs-chr2ctg", sub_m)) => {
+            let input = sub_m.get_one::<String>("INPUT").unwrap();
+            let bed = sub_m.get_one::<String>("BED").unwrap();
+            let output = sub_m.get_one::<String>("OUTPUT").unwrap();
+            let threads = *sub_m.get_one::<usize>("THREADS").unwrap();
+
+            let _ = chr_pqs_to_contig_pqs(input, bed, output, threads);
+        }
+        Some(("pairs-prune", sub_matches)) => {
+            let input = sub_matches.get_one::<String>("INPUT").expect("required");
+            let prune_table = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
+            if Path::new(&input).is_dir(){
+                prune_pqs(input, prune_table, output, threads).unwrap();
+            } else {
+                prune_pairs(input, prune_table, output, threads).unwrap();
+            }
+            
+        }
+        Some(("bam-prune", sub_matches)) => {
+            let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let prune_table = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
+
+            prune_bam(input_bam, prune_table, output, threads).unwrap();
+        }
         Some(("pairs2bam", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
@@ -1142,11 +1504,32 @@ fn main() {
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
             if Path::new(&pairs).is_dir() {
-                log::error!("The input is a directory, that is not a pairs or pairs.gz file.");
-
+                // log::error!("The input is a directory, that is not a pairs or pairs.gz file.");
+                let pqs = PQS::new(&pairs);
+                let _ = pqs.to_bam(*min_quality, &output, *threads);
             } else {
                 let mut pairs = Pairs::new(&pairs);
                 pairs.to_bam(*min_quality, &output, *threads);
+            }
+        }
+
+        Some(("pairs2porec", sub_matches)) => {
+            let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
+            let mapq = sub_matches.get_one::<u8>("MAPQ").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let empty_string = String::new();
+            let enzyme_bed = sub_matches.get_one::<String>("ENZYME").unwrap_or(&empty_string);
+            let min_edge_support = *sub_matches.get_one::<u32>("MIN_EDGE_SUPPORT").unwrap_or(&1);
+            let min_clique_size = *sub_matches.get_one::<usize>("MIN_CLIQUE_SIZE").unwrap_or(&3);
+            let max_comp_size = *sub_matches.get_one::<usize>("MAX_COMP_SIZE").unwrap_or(&1000);
+            let threads = *sub_matches.get_one::<usize>("THREADS").unwrap_or(&4);
+
+            if Path::new(&pairs).is_dir() {
+                let pqs = PQS::new(&pairs);
+                let _ = pqs.to_porec(*mapq, &output, enzyme_bed, min_edge_support, min_clique_size, max_comp_size, threads);
+            } else {
+                log::error!("The input is not a directory, that is not a pairs or pairs.gz file.");
+            
             }
         }
 
@@ -1161,11 +1544,11 @@ fn main() {
 
         
         Some(("bam2fastq", sub_matches)) => {
-            let bam = sub_matches.get_one::<String>("BAM").expect("required");
+            let bams: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            bam2fastq(&bam, &output, *threads);
+            bam2fastq(&bams, &output, *threads);
         }
 
         Some(("bam2fasta", sub_matches)) => {
@@ -1202,11 +1585,19 @@ fn main() {
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            if output.ends_with(".pqs") {
-                log::error!("Output for bam2pairs cannot be .pqs format.");
-                std::process::exit(1);
+           
+            if Path::new(&output).exists() {
+                log::info!("Output path {} existed, removing it first.", output);
+                std::fs::remove_dir_all(&output).unwrap();
             }
-            bam2pairs(&bam, *min_quality, &output, *threads);
+
+            if output.ends_with(".pqs") {
+                bam2pqs(&bam, *min_quality, 1000000, &output, *threads).unwrap();
+            } else {
+                bam2pairs(&bam, *min_quality, &output, *threads);
+            }
+               
+            
 
         }
         
@@ -1290,7 +1681,41 @@ fn main() {
 
             modbam2fastq(&input_bam, *min_prob, &output).unwrap();
         }
+        Some(("phase-reads", sub_matches)) => {
+            let input = sub_matches.get_one::<String>("INPUT").expect("required");
+            let groups = sub_matches.get_one::<String>("GROUPS").expect("required");
+            let format = sub_matches.get_one::<String>("FORMAT").expect("error").as_str();
+            let min_quality = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
+            let mut actual_format = format.to_string();
+            if actual_format == "auto" {
+                if input.ends_with(".bam") || input.ends_with(".sam") {
+                    actual_format = "bam".to_string();
+                } else if input.ends_with(".paf") || input.ends_with(".paf.gz") {
+                    actual_format = "paf".to_string();
+                } else {
+                    log::error!("Cannot determine format from file extension. Please specify --format.");
+                    std::process::exit(1);
+                }
+            }
+
+            match actual_format.as_str() {
+                "bam" => {
+                
+                    cphasing::bam::phase_reads(input, groups, output, min_quality, threads);
+                }
+                "paf" => {
+                    let pt = PAFTable::new(input);
+                    pt.phase_reads(groups, output, min_quality).unwrap();
+                }
+                _ => {
+                    log::error!("Unsupported format: {}", actual_format);
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(("modfa", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
@@ -1423,7 +1848,9 @@ fn main() {
                 !*skip_ga,
                 *resume,
                 *seed,
-                threads.clone()
+                threads.clone(),
+                Some(&split_contacts),
+                Some(&contig2idx),
             );
             // let matrix = ContactMatrix::new(&contigsizes_idx, contacts_vec);
             // let mut tour = run_lkh_optimizer_dual_node(

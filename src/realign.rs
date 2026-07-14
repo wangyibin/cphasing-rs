@@ -36,7 +36,6 @@ pub struct PAFLine {
     pub match_n: u32,
     pub alignment_length: u32,
     pub mapq: u8,
-    pub cigar: String,
     pub tags: Vec<String>,
 }
 
@@ -55,8 +54,7 @@ impl PAFLine {
             match_n: fields[9].parse::<u32>().unwrap(),
             alignment_length: fields[10].parse::<u32>().unwrap(),
             mapq: fields[11].parse::<u8>().unwrap(),
-            cigar: fields[12].clone(),
-            tags: fields[13..].to_vec(),
+            tags: fields[12..].to_vec(),
         }
     }
 
@@ -103,7 +101,6 @@ impl PAFLine {
             match_n: paf_line.match_n,
             alignment_length: paf_line.alignment_length,
             mapq: paf_line.mapq,
-            cigar: paf_line.cigar.clone(),
             tags: paf_line.tags.clone(),
         }
     }
@@ -122,7 +119,6 @@ impl PAFLine {
         fields.push(self.match_n.to_string());
         fields.push(self.alignment_length.to_string());
         fields.push(self.mapq.to_string());
-        fields.push(self.cigar.clone());
         for t in &self.tags {
             fields.push(t.to_string());
         }
@@ -156,7 +152,6 @@ fn parse_paf_line_from_str(line: &str) -> Option<PAFLine> {
     let match_n = it.next()?.parse::<u32>().ok()?;
     let alignment_length = it.next()?.parse::<u32>().ok()?;
     let mapq = it.next()?.parse::<u8>().ok()?;
-    let cigar = it.next()?.to_string();
 
     let tags: Vec<String> = it.map(|s| s.to_string()).collect();
 
@@ -173,7 +168,6 @@ fn parse_paf_line_from_str(line: &str) -> Option<PAFLine> {
         match_n,
         alignment_length,
         mapq,
-        cigar,
         tags,
     })
 }
@@ -702,7 +696,57 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
         records_to_process.push(line);
     }
 
- 
+    if !records_to_process.is_empty() {
+        batch.push(std::mem::take(&mut records_to_process));
+    }
+    if !batch.is_empty() {
+        let to_proc = std::mem::take(&mut batch);
+        let send = send_arc.clone();
+        let pend = pending.clone();
+        let t_reads = total_reads.clone();
+        let t_unmapped = total_unmapped.clone();
+
+        pend.fetch_add(1, Ordering::SeqCst);
+
+        rayon::spawn_fifo(move || {
+            let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 300);
+            
+            for raw_lines in to_proc {
+                let mut parsed_records: Vec<PAFLine> = Vec::with_capacity(raw_lines.len());
+                let mut local_unmapped = 0;
+                
+                for raw_line in raw_lines {
+                     if let Some(p) = parse_paf_line_from_str(&raw_line) {
+                         if p.target == "*" {
+                             local_unmapped += 1;
+                         } else {
+                             parsed_records.push(p);
+                         }
+                     }
+                }
+                
+                t_reads.fetch_add(1, Ordering::Relaxed);
+                if local_unmapped > 0 && parsed_records.is_empty() {
+                     t_unmapped.fetch_add(1, Ordering::Relaxed);
+                     continue; 
+                }
+
+                let mut ru = PAFReadUnit { data: parsed_records };
+                if !ru.data.is_empty() {
+                    let mut au = parse_paf_read_unit(&mut ru);
+                    au.rescue(mapq);
+                    for r in au.Primary {
+                        let s = r.to_string();
+                        outbuf.extend_from_slice(s.as_bytes());
+                        outbuf.push(b'\n');
+                    }
+                }
+            }
+            let _ = send.send(outbuf);
+            pend.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+    
     loop {
         if pending.load(Ordering::SeqCst) == 0 { break; }
         std::thread::sleep(Duration::from_millis(10));

@@ -1,3 +1,6 @@
+## [v0.2.8] - 20250304
+#### ENhancement
+- `pairs2bam`, support it to input pairs.pqs 
 ## [v0.2.7] - 20250224
 #### bug fixes
 - fixed bug that `pairs-dup` reported `chunk_size` must not be zero

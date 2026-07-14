@@ -2853,4 +2853,102 @@ pub fn merge_pairs(input: Vec<&String>, output: &String) {
 
 }
 
+pub fn prune_pairs(
+    input_pairs: &String,
+    prune_table: &String,
+    output: &String,
+    threads: usize,
+) -> anyResult<()> {
+    let mut pairs = Pairs::new(input_pairs);
+    pairs.header.from_pairs(input_pairs);
 
+    let mut wtr = common_writer(output);
+    wtr.write_all(pairs.header.to_string().as_bytes()).unwrap();
+
+    let blacklist = {
+        let f = common_reader(prune_table);
+        let rdr = BufReader::new(f);
+        let mut set = HashSet::new();
+        for line in rdr.lines().flatten() {
+            let s = line.trim();
+            if s.is_empty() || s.starts_with('#') { continue; }
+            let fields: Vec<&str> = s.split_whitespace().collect();
+            if fields.len() < 2 { continue; }
+            let mut cp = ContigPair::new(fields[0].to_string(), fields[1].to_string());
+            cp.order();
+            set.insert(cp);
+        }
+        set
+    };
+    log::info!("Loaded {} contig pairs to prune from {}", blacklist.len(), prune_table);
+
+    let reader = common_reader(input_pairs);
+    let (sender, receiver) = bounded::<Vec<String>>(1000);
+    let mut handles = vec![];
+    let wtr = Arc::new(Mutex::new(wtr));
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()?;
+
+    pool.install(|| {
+        for _ in 0..threads {
+            let receiver = receiver.clone();
+            let wtr = Arc::clone(&wtr);
+            let blacklist = blacklist.clone();
+            handles.push(thread::spawn(move || {
+                while let Ok(records) = receiver.recv() {
+                    let buffer: Vec<&String> = records.par_iter().filter_map(|line| {
+                        let record = line.trim_end_matches('\n').split('\t').collect::<Vec<&str>>();
+                        if record.len() < 4 {
+                            return Some(line);
+                        }
+                        let mut cp = ContigPair::new(record[1].to_string(), record[3].to_string());
+                        cp.order();
+                        if blacklist.contains(&cp) {
+                            None
+                        } else {
+                            Some(line)
+                        }
+                    }).collect();
+
+                    {
+                        let mut wtr = wtr.lock().unwrap();
+                        for line in &buffer {
+                            if !line.trim().is_empty() {
+                                wtr.write_all(line.as_bytes()).unwrap();
+                                wtr.write_all(b"\n").unwrap();
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        let batch_size = 10_000;
+        let mut batch = Vec::with_capacity(batch_size);
+        for line in reader.lines().filter_map(|line| line.ok()) {
+            if line.starts_with('#') {
+                continue;
+            }
+            batch.push(line);
+            if batch.len() >= batch_size {
+                sender.send(std::mem::take(&mut batch)).unwrap();
+            }
+        }
+
+        if !batch.is_empty() {
+            sender.send(batch).unwrap();
+        }
+
+        drop(sender);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+    });
+
+    log::info!("Successful output pruned pairs file into `{}`", output);
+
+    Ok(())
+}
