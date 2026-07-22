@@ -1154,14 +1154,14 @@ pub fn cli() -> Command {
                     Arg::new("MAX_EDGE")
                         .long("max-edge")
                         .value_parser(value_parser!(u64))
-                        .default_value("100000")
+                        .default_value("0")
                         .help("remove alignments located in the edge of contigs (Only used for BAM/PAF conversion)")
                 )
                 .arg(
                     Arg::new("MAX_ORDER")
                         .long("max-order")
                         .value_parser(value_parser!(u32))
-                        .default_value("1000")
+                        .default_value("50")
                         .help("Max order of the concatemers (Only used for BAM/PAF conversion)")
                 )
                 .arg(
