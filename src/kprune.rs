@@ -16,7 +16,7 @@ use pathfinding::prelude::{kuhn_munkres, Matrix, Weights};
 use crate::alleles::AlleleTable2;
 use crate::core::{ common_reader, common_writer };
 use crate::core::{ BaseTable, ContigPair, ContigPair2 };
-use crate::contacts::{ Contacts, Contacts2 };
+use crate::contacts::{ ContactEvidence, Contacts, Contacts2 };
 use crate::count_re::CountRE;
 
 
@@ -27,6 +27,80 @@ pub fn maximum_bipartite_matching(matrix: Matrix<OrderedFloat<f64>>) -> Vec<usiz
     let (cash_flow, assignments) = kuhn_munkres(&matrix);
 
     assignments
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PruneThresholds {
+    pub min_contacts: f64,
+    pub min_margin: f64,
+}
+
+impl Default for PruneThresholds {
+    fn default() -> Self {
+        Self {
+            min_contacts: 5.0,
+            min_margin: 0.10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupDecision {
+    CrossAllelic,
+    Compatible,
+    InsufficientEvidence,
+}
+
+pub fn classify_selected_alternative(
+    candidate: Option<ContactEvidence>,
+    selected: Option<ContactEvidence>,
+    candidate_was_selected: bool,
+    thresholds: PruneThresholds,
+) -> GroupDecision {
+    if candidate_was_selected {
+        return GroupDecision::Compatible;
+    }
+    let (candidate, selected) = match (candidate, selected) {
+        (Some(candidate), Some(selected)) => (candidate, selected),
+        _ => return GroupDecision::InsufficientEvidence,
+    };
+    if candidate.raw_count + selected.raw_count < thresholds.min_contacts {
+        return GroupDecision::InsufficientEvidence;
+    }
+    let relative_advantage =
+        (selected.score - candidate.score) / selected.score.abs().max(1e-12);
+    if selected.score <= candidate.score || relative_advantage < thresholds.min_margin {
+        return GroupDecision::InsufficientEvidence;
+    }
+    GroupDecision::CrossAllelic
+}
+
+pub fn all_informative_groups_cross_allelic(
+    decisions: impl IntoIterator<Item = GroupDecision>,
+) -> bool {
+    let mut saw_cross = false;
+    for decision in decisions {
+        match decision {
+            GroupDecision::CrossAllelic => saw_cross = true,
+            GroupDecision::Compatible => return false,
+            GroupDecision::InsufficientEvidence => {}
+        }
+    }
+    saw_cross
+}
+
+fn pair_allowed(
+    contig1: &String,
+    contig2: &String,
+    whitelist: &HashSet<&String>,
+    partial: bool,
+) -> bool {
+    whitelist.is_empty()
+        || if partial {
+            whitelist.contains(contig1) || whitelist.contains(contig2)
+        } else {
+            whitelist.contains(contig1) && whitelist.contains(contig2)
+        }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -119,6 +193,7 @@ pub struct KPruner {
     pub countre: Option<CountRE>,
     // pub contig_pairs: Vec<ContigPair2<'a>>,
     pub normalization_method: String,
+    pub thresholds: PruneThresholds,
     pub allelic_counts: u32,
     pub potential_cross_allelic_counts: u32,
     pub cross_allelic_counts: u32,
@@ -156,6 +231,7 @@ impl KPruner {
             countre: count_re,
             // contig_pairs: contig_pairs,
             normalization_method: normalization_method.clone(),
+            thresholds: PruneThresholds::default(),
             allelic_counts: 0,
             potential_cross_allelic_counts: 0,
             cross_allelic_counts: 0,
@@ -175,24 +251,24 @@ impl KPruner {
         log::set_max_level(log::LevelFilter::Info);
 
         let length_hash = &self.alleletable.header.contigsizes; 
-        let mut contacts_data = self.contacts.to_data(&unique_min, &self.normalization_method, 
-                                                    &self.countre, Some(length_hash));
+        let mut contacts_data = self.contacts.to_evidence_data(
+            &unique_min,
+            &self.normalization_method,
+            &self.countre,
+            Some(length_hash),
+        );
 
-        if !whitehash.is_empty() {
-            if !partial_whitelist {
-                contacts_data.retain(|x, _| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2));
-            }
-        }
+        contacts_data.retain(|pair, _| {
+            pair_allowed(pair.Contig1, pair.Contig2, whitehash, partial_whitelist)
+        });
      
         let mut contig_pairs: Vec<&ContigPair2> = contacts_data.keys().collect();
         let mut allelic_contig_pairs = self.alleletable.get_allelic_contig_pairs();
 
         contig_pairs.retain(|x| !allelic_contig_pairs.contains(x));
-        if !whitehash.is_empty() {
-            if !partial_whitelist {
-                allelic_contig_pairs.retain(|x| whitehash.contains(x.Contig1) && whitehash.contains(x.Contig2));
-            }
-        }
+        allelic_contig_pairs.retain(|pair| {
+            pair_allowed(pair.Contig1, pair.Contig2, whitehash, partial_whitelist)
+        });
 
 
         allelic_contig_pairs.retain(|x| contacts_data.contains_key(x));
@@ -220,12 +296,8 @@ impl KPruner {
         }; 
 
         let filter_func = |x: &&ContigPair2| -> bool {
-            if !whitehash.is_empty() {
-                if partial_whitelist {
-                    if !whitehash.contains(&x.Contig1) && !whitehash.contains(&x.Contig2) { return false; }
-                } else {
-                    if !whitehash.contains(&x.Contig1) || !whitehash.contains(&x.Contig2) { return false; }
-                }
+            if !pair_allowed(x.Contig1, x.Contig2, whitehash, partial_whitelist) {
+                return false;
             }
             allelic_contigs.contains_key(&x.Contig1) && 
             allelic_contigs.contains_key(&x.Contig2) && 
@@ -253,12 +325,12 @@ impl KPruner {
         let get_id = |name: &String| *name_to_id.get(name).expect("ID mapping failed");
 
 
-        let mut contacts_id_map: FxHashMap<(u32, u32), f64> = FxHashMap::with_capacity_and_hasher(
+        let mut contacts_id_map: FxHashMap<(u32, u32), ContactEvidence> = FxHashMap::with_capacity_and_hasher(
                                                                     contacts_data.len(), Default::default());
-        for (pair, &val) in &contacts_data {
+        for (pair, &evidence) in &contacts_data {
             let u = get_id(&pair.Contig1);
             let v = get_id(&pair.Contig2);
-            contacts_id_map.insert(if u < v { (u, v) } else { (v, u) }, val);
+            contacts_id_map.insert(if u < v { (u, v) } else { (v, u) }, evidence);
         }
 
     
@@ -283,9 +355,9 @@ impl KPruner {
 
                 if alleles1.is_empty() || alleles2.is_empty() { return None; }
 
-                let mut is_weak = false;
+                let mut decisions = Vec::new();
 
-                'outer: for g1 in alleles1 {
+                for g1 in alleles1 {
                     for g2 in alleles2 {
                         let r = g1.len();
                         let c = g2.len();
@@ -312,8 +384,8 @@ impl KPruner {
                             for j in 0..cols {
                                 let v = col_grp[j];
                                 let key = if u < v { (u, v) } else { (v, u) };
-                                if let Some(&val) = contacts_id_map.get(&key) {
-                                    matrix[(i, j)] = OrderedFloat(val);
+                                if let Some(evidence) = contacts_id_map.get(&key) {
+                                    matrix[(i, j)] = OrderedFloat(evidence.score);
                                 }
                             }
                         }
@@ -321,14 +393,32 @@ impl KPruner {
 
                         let assignments = maximum_bipartite_matching(matrix);
                         
-                        if assignments[row_idx] != col_idx {
-                            is_weak = true;
-                            break 'outer;
-                        }
+                        let selected_col = assignments[row_idx];
+                        let candidate_key = if row_target < col_target {
+                            (row_target, col_target)
+                        } else {
+                            (col_target, row_target)
+                        };
+                        let selected_target = col_grp[selected_col];
+                        let selected_key = if row_target < selected_target {
+                            (row_target, selected_target)
+                        } else {
+                            (selected_target, row_target)
+                        };
+                        decisions.push(classify_selected_alternative(
+                            contacts_id_map.get(&candidate_key).copied(),
+                            contacts_id_map.get(&selected_key).copied(),
+                            selected_col == col_idx,
+                            self.thresholds,
+                        ));
                     }
                 }
 
-                if is_weak { Some(contig_pair) } else { None }
+                if all_informative_groups_cross_allelic(decisions) {
+                    Some(contig_pair)
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -337,7 +427,7 @@ impl KPruner {
         log::info!("Cross allelic contig pairs: {}", self.cross_allelic_counts);
         
         let allelic_record_hashmap = self.alleletable.get_allelic_record_by_contig_pairs();
-        let mut buffer = Vec::new();
+        let mut lines = Vec::new();
         
         for contig_pair in allelic_contig_pairs.iter() {
             if let Some(record) = allelic_record_hashmap.get(contig_pair) {
@@ -346,17 +436,22 @@ impl KPruner {
                  } else {
                      (record.mz1, record.mz2)
                  };
-                 writeln!(buffer, "{}\t{}\t{}\t{}\t{}\t{}\t{}", 
+                 lines.push(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             contig_pair.Contig1, contig_pair.Contig2,
-                            m1, m2, record.mz_shared, record.similarity, 0).unwrap();
+                            m1, m2, record.mz_shared, record.similarity, 0));
             }
         }
 
         for contig_pair in cross_allelic.iter() {
-            writeln!(buffer, "{}\t{}\t0\t0\t0\t0\t1", 
-            contig_pair.Contig1, contig_pair.Contig2).unwrap();
+            lines.push(format!("{}\t{}\t0\t0\t0\t0\t1",
+                contig_pair.Contig1, contig_pair.Contig2));
         }
 
+        lines.sort();
+        let mut buffer = lines.join("\n").into_bytes();
+        if !buffer.is_empty() {
+            buffer.push(b'\n');
+        }
         writer.write_all(&buffer).unwrap();
     }
 
@@ -554,4 +649,3 @@ impl KPruner {
 
     
 }
-

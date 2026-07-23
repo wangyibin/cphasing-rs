@@ -12,6 +12,14 @@ use clap::{arg, Arg, ArgAction,
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn non_negative_f64(value: &str) -> Result<f64, String> {
+    let parsed = value.parse::<f64>().map_err(|error| error.to_string())?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err("value must be finite and non-negative".to_string());
+    }
+    Ok(parsed)
+}
+
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
@@ -258,6 +266,20 @@ pub fn cli() -> Command {
                         .default_value("precise")
                         .help("method of prune: [fast, precise, greedy]")
                         )
+                .arg(
+                    Arg::new("MIN_CONTACTS")
+                        .long("min-contacts")
+                        .value_parser(non_negative_f64)
+                        .default_value("1")
+                        .help("minimum combined raw contacts required for cross-allelic evidence")
+                )
+                .arg(
+                    Arg::new("MIN_MARGIN")
+                        .long("min-margin")
+                        .value_parser(non_negative_f64)
+                        .default_value("0.10")
+                        .help("minimum relative score advantage required for cross-allelic evidence")
+                )
                 .arg(
                     Arg::new("NORMALIZATION_METHOD")
                         .long("normalization-method")

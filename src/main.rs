@@ -23,7 +23,7 @@ use cphasing::paf::PAFTable;
 use cphasing::pairs::*;
 use cphasing::porec::{
         PoreCTable, merge_porec_tables };
-use cphasing::kprune::{ PruneTable, KPruner };
+use cphasing::kprune::{ PruneTable, KPruner, PruneThresholds };
 use cphasing::prune::{ Pruner };
 use cphasing::pqs::*;
 use cphasing::simulation::{ 
@@ -182,6 +182,10 @@ fn main() {
                 .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
+            let thresholds = PruneThresholds {
+                min_contacts: *sub_matches.get_one::<f64>("MIN_CONTACTS").expect("defaulted"),
+                min_margin: *sub_matches.get_one::<f64>("MIN_MARGIN").expect("defaulted"),
+            };
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let partial_whitelist = sub_matches.get_one::<bool>("PARTIAL_WHITELIST").expect("error");
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
@@ -265,6 +269,7 @@ fn main() {
                         let mut kpruner = KPruner::new(
                             &alleletable, &contacts, &prunetable, &count_re_opt,
                             normalization_method);
+                        kpruner.thresholds = thresholds;
 
                         let white_refs: HashSet<&String> = v.iter().collect();
 
@@ -302,6 +307,7 @@ fn main() {
                 }
 
                 let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, &count_re_opt, normalization_method);
+                kpruner.thresholds = thresholds;
                 kpruner.prune(&method.as_str(), &whitehash2, &mut writer, *partial_whitelist);
             }
             
@@ -1884,4 +1890,3 @@ fn main() {
         },
     }
 }
-

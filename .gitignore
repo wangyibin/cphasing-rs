@@ -12,3 +12,5 @@ Cargo.lock
 # pixi environments
 .pixi
 *.egg-info
+
+docs/superpowers

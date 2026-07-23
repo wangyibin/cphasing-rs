@@ -24,6 +24,12 @@ pub struct ContactRecord {
     pub count: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactEvidence {
+    pub raw_count: f64,
+    pub score: f64,
+}
+
 impl ContactRecord {
     pub fn new() -> Self {
         Self {
@@ -348,6 +354,16 @@ impl BaseTable for Contacts2 {
 
 
 impl Contacts2 {
+    fn aggregate_contacts(&self) -> HashMap<ContigPair2<'_>, f64> {
+        let mut data = HashMap::new();
+        for record in &self.records {
+            let mut contig_pair = ContigPair2::new(&record.chrom1, &record.chrom2);
+            contig_pair.order();
+            *data.entry(contig_pair).or_insert(0.0) += record.count;
+        }
+        data
+    }
+
     pub fn parse(&mut self) {
 
        let input = common_reader(&self.file);
@@ -427,17 +443,7 @@ impl Contacts2 {
         // let longest_re = re_count.values().max().unwrap();
         // let longest_re_square = (longest_re * longest_re) as f64;
         
-        let mut data: HashMap<ContigPair2, f64> = self.records.par_iter(
-            ).map(|record| {
-                let mut contig_pair = match record.chrom1 > record.chrom2 {
-                    true => ContigPair2::new(&record.chrom2, &record.chrom1),
-                    false => ContigPair2::new(&record.chrom1, &record.chrom2)
-                };
-                contig_pair.order();
-                let count = record.count;
-
-                (contig_pair, count)
-            }).collect();
+        let mut data = self.aggregate_contacts();
     
     
         let normalization_method = match (re_count.len() == 0) {
@@ -696,6 +702,25 @@ impl Contacts2 {
 
     }
 
+    pub fn to_evidence_data(
+        &self,
+        unique_min: &HashMap<String, f64>,
+        normalization_method: &String,
+        re_count: &Option<CountRE>,
+        lengths: Option<&HashMap<String, u64>>,
+    ) -> HashMap<ContigPair2<'_>, ContactEvidence> {
+        let raw = self.aggregate_contacts();
+        let scores = self.to_data(unique_min, normalization_method, re_count, lengths);
+
+        scores
+            .into_iter()
+            .map(|(contig_pair, score)| {
+                let raw_count = raw[&contig_pair];
+                (contig_pair, ContactEvidence { raw_count, score })
+            })
+            .collect()
+    }
+
     pub fn contigs(&self) -> HashSet<String> {
         let mut contigs: HashSet<String> = HashSet::new();
         for record in &self.records {
@@ -729,6 +754,4 @@ impl Contacts2 {
         }
     }
 }
-
-
 

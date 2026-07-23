@@ -335,18 +335,17 @@ impl AlleleTable2 {
     
     pub fn get_allelic_contigs_precise(&self, whitehash: &HashSet<&String>) -> HashMap<&String, Vec<Vec<&String>>> {
         let mut data: HashMap<&String, Vec<Vec<&String>>> = HashMap::new();
-        let records = &self.allele_records;
         let check_whitehash = !whitehash.is_empty();
 
-        for record in records {
-            
-            if check_whitehash && (!whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2)) {
+        for record in &self.allele_records {
+            if check_whitehash
+                && (!whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2))
+            {
                 continue;
             }
 
             if !data.contains_key(&record.contig1) {
-                data.insert(&record.contig1, Vec::new());
-                data.get_mut(&record.contig1).unwrap().push(vec![&record.contig1, &record.contig2]);
+                data.insert(&record.contig1, vec![vec![&record.contig1, &record.contig2]]);
             } else {
                 data.get_mut(&record.contig1).unwrap()[0].push(&record.contig2);
             }
@@ -357,40 +356,25 @@ impl AlleleTable2 {
 
     pub fn get_allelic_contigs(&self, method: &str, whitehash: &HashSet<&String>) -> HashMap<&String, Vec<Vec<&String>>> {
         let mut data: HashMap<&String, Vec<Vec<&String>>> = HashMap::new();
-        let records = &self.allele_records;
-        // sort records by mz_shared in ascending order
-        // records.sort_by(|a, b| a.mz_shared.partial_cmp(&b.mz_shared).unwrap());
-        for record in records {
-            
-            if whitehash.len() > 0 {
-                if !whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2) {
-                    continue;
-                }
+        for record in &self.allele_records {
+            if !whitehash.is_empty()
+                && (!whitehash.contains(&record.contig1) || !whitehash.contains(&record.contig2))
+            {
+                continue;
             }
+
             if !data.contains_key(&record.contig1) {
                 data.insert(&record.contig1, vec![vec![&record.contig1, &record.contig2]]);
-                // data.get_mut(&contig1).unwrap().push(contig2.clone());
             } else {
                 if method == "fast" {
-                    if data.contains_key(&record.contig1) {
-                        continue;
-                    }
+                    continue;
                 }
-                data.get_mut(&record.contig1).unwrap().push(vec![&record.contig1, &record.contig2]);
+                data.get_mut(&record.contig1)
+                    .unwrap()
+                    .push(vec![&record.contig1, &record.contig2]);
             }
-            
         }
 
-        // data to HashMap<String, Vec<Vec<String>>>
-        // let mut res = HashMap::new();
-        // for (contig, contigs) in data.iter() {
-        //     for contig in contigs.iter() {
-        //         res.entry(contig.clone()).or_insert_with(Vec::new);
-        //         res.get_mut(contig).unwrap().push(contigs.clone());
-        //     }
-        // }
-        
-        // res
         data
     }
 
@@ -1003,5 +987,3 @@ impl AllelesFasta {
         
     }
 }
-
-
