@@ -1,6 +1,6 @@
 use cphasing::aligner::*;
-use cphasing::fastx::*;
 use cphasing::core::BaseTable;
+use cphasing::fastx::*;
 use std::io::{Cursor, Write};
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -8,7 +8,7 @@ use std::time::Instant;
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // #[test]
     // fn test_edit_distance() {
     //     extern crate levenshtein;
@@ -23,7 +23,8 @@ mod tests {
     #[test]
     fn test_input_bam() {
         let input_bam = String::from("test/test.10000.align.sort.bam");
-        let fasta = String::from("/data3/wangyb/DATA/GS/UL/20230411-UNL230107-P4-PAK71591-sup/mod.nog.fa");
+        let fasta =
+            String::from("/data3/wangyb/DATA/GS/UL/20230411-UNL230107-P4-PAK71591-sup/mod.nog.fa");
         let fa = Fastx::new(&fasta);
         let seqs = fa.get_chrom_seqs().unwrap();
         let min_quality: u8 = 10;
@@ -57,8 +58,8 @@ mod tests {
     //         stdin.write_all(refs).expect("Failed to write to stdin");
 
     //     }
-        
-    //     let output = child.wait_with_output().expect("Failed to read stdout"); 
+
+    //     let output = child.wait_with_output().expect("Failed to read stdout");
     //     println!("{:?}", String::from_utf8_lossy(&output.stdout).to_string());
     //     let end_time = Instant::now();
     //     let cpu_time = end_time - start_time;

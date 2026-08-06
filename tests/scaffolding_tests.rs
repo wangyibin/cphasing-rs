@@ -1,11 +1,11 @@
-use std::collections::{ HashMap, HashSet };
-use cphasing::scaffolding::*;
-use cphasing::pairs::*;
 use cphasing::core::BaseTable;
 use cphasing::core::ContigPair;
+use cphasing::pairs::*;
+use cphasing::scaffolding::*;
+use std::collections::{HashMap, HashSet};
 
-use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
+use rand::{Rng, thread_rng};
 
 #[cfg(test)]
 mod tests {
@@ -74,7 +74,6 @@ mod tests {
     //     contig_set.insert(String::from("1A.ctg14_0"));
     //     contig_set.insert(String::from("1A.ctg14_1"));
 
-
     //     let mut contig_list: Vec<String> = Vec::new();
     //     contig_list.push(String::from("1A.ctg1"));
     //     contig_list.push(String::from("1A.ctg2"));
@@ -90,7 +89,7 @@ mod tests {
     //     contig_list.push(String::from("1A.ctg12"));
     //     contig_list.push(String::from("1A.ctg13"));
     //     contig_list.push(String::from("1A.ctg14"));
-        
+
     //     // filter contact_hash which Contig1 or Contig2 not in contig_list
     //     let mut filtered_contact_hash: HashMap<ContigPair, f64> = HashMap::new();
     //     for (contig_pair, contact) in contact_hash.iter() {
@@ -100,12 +99,11 @@ mod tests {
     //         }
     //     }
 
-
     //     st.from_contacts(&filtered_contact_hash, &contig_list);
     //     st.get_split_contact_hash(&filtered_contact_hash);
     //     println!("{:?}", st.contigs);
     //     println!("{}", st.get_cost());
-    //     // random 
+    //     // random
     //     let mut rng = thread_rng();
     //     st.contigs.shuffle(&mut rng);
     //     println!("{:?}", st.contigs);
@@ -113,7 +111,7 @@ mod tests {
 
     //     let mut stp = SplitTourPopulation::new();
     //     stp.contact_hash = filtered_contact_hash;
-    //     stp.init_population(st); 
+    //     stp.init_population(st);
     //     stp.best();
     //     stp.selection();
     //     println!("{:?}", stp.best_cost);
@@ -131,10 +129,9 @@ mod tests {
     //     let mut edges = Vec::new();
     //     let num_nodes = 20;
 
-    //     let subgraph1 = 0..7; 
-    //     let subgraph2 = 7..14; 
-    //     let subgraph3 = 14..20; 
-
+    //     let subgraph1 = 0..7;
+    //     let subgraph2 = 7..14;
+    //     let subgraph3 = 14..20;
 
     //     for i in subgraph1.clone() {
     //         for j in (i + 1)..subgraph1.end {
@@ -158,7 +155,7 @@ mod tests {
     //     }
 
     //     let result = kruskal(&edges);
-       
+
     //     let mut graph = UnGraph::new_undirected();
 
     //     for i in 0..num_nodes {
@@ -167,15 +164,12 @@ mod tests {
 
     //     for (u, v, weight) in result {
     //         graph.add_edge((*u).into(), (*v).into(), weight);
-           
+
     //     }
     //     let dot = Dot::with_config(&graph, &[Config::EdgeNoLabel]);
     //     let mut file = File::create("mst.dot").expect("Unable to create file");
     //     file.write_all(format!("{:?}", dot).as_bytes()).expect("Unable to write data");
     //     println!("Graph has been written to mst.dot");
-        
-       
-    // }
 
-    
+    // }
 }

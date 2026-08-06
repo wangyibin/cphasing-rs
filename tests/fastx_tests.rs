@@ -2,13 +2,13 @@
 // use std::io::Write;
 // use std::collections::HashMap;
 
-use cphasing::fastx::*;
 use cphasing::core::BaseTable;
+use cphasing::fastx::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // #[test]
     // fn test_get_seq() {
     //     let fasta = String::from("test/test.fa");
@@ -33,14 +33,14 @@ mod tests {
     //     println!("{:?}", lengths);
     // }
 
-    // #[test] 
+    // #[test]
     // fn test_digest() {
     //     let fasta = String::from("test/test.fa");
     //     let fa = Fastx::new(&fasta);
     //     let motif = String::from("GATC");
     //     let pos = fa.digest(&motif, 50).unwrap();
     //     println!("{:?}", pos);
-        
+
     // }
 
     #[test]
@@ -75,7 +75,7 @@ mod tests {
     //     let output = String::from("test/test.kmer.count");
     //     let fa = Fastx::new(&fasta);
     //     let kmer_count: HashMap<String, u64> = fa.kmer_count(k).unwrap();
-        
+
     //     let writer = std::fs::File::create(&output).unwrap();
     //     let mut writer = std::io::BufWriter::new(writer);
     //     for (kmer, count) in kmer_count.iter() {
@@ -89,7 +89,7 @@ mod tests {
     //     let k = 3 as usize;
     //     let output = String::from("test/test.masked.fa");
     //     let fa = Fastx::new(&fasta);
-        
+
     //     let _ = fa.mask_high_frequency_kmer(k, 10, &output);
     // }
     // #[test]
@@ -100,7 +100,7 @@ mod tests {
     //     let output = String::from("test/test.kmer.position.bed");
 
     //     let fa = Fastx::new(&fasta);
-        
+
     //     fa.kmer_positions(k, &kmer_list, &output);
     // }
 }

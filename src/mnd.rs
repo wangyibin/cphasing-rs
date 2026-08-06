@@ -1,26 +1,26 @@
 // juicer mnd file format
 
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::error::Error;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::io::{ Write, BufReader, BufRead };
-use serde::{ Deserialize, Serialize};
 
-use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ChromSize, ChromSizeRecord };
+use crate::core::{BaseTable, ChromSize, ChromSizeRecord};
+use crate::core::{common_reader, common_writer};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MndRecord {
     pub strand1: i32,
     pub chrom1: String,
-    pub pos1: u64, 
+    pub pos1: u64,
     pub frag2: u32,
     pub strand2: i32,
     pub chrom2: String,
     pub pos2: u64,
     pub frag1: u32,
     pub mapq1: u32,
-    pub cigar1: char, 
+    pub cigar1: char,
     pub sequence1: char,
     pub mapq2: u32,
     pub cigar2: char,
@@ -62,7 +62,7 @@ impl BaseTable for MndTable {
         MndTable { file: name.clone() }
     }
 
-    fn file_name(&self) ->  Cow<'_, str> {
+    fn file_name(&self) -> Cow<'_, str> {
         let path = Path::new(&self.file);
         path.file_name().expect("REASON").to_string_lossy()
     }
@@ -75,4 +75,3 @@ impl BaseTable for MndTable {
         (*file_prefix).to_string()
     }
 }
-

@@ -3,14 +3,12 @@
 #![allow(non_snake_case)]
 use anyhow::Result as AnyResult;
 use std::cmp::Ordering;
-use std::collections::{ HashMap, HashSet };
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-
-// modified from nthash 
+// modified from nthash
 const MAXIMUM_K_SIZE: usize = u32::max_value() as usize;
-
 
 const H_LOOKUP: [u64; 256] = {
     let mut lookup = [1; 256];
@@ -34,18 +32,13 @@ const RC_LOOKUP: [u64; 256] = {
 
 // #[inline(always)]
 fn h(c: u8) -> u64 {
-    unsafe {
-        *H_LOOKUP.get_unchecked(c as usize)
-    }
+    unsafe { *H_LOOKUP.get_unchecked(c as usize) }
 }
 
 // #[inline(always)]
 fn rc(nt: u8) -> u64 {
-    unsafe {
-        *RC_LOOKUP.get_unchecked(nt as usize)
-    }
+    unsafe { *RC_LOOKUP.get_unchecked(nt as usize) }
 }
-
 
 pub struct NtHashIterator<'a> {
     seq: &'a [u8],
@@ -59,12 +52,17 @@ pub struct NtHashIterator<'a> {
 impl<'a> NtHashIterator<'a> {
     /// Creates a new NtHashIterator with internal state properly initialized.
     pub fn new(seq: &'a [u8], k: usize) -> AnyResult<NtHashIterator<'a>> {
-       
         if k > seq.len() {
-            return Err(anyhow::anyhow!("k must be less than or equal to the length of the sequence"));
+            return Err(anyhow::anyhow!(
+                "k must be less than or equal to the length of the sequence"
+            ));
         }
-     
-        assert!(k <= MAXIMUM_K_SIZE, "k must be less than or equal to {}", MAXIMUM_K_SIZE);
+
+        assert!(
+            k <= MAXIMUM_K_SIZE,
+            "k must be less than or equal to {}",
+            MAXIMUM_K_SIZE
+        );
         let mut fh = 0;
         let mut rh = 0;
 
@@ -118,7 +116,6 @@ impl<'a> Iterator for NtHashIterator<'a> {
     }
 }
 
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MinimizerInfo {
     pub rid: u32,
@@ -139,7 +136,6 @@ impl PartialOrd for MinimizerInfo {
     }
 }
 
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MinimizerData {
     pub minimizer: u64,
@@ -159,17 +155,19 @@ impl PartialOrd for MinimizerData {
 }
 
 pub fn complement(seq: &[u8]) -> Vec<u8> {
-    seq.iter().map(|&x| match x {
-        b'A' => b'T',
-        b'T' => b'A',
-        b'C' => b'G',
-        b'G' => b'C',
-        _ => b'N',
-    } ).collect()
+    seq.iter()
+        .map(|&x| match x {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            _ => b'N',
+        })
+        .collect()
 }
 
 // rolling hash algorithm
-pub fn hash (seq: &str, k: usize) -> u64 {
+pub fn hash(seq: &str, k: usize) -> u64 {
     let mut h = 0;
     for i in 0..k {
         h = h << 2;
@@ -184,7 +182,7 @@ pub fn hash (seq: &str, k: usize) -> u64 {
     h
 }
 
-fn update_hash (h: u64, k: usize, c: char) -> u64 {
+fn update_hash(h: u64, k: usize, c: char) -> u64 {
     let mut h = h;
     h = h << 2;
     h += match c {
@@ -197,8 +195,7 @@ fn update_hash (h: u64, k: usize, c: char) -> u64 {
     h & ((1 << (2 * k)) - 1)
 }
 
-
-fn minimizer (seq: &str, rid: &u32, start: u32, k: usize) -> MinimizerData {
+fn minimizer(seq: &str, rid: &u32, start: u32, k: usize) -> MinimizerData {
     let mut h = hash(seq, k);
     let mut m = h;
     let mut pos = 0;
@@ -206,8 +203,7 @@ fn minimizer (seq: &str, rid: &u32, start: u32, k: usize) -> MinimizerData {
         h = update_hash(h, k, seq.chars().nth(i + k - 1).unwrap());
         if h < m {
             m = h;
-            pos = i as u32 ;
-            
+            pos = i as u32;
         }
     }
 
@@ -219,10 +215,10 @@ fn minimizer (seq: &str, rid: &u32, start: u32, k: usize) -> MinimizerData {
             pos: pos,
             rev: 0,
             // span: k.try_into().unwrap(),
-        }
+        },
     };
     println!("{}, {:?}", seq, m);
-    m 
+    m
 }
 
 pub fn minimizer_nthash(seq: &[u8], rid: &u32, start: u32, k: usize) -> AnyResult<MinimizerData> {
@@ -236,32 +232,38 @@ pub fn minimizer_nthash(seq: &[u8], rid: &u32, start: u32, k: usize) -> AnyResul
                 pos: start + i as u32,
                 rev,
             },
-        })
+        });
     } else {
         return Err(anyhow::anyhow!("No minimizer found!"));
     };
-
 }
 
-pub fn sketch (seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData> {
+pub fn sketch(seq: &Vec<u8>, rid: u32, k: usize, w: usize) -> Vec<MinimizerData> {
     use hashbrown::HashSet;
     let mut sketch = Vec::new();
-    
-    let seq = seq.iter()
-                    .map(|&c| c.to_ascii_uppercase())
-                    .map(|c| if c == b'A' || c == b'C' || c == b'G' || c == b'T' { c } else { b'N' }).collect::<Vec<u8>>();
+
+    let seq = seq
+        .iter()
+        .map(|&c| c.to_ascii_uppercase())
+        .map(|c| {
+            if c == b'A' || c == b'C' || c == b'G' || c == b'T' {
+                c
+            } else {
+                b'N'
+            }
+        })
+        .collect::<Vec<u8>>();
 
     let seq_len = seq.len();
 
     let mut i: usize = 0;
-    let seq_len_i32: i32 = seq_len.try_into().unwrap(); 
+    let seq_len_i32: i32 = seq_len.try_into().unwrap();
     let end_cond = seq_len_i32 - k as i32;
 
     let mut exists_pos = HashSet::new();
     let count = 0;
-    
-    while i < end_cond as usize {
 
+    while i < end_cond as usize {
         let end_index = std::cmp::min(i + k + w - 1, seq_len);
         let m: MinimizerData = minimizer_nthash(&seq[i..end_index], &rid, i as u32, k).unwrap();
 

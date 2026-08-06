@@ -3,22 +3,21 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as AnyResult;
-use std::borrow::Cow;
-use std::collections::{ HashSet };
-use hashbrown::{ HashMap };
+use hashbrown::HashMap;
 use indexmap::IndexMap;
-use std::error::Error;
-use std::path::Path;
-use std::io::{ Read, Write, BufReader, BufRead, BufWriter };
 use rayon::prelude::*;
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::error::Error;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
-use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ContigPair, ContigPair2, ContigPair3 };
-
+use crate::core::{BaseTable, ContigPair, ContigPair2, ContigPair3};
+use crate::core::{common_reader, common_writer};
 
 #[derive(Debug, Clone)]
 pub struct SplitContacts {
-    pub file: String, 
+    pub file: String,
     pub contigs: HashSet<String>,
     pub data: HashMap<ContigPair, Vec<f64>>,
 }
@@ -44,16 +43,14 @@ impl BaseTable for SplitContacts {
 
         (*file_prefix).to_string()
     }
-    
 }
-
 
 impl SplitContacts {
     // pub fn read_from_file(file: &String) -> AnyResult<SplitContacts> {
     //     let mut split_contacts = SplitContacts::new(file);
     //     let mut buf = String::with_capacity(1024);
     //     let mut reader = common_reader(file);
-       
+
     //     while reader.read_line(&mut buf)? > 0 {
     //         let line = buf.trim_end();
     //         if line.is_empty() {
@@ -61,17 +58,14 @@ impl SplitContacts {
     //             continue;
     //         }
 
-           
     //         let mut fields = line.split('\t');
-                
+
     //         let raw_contig1 = fields.next();
     //         let raw_contig2 = fields.next();
     //         let raw_count = fields.next();
-        
 
     //         if let (Some(s1), Some(s2), Some(s_count)) = (raw_contig1, raw_contig2, raw_count) {
     //             let count: f64 = s_count.parse().unwrap_or(0.0);
-
 
     //             let (c1_name, idx1) = s1.rsplit_once('_').unwrap_or((s1, "0"));
     //             let (c2_name, idx2) = s2.rsplit_once('_').unwrap_or((s2, "0"));
@@ -80,19 +74,16 @@ impl SplitContacts {
     //                 ContigPair {
     //                 Contig1: c1_name.to_string(),
     //                 Contig2: c2_name.to_string(),
-    //                 } 
+    //                 }
     //             } else {
     //                 ContigPair {
     //                 Contig1: c2_name.to_string(),
     //                 Contig2: c1_name.to_string(),
-    //                 } 
+    //                 }
     //             };
-
-            
 
     //             split_contacts.contigs.insert(pair.Contig1.clone());
     //             split_contacts.contigs.insert(pair.Contig2.clone());
-
 
     //             let counts = split_contacts.data.entry(pair).or_insert_with(|| vec![0.0; 4]);
 
@@ -105,17 +96,19 @@ impl SplitContacts {
     //             }
     //         }
 
-
     //         buf.clear();
     //     }
 
     //     Ok(split_contacts)
     // }
-    pub fn read_from_file(file: &String, whitelist: Option<&HashSet<String>>) -> AnyResult<SplitContacts> {
+    pub fn read_from_file(
+        file: &String,
+        whitelist: Option<&HashSet<String>>,
+    ) -> AnyResult<SplitContacts> {
         let mut split_contacts = SplitContacts::new(file);
         let mut buf = String::with_capacity(1024);
         let mut reader = common_reader(file);
-       
+
         while reader.read_line(&mut buf)? > 0 {
             let line = buf.trim_end();
             if line.is_empty() {
@@ -123,13 +116,11 @@ impl SplitContacts {
                 continue;
             }
 
-           
             let mut fields = line.split('\t');
-                
+
             let raw_contig1 = fields.next();
             let raw_contig2 = fields.next();
             let raw_count = fields.next();
-        
 
             if let (Some(s1), Some(s2), Some(s_count)) = (raw_contig1, raw_contig2, raw_count) {
                 let (c1_name, idx1) = s1.rsplit_once('_').unwrap_or((s1, "0"));
@@ -146,33 +137,32 @@ impl SplitContacts {
 
                 let pair = if c1_name < c2_name {
                     ContigPair {
-                    Contig1: c1_name.to_string(),
-                    Contig2: c2_name.to_string(),
-                    } 
+                        Contig1: c1_name.to_string(),
+                        Contig2: c2_name.to_string(),
+                    }
                 } else {
                     ContigPair {
-                    Contig1: c2_name.to_string(),
-                    Contig2: c1_name.to_string(),
-                    } 
+                        Contig1: c2_name.to_string(),
+                        Contig2: c1_name.to_string(),
+                    }
                 };
-
-            
 
                 split_contacts.contigs.insert(pair.Contig1.clone());
                 split_contacts.contigs.insert(pair.Contig2.clone());
 
-
-                let counts = split_contacts.data.entry(pair).or_insert_with(|| vec![0.0; 4]);
+                let counts = split_contacts
+                    .data
+                    .entry(pair)
+                    .or_insert_with(|| vec![0.0; 4]);
 
                 match (idx1, idx2) {
                     ("0", "0") => counts[0] += count,
                     ("0", "1") => counts[1] += count,
                     ("1", "0") => counts[2] += count,
                     ("1", "1") => counts[3] += count,
-                    _ => {},
+                    _ => {}
                 }
             }
-
 
             buf.clear();
         }
@@ -182,21 +172,21 @@ impl SplitContacts {
 
     // pub fn read_from_file(file: &String, whitelist: Option<&HashSet<String>>) -> AnyResult<SplitContacts> {
     //     let mut split_contacts = SplitContacts::new(file);
-        
+
     //     let file_handle = common_reader(file);
     //     let reader = BufReader::new(file_handle);
 
     //     let (final_data, final_contigs) = reader.lines()
-    //         .par_bridge() 
+    //         .par_bridge()
     //         .map(|line| line.unwrap_or_default())
     //         .filter(|line| !line.is_empty())
     //         .fold(
-    //             || (HashMap::new(), HashSet::new()), 
+    //             || (HashMap::new(), HashSet::new()),
     //             |(mut local_data, mut local_contigs), line| {
     //                 let mut parts = line.split('\t');
 
     //                 if let (Some(s1), Some(s2), Some(s_count_str)) = (parts.next(), parts.next(), parts.next()) {
-                        
+
     //                     let (c1_name, idx1) = s1.rsplit_once('_').unwrap_or((s1, "0"));
     //                     let (c2_name, idx2) = s2.rsplit_once('_').unwrap_or((s2, "0"));
 
@@ -206,7 +196,6 @@ impl SplitContacts {
     //                         }
     //                     }
 
-
     //                     let count: f64 = s_count_str.parse().unwrap_or(0.0);
 
     //                     if count > 0.0 {
@@ -214,12 +203,12 @@ impl SplitContacts {
     //                             ContigPair {
     //                                 Contig1: c1_name.to_string(),
     //                                 Contig2: c2_name.to_string(),
-    //                             } 
+    //                             }
     //                         } else {
     //                             ContigPair {
     //                                 Contig1: c2_name.to_string(),
     //                                 Contig2: c1_name.to_string(),
-    //                             } 
+    //                             }
     //                         };
 
     //                         local_contigs.insert(pair.Contig1.clone());
@@ -239,7 +228,7 @@ impl SplitContacts {
     //             }
     //         )
     //         .reduce(
-    //             || (HashMap::new(), HashSet::new()), 
+    //             || (HashMap::new(), HashSet::new()),
     //             |(mut data1, mut contigs1), (data2, contigs2)| {
     //                 for (k, v) in data2 {
     //                     let entry = data1.entry(k).or_insert(vec![0.0; 4]);
@@ -271,14 +260,12 @@ impl SplitContacts {
                 *contig2idx.get(&contigpair.Contig1).unwrap(),
                 *contig2idx.get(&contigpair.Contig2).unwrap(),
             );
-            
 
             let count = counts.iter().sum();
             contacts.insert(pair, count);
         }
 
         contacts
-
     }
 
     pub fn normalize_by_contig_sizes(&mut self, contig_sizes: &IndexMap<String, usize>) {
@@ -295,12 +282,14 @@ impl SplitContacts {
     }
 
     pub fn normalize_by_cis(&mut self) {
-        let cis_data: HashMap<String, (f64, f64)> = self.data.iter()
-                    .filter(|(pair, _counts)| pair.Contig1 == pair.Contig2)
-                    .map(|(pair, counts)| (pair.Contig1.clone(), (counts[0], counts[3])))
-                    .collect();
+        let cis_data: HashMap<String, (f64, f64)> = self
+            .data
+            .iter()
+            .filter(|(pair, _counts)| pair.Contig1 == pair.Contig2)
+            .map(|(pair, counts)| (pair.Contig1.clone(), (counts[0], counts[3])))
+            .collect();
 
-        let smoothing = 1.0; 
+        let smoothing = 1.0;
 
         for (contig_pair, counts) in self.data.iter_mut() {
             let contig1 = &contig_pair.Contig1;
@@ -319,10 +308,12 @@ impl SplitContacts {
             counts[2] /= norm_10;
             counts[3] /= norm_11;
         }
-
     }
 
-    pub fn to_detailed_contact_matrix(&self, contig2idx: &HashMap<String, usize>) -> HashMap<(usize, usize), (f64, f64, f64, f64)> {
+    pub fn to_detailed_contact_matrix(
+        &self,
+        contig2idx: &HashMap<String, usize>,
+    ) -> HashMap<(usize, usize), (f64, f64, f64, f64)> {
         let mut detailed_contacts: HashMap<(usize, usize), (f64, f64, f64, f64)> = HashMap::new();
 
         for (contig_pair, counts) in self.data.iter() {
@@ -340,13 +331,11 @@ impl SplitContacts {
             let tail_head = (counts[2] + 1.0).ln();
             let tail_tail = (counts[3] + 1.0).ln();
 
-    
-
             // let head_head = counts[0];
             // let head_tail = counts[1];
             // let tail_head = counts[2];
             // let tail_tail = counts[3];
-            
+
             detailed_contacts.insert((idx1, idx2), (head_head, head_tail, tail_head, tail_tail));
             detailed_contacts.insert((idx2, idx1), (head_head, tail_head, head_tail, tail_tail));
         }
@@ -357,22 +346,19 @@ impl SplitContacts {
     pub fn extract_by_contigs(&mut self, contig_indices: &Vec<String>) {
         let contig_indices = contig_indices.iter().cloned().collect::<HashSet<String>>();
         self.data.retain(|contig_pair, _count| {
-            contig_indices.contains(&contig_pair.Contig1) &&
-            contig_indices.contains(&contig_pair.Contig2)
+            contig_indices.contains(&contig_pair.Contig1)
+                && contig_indices.contains(&contig_pair.Contig2)
         });
 
-        self.contigs.retain(|contig| {
-            contig_indices.contains(contig)
-        });
+        self.contigs
+            .retain(|contig| contig_indices.contains(contig));
     }
-
 }
-
 
 pub fn split_contacts_by_clusters(
     split_contacts: &String,
     cluster_file: &String,
-    output_dir: &String
+    output_dir: &String,
 ) -> AnyResult<()> {
     let mut cluster_map: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -391,22 +377,21 @@ pub fn split_contacts_by_clusters(
     let mut cluster_paired_map: HashMap<ContigPair3, &String> = HashMap::new();
     for (cluster, contigs) in &cluster_map {
         for i in 0..contigs.len() {
-            for j in i+1..contigs.len() {
+            for j in i + 1..contigs.len() {
                 let (a, b) = if contigs[i] <= contigs[j] {
                     (&contigs[i], &contigs[j])
                 } else {
                     (&contigs[j], &contigs[i])
                 };
                 let contig_pair = ContigPair3::new(a, b);
-                
+
                 cluster_paired_map.insert(contig_pair, cluster);
             }
         }
-        
     }
 
-
-    let mut writer_map: HashMap<&String, Box<dyn Write + Send>> = HashMap::with_capacity(cluster_map.len());
+    let mut writer_map: HashMap<&String, Box<dyn Write + Send>> =
+        HashMap::with_capacity(cluster_map.len());
     for (cluster, _) in &cluster_map {
         let file_name = format!("{}/{}.split.contacts.gz", output_dir, cluster);
         let writer = common_writer(&file_name);
@@ -443,10 +428,7 @@ pub fn split_contacts_by_clusters(
                 writeln!(writer, "{}", line)?;
             }
         }
-
     }
 
-
     Ok(())
-    
 }

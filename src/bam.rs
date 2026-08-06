@@ -1,46 +1,40 @@
-
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
-use std::collections::HashMap;
-use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
 use bio::io::fasta::{Reader as FastaReader, Record as FastaRecord, Writer as FastaWriter};
-use crossbeam_channel::{unbounded, bounded, Receiver, Sender};
-use rust_htslib::bam::{ 
-    self,
-    record::Aux, record::CigarStringView, 
-    record::Cigar, record::CigarString,
-    Read, Reader, Record, HeaderView, 
-    Header, header::HeaderRecord,
-    Writer, ext::BamRecordExtensions};
+use bio::io::fastq::{Reader as FastqReader, Record as FastqRecord, Writer as FastqWriter};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use rayon::prelude::*;
-use std::path::{ Path, PathBuf };
+use rust_htslib::bam::{
+    self, Header, HeaderView, Read, Reader, Record, Writer, ext::BamRecordExtensions,
+    header::HeaderRecord, record::Aux, record::Cigar, record::CigarString, record::CigarStringView,
+};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::sync::{ Arc, Mutex};
 
-use crate::core::{ 
-        ChromSizeRecord,
-        common_writer};
-use crate::pairs::{ Pairs, PairHeader };
+use crate::core::{ChromSizeRecord, common_writer};
+use crate::pairs::{PairHeader, Pairs};
 
-
-// split bam by record number and write to different files 
-pub fn split_bam(input_bam: &String, output_prefix: &String, 
-             record_num: usize) -> Result<(), Box<dyn std::error::Error>> {
-    
+// split bam by record number and write to different files
+pub fn split_bam(
+    input_bam: &String,
+    output_prefix: &String,
+    record_num: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut output_prefix = output_prefix.clone();
     if output_prefix.ends_with("/") {
         output_prefix = format!("{}/{}", output_prefix, "split");
     }
     let parent = Path::new(&output_prefix).parent().unwrap().to_path_buf();
     match parent.exists() {
-        true => {},
+        true => {}
         false => {
             std::fs::create_dir_all(&parent).unwrap();
         }
     }
 
-    
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
@@ -56,32 +50,6 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
 
     let mut read_name: Vec<u8> = Vec::new();
     let mut previous_read_name: Vec<u8> = Vec::new();
-    // let mut line_num = 0;
-    // for r in bam.records() {
-    //     let record = r?;
-    //     read_name.clear();
-    //     read_name.extend_from_slice(record.qname());
-        
-    //     i += 1;
-        
-    //     if i == record_num {
-    //         if read_name != previous_read_name {
-
-    //             j += 1;
-    //             wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, j), &header, bam::Format::Bam)?;
-    //             let _ = wtr.set_threads(8);
-    //             log::info!("write {} records to {}", line_num, format!("{}_{}.bam", output_prefix, j));
-                
-    //             i = 0;
-    //             line_num = 0;
-    //         } else {
-    //             i -= 1;
-    //         }
-    //     }
-    //     line_num += 1;
-    //     wtr.write(&record)?;
-    //     std::mem::swap(&mut read_name, &mut previous_read_name);
-    // } 
 
     let (sender, receiver) = bounded::<(usize, Vec<Record>)>(10);
 
@@ -92,13 +60,22 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
         let header = header.clone();
         let handle = thread::spawn(move || {
             while let Ok((chunk_id, records)) = receiver.recv() {
-                let mut wtr = Writer::from_path(format!("{}_{}.bam", output_prefix, chunk_id), &header, bam::Format::Bam).unwrap();
+                let mut wtr = Writer::from_path(
+                    format!("{}_{}.bam", output_prefix, chunk_id),
+                    &header,
+                    bam::Format::Bam,
+                )
+                .unwrap();
                 let _ = wtr.set_threads(8);
                 let length = records.len();
                 for record in records {
                     wtr.write(&record).unwrap();
                 }
-                log::info!("write {} records to {}", length, format!("{}_{}.bam", output_prefix, chunk_id));
+                log::info!(
+                    "write {} records to {}",
+                    length,
+                    format!("{}_{}.bam", output_prefix, chunk_id)
+                );
             }
         });
         handles.push(handle);
@@ -110,14 +87,13 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
         let record = r?;
         read_name.clear();
         read_name.extend_from_slice(record.qname());
-        
+
         i += 1;
-        
+
         if i == record_num {
             if read_name != previous_read_name {
-
                 j += 1;
-                
+
                 sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
                 chunk_id += 1;
 
@@ -133,9 +109,9 @@ pub fn split_bam(input_bam: &String, output_prefix: &String,
     if batch.len() > 0 {
         sender.send((chunk_id, std::mem::take(&mut batch))).unwrap();
     }
-    
+
     drop(sender);
-    
+
     for handle in handles {
         handle.join().unwrap();
     }
@@ -152,7 +128,6 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
     let _ = bam.set_threads(threads);
 
     let header = Header::from_template(bam.header());
-    
 
     let mut wtr = Writer::from_path(output, &header, bam::Format::Bam).unwrap();
     let _ = wtr.set_threads(threads);
@@ -162,19 +137,16 @@ pub fn slide2raw(input_bam: &String, output: &String, threads: usize) {
         let read_id = std::str::from_utf8(record.qname()).unwrap();
         let (read_id, suffix) = read_id.rsplit_once("_").unwrap();
         let mut flag = record.flags();
-        
+
         if suffix != "0" {
-            flag  += 2048;
+            flag += 2048;
         }
 
         new_record.set_qname(read_id.as_bytes());
         new_record.set_flags(flag);
 
         wtr.write(&new_record).unwrap();
-        
-
     }
-
 }
 
 fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
@@ -182,7 +154,7 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
     let mut aln_len: i64 = 0;
     let mut ins_len: i64 = 0;
     let mut del_len: i64 = 0;
-    
+
     let mut qstart: u32 = 0;
     let mut qpos: u32 = 0;
     let mut qlen: u32 = 0;
@@ -196,7 +168,10 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
                 let len = l as i64;
                 match_len += len;
                 aln_len += len;
-                if !found_start { qstart = qpos; found_start = true; }
+                if !found_start {
+                    qstart = qpos;
+                    found_start = true;
+                }
                 qpos += l;
                 qlen += l;
                 qend_consumed += l;
@@ -210,7 +185,10 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
                 let len = l as i64;
                 ins_len += len;
                 aln_len += len;
-                if !found_start { qstart = qpos; found_start = true; }
+                if !found_start {
+                    qstart = qpos;
+                    found_start = true;
+                }
                 qpos += l;
                 qlen += l;
                 qend_consumed += l;
@@ -219,7 +197,10 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
                 aln_len += l as i64;
             }
             Cigar::SoftClip(_) | Cigar::HardClip(_) => {
-                if !found_start { qstart = qpos + l; found_start = true; }
+                if !found_start {
+                    qstart = qpos + l;
+                    found_start = true;
+                }
                 qpos += l;
                 qlen += l;
             }
@@ -229,14 +210,17 @@ fn parse_cigar_for_paf(record: &Record) -> (i64, i64, i64, i64, u32, u32, u32) {
     (match_len, aln_len, ins_len, del_len, qstart, qend, qlen)
 }
 
-
 fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
     let mut qlen: u32 = 0;
 
     for op in record.cigar().iter() {
         match op {
-            Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) | 
-            Cigar::Ins(l) | Cigar::SoftClip(l) | Cigar::HardClip(l) => {
+            Cigar::Match(l)
+            | Cigar::Equal(l)
+            | Cigar::Diff(l)
+            | Cigar::Ins(l)
+            | Cigar::SoftClip(l)
+            | Cigar::HardClip(l) => {
                 qlen += *l as u32;
             }
             _ => {}
@@ -263,7 +247,7 @@ fn get_query_start_end(record: &Record) -> (u32, u32, u32) {
                     is_first_match = false;
                 }
                 current_pos_on_read += l;
-                bam_end = current_pos_on_read; 
+                bam_end = current_pos_on_read;
             }
             _ => {}
         }
@@ -306,7 +290,11 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
             continue;
         }
 
-        let flag = if record.is_secondary() { "tp:A:S" } else { "tp:A:P" };
+        let flag = if record.is_secondary() {
+            "tp:A:S"
+        } else {
+            "tp:A:P"
+        };
         let strand = if record.is_reverse() { "-" } else { "+" };
 
         let mut match_len: i64 = 0;
@@ -368,10 +356,23 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
         writeln!(
             writer,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tNM:i:{}\tAS:i:{}\t{}",
-            qname, qlen, qstart, qend, strand,
-            tname, tlen, tstart, tend,
-            match_len, aln_len, mapq, nm, ascore, flag
-        ).unwrap();
+            qname,
+            qlen,
+            qstart,
+            qend,
+            strand,
+            tname,
+            tlen,
+            tstart,
+            tend,
+            match_len,
+            aln_len,
+            mapq,
+            nm,
+            ascore,
+            flag
+        )
+        .unwrap();
     }
 
     log::info!("Successfully output paf to {}", output);
@@ -383,17 +384,16 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //     } else {
 //         Reader::from_path(input_bam).expect("Failed to read from the provided path")
 //     };
-    
+
 //     let header = Header::from_template(bam.header());
 //     let header = HeaderView::from_header(&header);
 //     let mut chromsizes = Vec::new();
-    
 
 //     for tid in 0..header.target_count() {
 //         let name = header.tid2name(tid);
 //         let len = header.target_len(tid).unwrap();
 //         let csr: ChromSizeRecord = ChromSizeRecord {
-//             chrom: std::str::from_utf8(name).unwrap().to_string(), 
+//             chrom: std::str::from_utf8(name).unwrap().to_string(),
 //             size: len
 //         };
 //         chromsizes.push(csr);
@@ -410,11 +410,11 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //     let mut idx = 0;
 
 //     let mut writer = common_writer(output);
-    
+
 //     while let Some(r) = bam.records().next() {
 //         let record = r.unwrap();
 
-//         if record.is_unmapped() { 
+//         if record.is_unmapped() {
 //             continue;
 //         }
 
@@ -429,7 +429,7 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 
 //         let chrom = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
 //         let strand = if record.is_reverse() { "-" } else { "+" };
-        
+
 //         let (mut match_length, mut deletion_length, mut insertion_length, mut mm, mut alignment_length) = (0, 0, 0, 0, 0);
 
 //         for cigar in record.cigar().iter() {
@@ -457,7 +457,6 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //             }
 //         }
 
-
 //         let nm: i64 = match record.aux(b"NM") {
 //             Ok(value) => {
 //                 match value {
@@ -465,9 +464,9 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //                     Aux::U16(v) => v.try_into().unwrap(),
 //                     Aux::U32(v) => v.try_into().unwrap(),
 //                     Aux::I32(v) => v.try_into().unwrap(),
-//                     _ => 0, 
+//                     _ => 0,
 //                 }
-                
+
 //             },
 //             Err(e) => 0
 //         };
@@ -479,9 +478,9 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //                     Aux::U16(v) => v.try_into().unwrap(),
 //                     Aux::U32(v) => v.try_into().unwrap(),
 //                     Aux::I32(v) => v.try_into().unwrap(),
-//                     _ => 0, 
+//                     _ => 0,
 //                 }
-                
+
 //             },
 //             Err(e) => 0
 //         };
@@ -492,15 +491,15 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 //         let nm_string = format!("NM:i:{}", nm);
 
 //         let (qstart, qend, qlen) = get_query_start_end(&record);
-    
+
 //         let qname = std::str::from_utf8(record.qname()).unwrap();
 //         let tname = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap();
-//         let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize; 
+//         let tlen =  header.target_len(record.tid().try_into().unwrap()).unwrap() as usize;
 //         let tstart = record.reference_start();
 //         let tend = record.reference_end();
 //         let mapq = record.mapq();
-//         writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", 
-//                 qname, qlen, qstart, qend, strand, 
+//         writeln!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+//                 qname, qlen, qstart, qend, strand,
 //                 tname, tlen, tstart, tend, match_length, alignment_length, mapq,
 //                 nm_string, as_string, flag).unwrap();
 
@@ -513,24 +512,22 @@ pub fn bam2paf(input_bam: &String, output: &String, threads: usize, is_secondary
 // }
 
 pub fn bam2pairs_pairend(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
-    
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-   
+
     let header = Header::from_template(bam.header());
     let header = HeaderView::from_header(&header);
     let mut chromsizes = Vec::new();
-    
 
     for tid in 0..header.target_count() {
         let name = header.tid2name(tid);
         let len = header.target_len(tid).unwrap();
         let csr: ChromSizeRecord = ChromSizeRecord {
-            chrom: std::str::from_utf8(name).unwrap().to_string(), 
-            size: len
+            chrom: std::str::from_utf8(name).unwrap().to_string(),
+            size: len,
         };
         chromsizes.push(csr);
     }
@@ -542,40 +539,51 @@ pub fn bam2pairs_pairend(input_bam: &String, min_mapq: u8, output: &String, thre
 
     let mut writer = common_writer(output);
     writer.write_all(ph.to_string().as_bytes()).unwrap();
-  
+
     let mut idx = 0;
 
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
-        
+
         if !record.is_paired() {
-            continue
+            continue;
         }
         let Some(r2) = bam.records().next() else {
-            continue
+            continue;
         };
         let record2 = r2.unwrap();
 
-        if record.is_unmapped() || record2.is_unmapped(){
-            continue 
-        }
-
-        if record.is_secondary() || record.is_supplementary() || record.is_duplicate() || record.is_quality_check_failed() {
-            continue;
-        }
-        if record2.is_secondary() || record2.is_supplementary() || record2.is_duplicate() || record2.is_quality_check_failed() {
+        if record.is_unmapped() || record2.is_unmapped() {
             continue;
         }
 
+        if record.is_secondary()
+            || record.is_supplementary()
+            || record.is_duplicate()
+            || record.is_quality_check_failed()
+        {
+            continue;
+        }
+        if record2.is_secondary()
+            || record2.is_supplementary()
+            || record2.is_duplicate()
+            || record2.is_quality_check_failed()
+        {
+            continue;
+        }
 
         if record.mapq() < min_mapq || record2.mapq() < min_mapq {
-            continue
+            continue;
         }
 
         idx += 1;
-        
-        let mut chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap())).unwrap().to_string();
-        let mut chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap())).unwrap().to_string();
+
+        let mut chrom1 = std::str::from_utf8(header.tid2name(record.tid().try_into().unwrap()))
+            .unwrap()
+            .to_string();
+        let mut chrom2 = std::str::from_utf8(header.tid2name(record2.tid().try_into().unwrap()))
+            .unwrap()
+            .to_string();
         let mut pos1 = record.pos() + 1;
         let mut pos2 = record2.pos() + 1;
         let mut strand1 = if record.is_reverse() { "-" } else { "+" };
@@ -588,13 +596,18 @@ pub fn bam2pairs_pairend(input_bam: &String, min_mapq: u8, output: &String, thre
         }
 
         let mapq = std::cmp::min(record.mapq(), record2.mapq());
-        
-        writer.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
-            idx, chrom1, pos1,  chrom2, pos2, strand1, strand2, mapq,).as_bytes()).unwrap();
 
+        writer
+            .write_all(
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    idx, chrom1, pos1, chrom2, pos2, strand1, strand2, mapq,
+                )
+                .as_bytes(),
+            )
+            .unwrap();
     }
-    
-} 
+}
 
 pub fn bam2pqs_pairend(
     input_bam: &String,
@@ -604,9 +617,9 @@ pub fn bam2pqs_pairend(
     threads: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use polars::prelude::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
     use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     polars::enable_string_cache();
     struct Contact {
@@ -636,24 +649,35 @@ pub fn bam2pqs_pairend(
 
     let chrom_names: Arc<Vec<String>> = Arc::new(
         (0..header_view.target_count())
-            .map(|tid| std::str::from_utf8(header_view.tid2name(tid)).unwrap().to_string())
-            .collect()
+            .map(|tid| {
+                std::str::from_utf8(header_view.tid2name(tid))
+                    .unwrap()
+                    .to_string()
+            })
+            .collect(),
     );
 
     {
         let mut cs_writer = common_writer(&format!("{}/_contigsizes", output));
         for tid in 0..header_view.target_count() {
-            writeln!(cs_writer, "{}\t{}", chrom_names[tid as usize], header_view.target_len(tid).unwrap())?;
+            writeln!(
+                cs_writer,
+                "{}\t{}",
+                chrom_names[tid as usize],
+                header_view.target_len(tid).unwrap()
+            )?;
         }
     }
 
-    
     {
         let mut md_writer = common_writer(&format!("{}/_metadata", output));
         writeln!(md_writer, "{{\"type\": \"pqs\"}}")?;
-        
+
         let mut readme_writer = common_writer(&format!("{}/_readme", output));
-        writeln!(readme_writer, "PQS format generated directly from BAM by cphasing-rs")?;
+        writeln!(
+            readme_writer,
+            "PQS format generated directly from BAM by cphasing-rs"
+        )?;
     }
 
     let (tx, rx) = bounded::<(usize, Vec<Contact>)>(10);
@@ -717,14 +741,27 @@ pub fn bam2pqs_pairend(
 
                 let mut df_q0 = DataFrame::new(vec![
                     Series::new("read_idx".into(), &q0_read_idx).into(),
-                    Series::new("chrom1".into(), &q0_chrom1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom1".into(), &q0_chrom1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos1".into(), &q0_pos1).into(),
-                    Series::new("chrom2".into(), &q0_chrom2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom2".into(), &q0_chrom2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos2".into(), &q0_pos2).into(),
-                    Series::new("strand1".into(), &q0_strand1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
-                    Series::new("strand2".into(), &q0_strand2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("strand1".into(), &q0_strand1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
+                    Series::new("strand2".into(), &q0_strand2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("mapq".into(), &q0_mapq).into(),
-                ]).unwrap();
+                ])
+                .unwrap();
 
                 let out_q0_path = format!("{}/q0/{}.parquet", output, chunk_idx);
                 let f0 = std::fs::File::create(&out_q0_path).unwrap();
@@ -732,22 +769,34 @@ pub fn bam2pqs_pairend(
 
                 let mut df_q1 = DataFrame::new(vec![
                     Series::new("read_idx".into(), &q1_read_idx).into(),
-                    Series::new("chrom1".into(), &q1_chrom1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom1".into(), &q1_chrom1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos1".into(), &q1_pos1).into(),
-                    Series::new("chrom2".into(), &q1_chrom2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom2".into(), &q1_chrom2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos2".into(), &q1_pos2).into(),
-                    Series::new("strand1".into(), &q1_strand1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
-                    Series::new("strand2".into(), &q1_strand2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("strand1".into(), &q1_strand1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
+                    Series::new("strand2".into(), &q1_strand2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("mapq".into(), &q1_mapq).into(),
-                ]).unwrap();
-                
+                ])
+                .unwrap();
+
                 let out_q1_path = format!("{}/q1/{}.parquet", output, chunk_idx);
                 let f1 = std::fs::File::create(&out_q1_path).unwrap();
                 let _ = ParquetWriter::new(f1).finish(&mut df_q1);
 
                 q0_total.fetch_add(df_q0.height() as u64, Ordering::Relaxed);
                 q1_total.fetch_add(df_q1.height() as u64, Ordering::Relaxed);
-               
             }
         }));
     }
@@ -759,27 +808,35 @@ pub fn bam2pqs_pairend(
     let mut record2 = Record::new();
     loop {
         match bam.read(&mut record) {
-            Some(Ok(())) => {},
+            Some(Ok(())) => {}
             _ => break,
         }
-        
+
         if !record.is_paired() {
             continue;
         }
 
         match bam.read(&mut record2) {
-            Some(Ok(())) => {},
-            _ => break, 
+            Some(Ok(())) => {}
+            _ => break,
         }
 
         if record.is_unmapped() || record2.is_unmapped() {
             continue;
         }
 
-        if record.is_secondary() || record.is_supplementary() || record.is_duplicate() || record.is_quality_check_failed() {
+        if record.is_secondary()
+            || record.is_supplementary()
+            || record.is_duplicate()
+            || record.is_quality_check_failed()
+        {
             continue;
         }
-        if record2.is_secondary() || record2.is_supplementary() || record2.is_duplicate() || record2.is_quality_check_failed() {
+        if record2.is_secondary()
+            || record2.is_supplementary()
+            || record2.is_duplicate()
+            || record2.is_quality_check_failed()
+        {
             continue;
         }
 
@@ -802,7 +859,7 @@ pub fn bam2pqs_pairend(
         }
 
         let mapq = std::cmp::min(record.mapq(), record2.mapq());
-        
+
         batch.push(Contact {
             read_idx: idx as u32,
             tid1,
@@ -821,8 +878,6 @@ pub fn bam2pqs_pairend(
         }
     }
 
-    
-
     if !batch.is_empty() {
         tx.send((chunk_idx, batch)).unwrap();
     }
@@ -837,30 +892,31 @@ pub fn bam2pqs_pairend(
         writeln!(f, "q0\t{}", q0_total.load(Ordering::Relaxed))?;
         writeln!(f, "q1\t{}", q1_total.load(Ordering::Relaxed))?;
     }
-   
-    log::info!("Successfully converted BAM directly to PQS format: {}", output);
+
+    log::info!(
+        "Successfully converted BAM directly to PQS format: {}",
+        output
+    );
     Ok(())
 }
 
 pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usize) {
-    
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-   
+
     let header = Header::from_template(bam.header());
     let header = HeaderView::from_header(&header);
     let mut chromsizes = Vec::new();
-    
 
     for tid in 0..header.target_count() {
         let name = header.tid2name(tid);
         let len = header.target_len(tid).unwrap();
         let csr: ChromSizeRecord = ChromSizeRecord {
-            chrom: std::str::from_utf8(name).unwrap().to_string(), 
-            size: len
+            chrom: std::str::from_utf8(name).unwrap().to_string(),
+            size: len,
         };
         chromsizes.push(csr);
     }
@@ -872,20 +928,25 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
 
     let mut writer = common_writer(output);
     writer.write_all(ph.to_string().as_bytes()).unwrap();
-  
+
     let mut idx = 0;
 
     let mut current_qname: Vec<u8> = Vec::new();
     let mut group: Vec<Record> = Vec::new();
 
-    let mut process_group = |records: &[Record], w: &mut dyn std::io::Write, idx_ref: &mut usize| {
-        let mut valid: Vec<&Record> = records.iter().filter(|r| {
-            !r.is_unmapped() &&
-            !r.is_secondary() &&
-            !r.is_duplicate() &&
-            !r.is_quality_check_failed() &&
-            r.mapq() >= min_mapq
-        }).collect();
+    let mut process_group = |records: &[Record],
+                             w: &mut dyn std::io::Write,
+                             idx_ref: &mut usize| {
+        let mut valid: Vec<&Record> = records
+            .iter()
+            .filter(|r| {
+                !r.is_unmapped()
+                    && !r.is_secondary()
+                    && !r.is_duplicate()
+                    && !r.is_quality_check_failed()
+                    && r.mapq() >= min_mapq
+            })
+            .collect();
 
         if valid.len() < 2 {
             return;
@@ -904,8 +965,12 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
                 let r2 = valid[j];
 
                 *idx_ref += 1;
-                let mut chrom1 = std::str::from_utf8(header.tid2name(r1.tid().try_into().unwrap())).unwrap().to_string();
-                let mut chrom2 = std::str::from_utf8(header.tid2name(r2.tid().try_into().unwrap())).unwrap().to_string();
+                let mut chrom1 = std::str::from_utf8(header.tid2name(r1.tid().try_into().unwrap()))
+                    .unwrap()
+                    .to_string();
+                let mut chrom2 = std::str::from_utf8(header.tid2name(r2.tid().try_into().unwrap()))
+                    .unwrap()
+                    .to_string();
                 let mut pos1 = r1.pos() + 1;
                 let mut pos2 = r2.pos() + 1;
                 let mut strand1 = if r1.is_reverse() { "-" } else { "+" };
@@ -918,8 +983,14 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
                 }
 
                 let mapq = std::cmp::min(r1.mapq(), r2.mapq());
-                w.write_all(format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", 
-                    *idx_ref, chrom1, pos1, chrom2, pos2, strand1, strand2, mapq).as_bytes()).unwrap();
+                w.write_all(
+                    format!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                        *idx_ref, chrom1, pos1, chrom2, pos2, strand1, strand2, mapq
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
             }
         }
     };
@@ -944,7 +1015,7 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
     if !group.is_empty() {
         process_group(&group, &mut writer, &mut idx);
     }
-} 
+}
 
 pub fn bam2pqs(
     input_bam: &String,
@@ -954,9 +1025,9 @@ pub fn bam2pqs(
     threads: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use polars::prelude::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
     use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     polars::enable_string_cache();
     struct Contact {
@@ -986,24 +1057,35 @@ pub fn bam2pqs(
 
     let chrom_names: Arc<Vec<String>> = Arc::new(
         (0..header_view.target_count())
-            .map(|tid| std::str::from_utf8(header_view.tid2name(tid)).unwrap().to_string())
-            .collect()
+            .map(|tid| {
+                std::str::from_utf8(header_view.tid2name(tid))
+                    .unwrap()
+                    .to_string()
+            })
+            .collect(),
     );
 
     {
         let mut cs_writer = common_writer(&format!("{}/_contigsizes", output));
         for tid in 0..header_view.target_count() {
-            writeln!(cs_writer, "{}\t{}", chrom_names[tid as usize], header_view.target_len(tid).unwrap())?;
+            writeln!(
+                cs_writer,
+                "{}\t{}",
+                chrom_names[tid as usize],
+                header_view.target_len(tid).unwrap()
+            )?;
         }
     }
 
-    
     {
         let mut md_writer = common_writer(&format!("{}/_metadata", output));
         writeln!(md_writer, "{{\"type\": \"pqs\"}}")?;
-        
+
         let mut readme_writer = common_writer(&format!("{}/_readme", output));
-        writeln!(readme_writer, "PQS format generated directly from BAM by cphasing-rs")?;
+        writeln!(
+            readme_writer,
+            "PQS format generated directly from BAM by cphasing-rs"
+        )?;
     }
 
     let (tx, rx) = bounded::<(usize, Vec<Contact>)>(10);
@@ -1067,14 +1149,27 @@ pub fn bam2pqs(
 
                 let mut df_q0 = DataFrame::new(vec![
                     Series::new("read_idx".into(), &q0_read_idx).into(),
-                    Series::new("chrom1".into(), &q0_chrom1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom1".into(), &q0_chrom1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos1".into(), &q0_pos1).into(),
-                    Series::new("chrom2".into(), &q0_chrom2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom2".into(), &q0_chrom2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos2".into(), &q0_pos2).into(),
-                    Series::new("strand1".into(), &q0_strand1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
-                    Series::new("strand2".into(), &q0_strand2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("strand1".into(), &q0_strand1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
+                    Series::new("strand2".into(), &q0_strand2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("mapq".into(), &q0_mapq).into(),
-                ]).unwrap();
+                ])
+                .unwrap();
 
                 let out_q0_path = format!("{}/q0/{}.parquet", output, chunk_idx);
                 let f0 = std::fs::File::create(&out_q0_path).unwrap();
@@ -1082,22 +1177,34 @@ pub fn bam2pqs(
 
                 let mut df_q1 = DataFrame::new(vec![
                     Series::new("read_idx".into(), &q1_read_idx).into(),
-                    Series::new("chrom1".into(), &q1_chrom1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom1".into(), &q1_chrom1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos1".into(), &q1_pos1).into(),
-                    Series::new("chrom2".into(), &q1_chrom2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("chrom2".into(), &q1_chrom2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("pos2".into(), &q1_pos2).into(),
-                    Series::new("strand1".into(), &q1_strand1).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
-                    Series::new("strand2".into(), &q1_strand2).cast(&DataType::Categorical(None, CategoricalOrdering::Physical)).unwrap().into(),
+                    Series::new("strand1".into(), &q1_strand1)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
+                    Series::new("strand2".into(), &q1_strand2)
+                        .cast(&DataType::Categorical(None, CategoricalOrdering::Physical))
+                        .unwrap()
+                        .into(),
                     Series::new("mapq".into(), &q1_mapq).into(),
-                ]).unwrap();
-                
+                ])
+                .unwrap();
+
                 let out_q1_path = format!("{}/q1/{}.parquet", output, chunk_idx);
                 let f1 = std::fs::File::create(&out_q1_path).unwrap();
                 let _ = ParquetWriter::new(f1).finish(&mut df_q1);
 
                 q0_total.fetch_add(df_q0.height() as u64, Ordering::Relaxed);
                 q1_total.fetch_add(df_q1.height() as u64, Ordering::Relaxed);
-               
             }
         }));
     }
@@ -1105,18 +1212,24 @@ pub fn bam2pqs(
     let mut idx = 0;
     let mut chunk_idx = 0;
     let mut batch = Vec::with_capacity(chunksize);
-   
+
     let mut current_qname: Vec<u8> = Vec::new();
     let mut group: Vec<Record> = Vec::new();
 
-    let mut process_pqs_group = |records: &[Record], batch_ref: &mut Vec<Contact>, idx_ref: &mut usize, chunk_idx_ref: &mut usize| {
-        let mut valid: Vec<&Record> = records.iter().filter(|r| {
-            !r.is_unmapped() &&
-            !r.is_secondary() &&
-            !r.is_duplicate() &&
-            !r.is_quality_check_failed() &&
-            r.mapq() >= min_mapq
-        }).collect();
+    let mut process_pqs_group = |records: &[Record],
+                                 batch_ref: &mut Vec<Contact>,
+                                 idx_ref: &mut usize,
+                                 chunk_idx_ref: &mut usize| {
+        let mut valid: Vec<&Record> = records
+            .iter()
+            .filter(|r| {
+                !r.is_unmapped()
+                    && !r.is_secondary()
+                    && !r.is_duplicate()
+                    && !r.is_quality_check_failed()
+                    && r.mapq() >= min_mapq
+            })
+            .collect();
 
         if valid.len() < 2 {
             return;
@@ -1160,7 +1273,8 @@ pub fn bam2pqs(
                 });
 
                 if batch_ref.len() >= chunksize {
-                    tx.send((*chunk_idx_ref, std::mem::take(batch_ref))).unwrap();
+                    tx.send((*chunk_idx_ref, std::mem::take(batch_ref)))
+                        .unwrap();
                     *batch_ref = Vec::with_capacity(chunksize);
                     *chunk_idx_ref += 1;
                 }
@@ -1184,7 +1298,7 @@ pub fn bam2pqs(
                     group.clear();
                     group.push(record.clone());
                 }
-            },
+            }
             _ => break,
         }
     }
@@ -1207,8 +1321,11 @@ pub fn bam2pqs(
         writeln!(f, "q0\t{}", q0_total.load(Ordering::Relaxed))?;
         writeln!(f, "q1\t{}", q1_total.load(Ordering::Relaxed))?;
     }
-   
-    log::info!("Successfully converted BAM directly to PQS format: {}", output);
+
+    log::info!(
+        "Successfully converted BAM directly to PQS format: {}",
+        output
+    );
     Ok(())
 }
 
@@ -1222,16 +1339,16 @@ pub fn bam2fastq(input_bams: &Vec<&String>, output: &String, threads: usize) {
         } else {
             Reader::from_path(input_bam).expect("Failed to read from the provided path")
         };
-        
+
         let _ = bam.set_threads(threads);
 
         while let Some(r) = bam.records().next() {
             let record = r.unwrap();
-            
+
             let id = String::from_utf8(record.qname().to_vec()).unwrap();
             let seq = record.seq().as_bytes();
             let qual = record.qual();
-            
+
             let mut ascii_qual = qual.to_vec();
             for q in &mut ascii_qual {
                 *q += 33;
@@ -1248,13 +1365,13 @@ pub fn bam2fastq(input_bams: &Vec<&String>, output: &String, threads: usize) {
     }
 }
 
-pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
+pub fn bam2fasta(input_bam: &String, output: &String, threads: usize) {
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
     } else {
         Reader::from_path(input_bam).expect("Failed to read from the provided path")
     };
-    
+
     let header = Header::from_template(bam.header());
     let header = HeaderView::from_header(&header);
 
@@ -1264,20 +1381,16 @@ pub fn bam2fasta(input_bam: &String, output:&String, threads: usize) {
     let mut wtr = FastaWriter::new(writer);
     while let Some(r) = bam.records().next() {
         let record = r.unwrap();
-        
+
         let id = String::from_utf8(record.qname().to_vec()).unwrap();
         let seq = record.seq().as_bytes();
-        
-        let seq_record = FastaRecord::with_attrs(&id, None, &seq,);
+
+        let seq_record = FastaRecord::with_attrs(&id, None, &seq);
         let _ = wtr.write_record(&seq_record);
-
     }
-
 }
 
-
 fn calculate_quartiles(data: &Vec<usize>) -> (usize, usize, usize) {
-   
     let n = data.len();
     let q1_index = (n as f64 * 0.25).ceil() as usize - 1;
     let q2_index = (n as f64 * 0.5).ceil() as usize - 1;
@@ -1292,224 +1405,267 @@ fn calculate_quartiles(data: &Vec<usize>) -> (usize, usize, usize) {
 
 pub fn bamstat_hic(input_bams: &Vec<&String>, output: &String, threads: usize) {
     let mut writer = common_writer(output);
-    let res = input_bams.par_iter().map(|input_bam| {
-        let mut bam = if *input_bam == &String::from("-") {
-            Reader::from_stdin().expect("Failed to read from stdin")
-        } else {
-            Reader::from_path(input_bam).expect("Failed to read from the provided path")
-        };
-
-        let header = Header::from_template(bam.header());
-        let header = HeaderView::from_header(&header);
-    
-        let _ = bam.set_threads(threads);
-        let mut unmap_counts = 0;
-        let mut multiple_counts = 0;
-        let mut unique_counts = 0;
-        let mut singleton_counts = 0;
-        while let Some(r) = bam.records().next() {
-            let record = r.unwrap();
-            
-            let Some(r2) = bam.records().next() else {
-                continue
-            };
-            let record2 = r2.unwrap();
-    
-            if record.is_unmapped() || record2.is_unmapped(){
-                unmap_counts += 1;
-                continue 
-            }
-
-
-            let mapq1 = record.mapq();
-            let mapq2 = record2.mapq();
-            
-            if (mapq1 == 0) && (mapq2 == 0) {
-                multiple_counts += 1;
-            } else if (mapq1 == 0) | (mapq2 == 0) {
-                singleton_counts += 1;
+    let res = input_bams
+        .par_iter()
+        .map(|input_bam| {
+            let mut bam = if *input_bam == &String::from("-") {
+                Reader::from_stdin().expect("Failed to read from stdin")
             } else {
-                unique_counts += 1;
+                Reader::from_path(input_bam).expect("Failed to read from the provided path")
+            };
+
+            let header = Header::from_template(bam.header());
+            let header = HeaderView::from_header(&header);
+
+            let _ = bam.set_threads(threads);
+            let mut unmap_counts = 0;
+            let mut multiple_counts = 0;
+            let mut unique_counts = 0;
+            let mut singleton_counts = 0;
+            while let Some(r) = bam.records().next() {
+                let record = r.unwrap();
+
+                let Some(r2) = bam.records().next() else {
+                    continue;
+                };
+                let record2 = r2.unwrap();
+
+                if record.is_unmapped() || record2.is_unmapped() {
+                    unmap_counts += 1;
+                    continue;
+                }
+
+                let mapq1 = record.mapq();
+                let mapq2 = record2.mapq();
+
+                if (mapq1 == 0) && (mapq2 == 0) {
+                    multiple_counts += 1;
+                } else if (mapq1 == 0) | (mapq2 == 0) {
+                    singleton_counts += 1;
+                } else {
+                    unique_counts += 1;
+                }
             }
-        }
 
-        (input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts)
-    }).collect::<Vec<_>>();
+            (
+                input_bam,
+                unmap_counts,
+                unique_counts,
+                multiple_counts,
+                singleton_counts,
+            )
+        })
+        .collect::<Vec<_>>();
 
-    
     writeln!(writer, "file\tunmapped\tunique\tmultiple\tsingleton").unwrap();
     for record in res {
-        
         let (input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts) = record;
-        // basename of input_bam 
+        // basename of input_bam
         let input_bam = std::path::Path::new(input_bam);
         let input_bam = input_bam.file_name().unwrap().to_str().unwrap();
-        writeln!(writer, "{}\t{}\t{}\t{}\t{}", 
-                    input_bam, unmap_counts, unique_counts, 
-                    multiple_counts, singleton_counts).unwrap();
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{}",
+            input_bam, unmap_counts, unique_counts, multiple_counts, singleton_counts
+        )
+        .unwrap();
     }
-    
-
 }
-
 
 pub fn bamstat_porec(input_bams: &Vec<&String>, output: &String, threads: usize) {
     let mut writer = common_writer(output);
-    let res = input_bams.par_iter().map(|input_bam| {
-        let mut bam = if *input_bam == &String::from("-") {
-            Reader::from_stdin().expect("Failed to read from stdin")
-        } else {
-            Reader::from_path(input_bam).expect("Failed to read from the provided path")
-        };
-
-        let header = Header::from_template(bam.header());
-        let header = HeaderView::from_header(&header);
-    
-        let _ = bam.set_threads(threads);
-        let mut unmap_counts = 0;
-        let mut multiple_counts = 0;
-        let mut unique_counts = 0;
-        let mut unique_q2_counts = 0;
-        while let Some(r) = bam.records().next() {
-            let record = r.unwrap();
-            
-            let Some(r2) = bam.records().next() else {
-                continue
+    let res = input_bams
+        .par_iter()
+        .map(|input_bam| {
+            let mut bam = if *input_bam == &String::from("-") {
+                Reader::from_stdin().expect("Failed to read from stdin")
+            } else {
+                Reader::from_path(input_bam).expect("Failed to read from the provided path")
             };
 
-            if record.is_secondary() {
-                continue;
-            }
-        
-            if record.is_unmapped() {
-                unmap_counts += 1;
-                continue 
-            }
+            let header = Header::from_template(bam.header());
+            let header = HeaderView::from_header(&header);
 
-            let mapq = record.mapq();
-            
-            if mapq == 0 {
-                multiple_counts += 1;
-            } else if mapq >= 1 {
-                unique_counts += 1;
-                if mapq >= 2 {
-                    unique_q2_counts += 1;
+            let _ = bam.set_threads(threads);
+            let mut unmap_counts = 0;
+            let mut multiple_counts = 0;
+            let mut unique_counts = 0;
+            let mut unique_q2_counts = 0;
+            while let Some(r) = bam.records().next() {
+                let record = r.unwrap();
+
+                let Some(r2) = bam.records().next() else {
+                    continue;
+                };
+
+                if record.is_secondary() {
+                    continue;
+                }
+
+                if record.is_unmapped() {
+                    unmap_counts += 1;
+                    continue;
+                }
+
+                let mapq = record.mapq();
+
+                if mapq == 0 {
+                    multiple_counts += 1;
+                } else if mapq >= 1 {
+                    unique_counts += 1;
+                    if mapq >= 2 {
+                        unique_q2_counts += 1;
+                    }
                 }
             }
 
-            
-        }
+            (
+                input_bam,
+                unmap_counts,
+                unique_counts,
+                multiple_counts,
+                unique_q2_counts,
+            )
+        })
+        .collect::<Vec<_>>();
 
-        (input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts)
-    }).collect::<Vec<_>>();
-
-    
     writeln!(writer, "file\tunmapped\tunique\tmultiple\tunique_q2").unwrap();
     for record in res {
-        
         let (input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts) = record;
-        // basename of input_bam 
+        // basename of input_bam
         let input_bam = std::path::Path::new(input_bam);
         let input_bam = input_bam.file_name().unwrap().to_str().unwrap();
-        writeln!(writer, "{}\t{}\t{}\t{}\t{}", 
-                    input_bam, unmap_counts, unique_counts, 
-                    multiple_counts, unique_q2_counts).unwrap();
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{}",
+            input_bam, unmap_counts, unique_counts, multiple_counts, unique_q2_counts
+        )
+        .unwrap();
     }
-    
-
-
 }
 
-
 pub fn bamstat(input_bams: &Vec<&String>, output: &String, threads: usize) {
-
     let mut writer = common_writer(output);
-        
-    writeln!(writer, "file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tQ1\tQ2\tQ3\tN50\tGC(%)").unwrap();
-    let res = input_bams.par_iter().map(|input_bam| {
-        let mut bam = if *input_bam == &String::from("-") {
-            Reader::from_stdin().expect("Failed to read from stdin")
-        } else {
-            Reader::from_path(input_bam).expect("Failed to read from the provided path")
-        };
-        
-        let header = Header::from_template(bam.header());
-        let header = HeaderView::from_header(&header);
-    
-        let _ = bam.set_threads(threads);
-    
-        let mut seq_len_vec: Vec<usize> = Vec::new();
-        let mut gc_count: u64 = 0;
-        let total_qual: u64 = 0;
-        while let Some(r) = bam.records().next() {
-            let record = r.unwrap();
-            
-            let seq_len = record.seq().len();
-            
-            let seq = record.seq();
-            for base in seq.as_bytes() {
-                if base == b'G' || base == b'C' {
-                    gc_count += 1;
+
+    writeln!(
+        writer,
+        "file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tQ1\tQ2\tQ3\tN50\tGC(%)"
+    )
+    .unwrap();
+    let res = input_bams
+        .par_iter()
+        .map(|input_bam| {
+            let mut bam = if *input_bam == &String::from("-") {
+                Reader::from_stdin().expect("Failed to read from stdin")
+            } else {
+                Reader::from_path(input_bam).expect("Failed to read from the provided path")
+            };
+
+            let header = Header::from_template(bam.header());
+            let header = HeaderView::from_header(&header);
+
+            let _ = bam.set_threads(threads);
+
+            let mut seq_len_vec: Vec<usize> = Vec::new();
+            let mut gc_count: u64 = 0;
+            let total_qual: u64 = 0;
+            while let Some(r) = bam.records().next() {
+                let record = r.unwrap();
+
+                let seq_len = record.seq().len();
+
+                let seq = record.seq();
+                for base in seq.as_bytes() {
+                    if base == b'G' || base == b'C' {
+                        gc_count += 1;
+                    }
+                }
+
+                // let qual = record.qual();
+                // for &q in qual {
+                //     total_qual += q as u64;
+                // }
+
+                seq_len_vec.push(seq_len);
+            }
+
+            let total_count = seq_len_vec.len();
+
+            seq_len_vec.par_sort();
+            let total_len: usize = seq_len_vec.par_iter().sum();
+            let gc_content = if total_len > 0 {
+                (gc_count as f64 / total_len as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let mut n50 = 0;
+            let mut n50_len = 0;
+            let mut n50_count = 0;
+            for len in seq_len_vec.iter().rev() {
+                n50_len += len;
+                n50_count += 1;
+                if n50_len >= total_len / 2 {
+                    n50 = *len;
+                    break;
                 }
             }
-    
-            // let qual = record.qual();
-            // for &q in qual {
-            //     total_qual += q as u64;
-            // }
-            
-            seq_len_vec.push(seq_len);
-    
-        } 
-    
-        let total_count = seq_len_vec.len();
-    
-        seq_len_vec.par_sort();
-        let total_len: usize = seq_len_vec.par_iter().sum();
-        let gc_content = if total_len > 0 {
-            (gc_count as f64 / total_len as f64) * 100.0
-        } else {
-            0.0
-        };
-    
-        let mut n50 = 0;
-        let mut n50_len = 0;
-        let mut n50_count = 0;
-        for len in seq_len_vec.iter().rev() {
-            n50_len += len;
-            n50_count += 1;
-            if n50_len >= total_len / 2 {
-                n50 = *len;
-                break;
-            }
-        }
-    
-        // calculate Q1 Q2 Q3 
-        let (q1, q2, q3) = calculate_quartiles(&seq_len_vec);
-    
-        let min_len = seq_len_vec[0].clone();
-        let max_len = seq_len_vec.last().unwrap().clone();
-    
-        let avg_len = total_len as f64 / total_count as f64;
-    
-        
-        (input_bam, total_count, total_len, min_len, 
-            avg_len, max_len, q1, q2, q3, n50, gc_content)
-        
-    }).collect::<Vec<_>>();
-    
 
-    
+            // calculate Q1 Q2 Q3
+            let (q1, q2, q3) = calculate_quartiles(&seq_len_vec);
+
+            let min_len = seq_len_vec[0].clone();
+            let max_len = seq_len_vec.last().unwrap().clone();
+
+            let avg_len = total_len as f64 / total_count as f64;
+
+            (
+                input_bam,
+                total_count,
+                total_len,
+                min_len,
+                avg_len,
+                max_len,
+                q1,
+                q2,
+                q3,
+                n50,
+                gc_content,
+            )
+        })
+        .collect::<Vec<_>>();
+
     for r in res {
-        let (input_bam, total_count, total_len, min_len, 
-            avg_len, max_len, q1, q2, q3,
-            n50, gc_content) = r;
-        writeln!(writer, "{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{:.2}%", 
-                    input_bam, total_count, total_len, min_len, 
-                    avg_len, max_len, q1, q2, q3,
-                    n50, gc_content).unwrap();
+        let (
+            input_bam,
+            total_count,
+            total_len,
+            min_len,
+            avg_len,
+            max_len,
+            q1,
+            q2,
+            q3,
+            n50,
+            gc_content,
+        ) = r;
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{:.2}%",
+            input_bam,
+            total_count,
+            total_len,
+            min_len,
+            avg_len,
+            max_len,
+            q1,
+            q2,
+            q3,
+            n50,
+            gc_content
+        )
+        .unwrap();
     }
-    
 }
 
 pub fn phase_reads(
@@ -1520,8 +1676,8 @@ pub fn phase_reads(
     threads: usize,
 ) {
     use std::collections::HashMap;
-    use std::io::{BufRead, BufReader, Write};
     use std::fs::File;
+    use std::io::{BufRead, BufReader, Write};
 
     let mut contig_to_group: HashMap<String, String> = HashMap::new();
     let file = File::open(contigs_group_file).expect("Failed to open contigs group file");
@@ -1569,9 +1725,9 @@ pub fn phase_reads(
 
     for r in bam.records() {
         let record = r.unwrap();
-        
+
         let qname = std::str::from_utf8(record.qname()).unwrap().to_string();
-        
+
         let is_switch = match prev_q.as_ref() {
             Some(pq) => pq != &qname,
             None => false,
@@ -1580,7 +1736,9 @@ pub fn phase_reads(
         if is_switch {
             emit_read(prev_q.as_ref().unwrap(), &mut group_scores, &mut wtr);
             total_reads += 1;
-            if !group_scores.is_empty() { phased_reads += 1; }
+            if !group_scores.is_empty() {
+                phased_reads += 1;
+            }
             prev_q = Some(qname.clone());
         } else if prev_q.is_none() {
             prev_q = Some(qname.clone());
@@ -1597,12 +1755,15 @@ pub fn phase_reads(
     if let Some(pq) = prev_q {
         emit_read(&pq, &mut group_scores, &mut wtr);
         total_reads += 1;
-        if !group_scores.is_empty() { phased_reads += 1; }
+        if !group_scores.is_empty() {
+            phased_reads += 1;
+        }
     }
 
     log::info!(
         "Phasing finished. Total reads processed: {}, successfully assigned: {}",
-        total_reads, phased_reads
+        total_reads,
+        phased_reads
     );
     log::info!("Output written to: {}", output);
 }
@@ -1613,18 +1774,22 @@ pub fn prune_bam(
     output: &String,
     threads: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::core::common_reader;
     use std::collections::HashSet;
     use std::io::{BufRead, BufReader};
-    use crate::core::common_reader;
 
     let mut blacklist_names = HashSet::new();
     let f = common_reader(prune_table);
     let rdr = BufReader::new(f);
     for line in rdr.lines().flatten() {
         let s = line.trim();
-        if s.is_empty() || s.starts_with('#') { continue; }
+        if s.is_empty() || s.starts_with('#') {
+            continue;
+        }
         let fields: Vec<&str> = s.split_whitespace().collect();
-        if fields.len() < 2 { continue; }
+        if fields.len() < 2 {
+            continue;
+        }
         let c1 = fields[0].to_string();
         let c2 = fields[1].to_string();
         if c1 <= c2 {
@@ -1633,7 +1798,11 @@ pub fn prune_bam(
             blacklist_names.insert((c2, c1));
         }
     }
-    log::info!("Loaded {} blacklist contig pairs from {}", blacklist_names.len(), prune_table);
+    log::info!(
+        "Loaded {} blacklist contig pairs from {}",
+        blacklist_names.len(),
+        prune_table
+    );
 
     let mut bam = if input_bam == &String::from("-") {
         Reader::from_stdin().expect("Failed to read from stdin")
@@ -1653,15 +1822,17 @@ pub fn prune_bam(
         }
     }
 
-
     let mut blacklist_tids = HashSet::new();
     for (c1, c2) in blacklist_names {
         if let (Some(&tid1), Some(&tid2)) = (name_to_tid.get(&c1), name_to_tid.get(&c2)) {
-            let pair = if tid1 <= tid2 { (tid1, tid2) } else { (tid2, tid1) };
+            let pair = if tid1 <= tid2 {
+                (tid1, tid2)
+            } else {
+                (tid2, tid1)
+            };
             blacklist_tids.insert(pair);
         }
     }
-
 
     let mut wtr = Writer::from_path(output, &header, bam::Format::Bam).unwrap();
     let _ = wtr.set_threads(threads);
@@ -1678,10 +1849,14 @@ pub fn prune_bam(
             let mtid = record.mtid();
 
             if tid >= 0 && mtid >= 0 {
-                let pair = if tid <= mtid { (tid, mtid) } else { (mtid, tid) };
+                let pair = if tid <= mtid {
+                    (tid, mtid)
+                } else {
+                    (mtid, tid)
+                };
                 if blacklist_tids.contains(&pair) {
                     pruned_records += 1;
-                    continue; 
+                    continue;
                 }
             }
         }
@@ -1691,12 +1866,13 @@ pub fn prune_bam(
 
     log::info!(
         "BAM pruning finished. Total records: {}, Pruned (removed): {}, Output written to: {}",
-        total_records, pruned_records, output
+        total_records,
+        pruned_records,
+        output
     );
 
     Ok(())
 }
-
 
 struct ContigInterval {
     start: u32,
@@ -1706,9 +1882,10 @@ struct ContigInterval {
 
 fn load_contig_map(
     contig_bed: &str,
-) -> Result<(HashMap<String, Vec<ContigInterval>>, HashMap<String, u64>), Box<dyn std::error::Error>> {
-    use std::io::{BufRead, BufReader};
+) -> Result<(HashMap<String, Vec<ContigInterval>>, HashMap<String, u64>), Box<dyn std::error::Error>>
+{
     use std::fs::File;
+    use std::io::{BufRead, BufReader};
 
     let mut map: HashMap<String, Vec<ContigInterval>> = HashMap::new();
     let mut contig_sizes: HashMap<String, u64> = HashMap::new();
@@ -1814,7 +1991,9 @@ pub fn chr_to_ctg(
             if mtid >= 0 {
                 let mchrom_name = std::str::from_utf8(old_header_view.tid2name(mtid as u32))?;
                 let mpos = record.mpos() as u32;
-                if let Some((mcontig_name, new_mpos)) = map_chr_to_ctg(mchrom_name, mpos, &contig_map) {
+                if let Some((mcontig_name, new_mpos)) =
+                    map_chr_to_ctg(mchrom_name, mpos, &contig_map)
+                {
                     if let Some(new_mtid) = new_header_view.tid(mcontig_name.as_bytes()) {
                         new_record.set_mtid(new_mtid as i32);
                         new_record.set_mpos(new_mpos as i64);
@@ -1838,7 +2017,10 @@ pub fn chr_to_ctg(
         if let Some((contig_name, new_pos)) = map_chr_to_ctg(chrom_name, pos, &contig_map) {
             let mut new_record = record.clone();
             let new_tid = new_header_view.tid(contig_name.as_bytes()).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, format!("Contig {} not found in new header", contig_name))
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Contig {} not found in new header", contig_name),
+                )
             })? as i32;
 
             new_record.set_tid(new_tid);
@@ -1848,7 +2030,9 @@ pub fn chr_to_ctg(
             if mtid >= 0 {
                 let mchrom_name = std::str::from_utf8(old_header_view.tid2name(mtid as u32))?;
                 let mpos = record.mpos() as u32;
-                if let Some((mcontig_name, new_mpos)) = map_chr_to_ctg(mchrom_name, mpos, &contig_map) {
+                if let Some((mcontig_name, new_mpos)) =
+                    map_chr_to_ctg(mchrom_name, mpos, &contig_map)
+                {
                     if let Some(new_mtid_val) = new_header_view.tid(mcontig_name.as_bytes()) {
                         new_record.set_mtid(new_mtid_val as i32);
                         new_record.set_mpos(new_mpos as i64);
@@ -1869,7 +2053,9 @@ pub fn chr_to_ctg(
 
     log::info!(
         "BAM coordinates conversion finished. Total records: {}, Mapped to contigs: {}, Written to: {}",
-        total_records, mapped_records, output_bam
+        total_records,
+        mapped_records,
+        output_bam
     );
 
     Ok(())

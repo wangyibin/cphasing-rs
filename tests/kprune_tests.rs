@@ -1,7 +1,6 @@
-use std::collections::HashSet;
 use cphasing::core::*;
 use cphasing::kprune::*;
-
+use std::collections::HashSet;
 
 #[cfg(test)]
 mod tests {
@@ -30,6 +29,5 @@ mod tests {
         let whitehash: HashSet<String> = HashSet::new();
         let mut kpruner = KPruner::new(&alleletable, &pixels, &count_re, &prunetable);
         kpruner.prune(method, &whitehash);
-        
     }
 }

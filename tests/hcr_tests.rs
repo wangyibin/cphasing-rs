@@ -1,8 +1,8 @@
-use cphasing::core::*;
 use cphasing::bed::*;
+use cphasing::core::*;
 use cphasing::pairs::*;
-use std::collections::HashMap;
 use rust_lapper::{Interval, Lapper};
+use std::collections::HashMap;
 
 #[cfg(test)]
 mod tests {
@@ -30,7 +30,6 @@ mod tests {
         ];
         let mut lapper = Lapper::new(data);
         lapper.find(11, 15).collect::<Vec<&Iv>>();
-
     }
 
     #[test]
@@ -47,11 +46,14 @@ mod tests {
                     val: 0,
                 });
             } else {
-                hcr.insert(i.chrom, vec![Iv {
-                    start: i.start,
-                    stop: i.end,
-                    val: 0,
-                }]);
+                hcr.insert(
+                    i.chrom,
+                    vec![Iv {
+                        start: i.start,
+                        stop: i.end,
+                        val: 0,
+                    }],
+                );
             }
         }
         let mut lapper = Lapper::new(hcr.get(&"ctg1".to_string()).unwrap().to_vec());

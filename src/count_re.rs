@@ -3,18 +3,18 @@
 #![allow(non_snake_case)]
 use anyhow::Result as AnyResult;
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::Path;
 use std::io::BufRead;
-use serde::{ Deserialize, Serialize };
+use std::path::Path;
 
-use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ContigPair };
+use crate::core::{BaseTable, ContigPair};
+use crate::core::{common_reader, common_writer};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CountReRecord {
-    Contig: String, 
+    Contig: String,
     RECounts: u32,
     Length: u32,
 }
@@ -44,7 +44,6 @@ impl BaseTable for CountRE {
         let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
         file_prefix.to_string()
     }
-
 }
 
 impl CountRE {
@@ -53,14 +52,12 @@ impl CountRE {
         for (line_number, line) in input.lines().enumerate() {
             match line {
                 Ok(content) => {
-      
                     if content.starts_with('#') {
                         continue;
                     }
-    
-        
+
                     let fields: Vec<&str> = content.split('\t').collect();
-    
+
                     if fields.len() != 3 {
                         log::info!(
                             "Skipping line {}: expected 3 fields, found {}",
@@ -69,7 +66,7 @@ impl CountRE {
                         );
                         continue;
                     }
-    
+
                     let contig = fields[0].to_string();
                     let re_counts = match fields[1].parse::<u32>() {
                         Ok(value) => value,
@@ -93,7 +90,7 @@ impl CountRE {
                             continue;
                         }
                     };
-    
+
                     let record = CountReRecord {
                         Contig: contig,
                         RECounts: re_counts,
@@ -108,8 +105,11 @@ impl CountRE {
         }
     }
 
-    pub fn from_hashmap(&mut self, counts: IndexMap<String, u64>, 
-                        chromsizes: HashMap<String, u64>) {
+    pub fn from_hashmap(
+        &mut self,
+        counts: IndexMap<String, u64>,
+        chromsizes: HashMap<String, u64>,
+    ) {
         for (contig, count) in counts {
             let length = chromsizes.get(&contig).unwrap().clone();
             let record = CountReRecord {
@@ -119,13 +119,13 @@ impl CountRE {
             };
             self.records.push(record);
         }
-    } 
+    }
 
     pub fn to_data(&self) -> HashMap<String, u32> {
         let mut data: HashMap<String, u32> = HashMap::new();
         for record in &self.records {
             data.insert(record.Contig.clone(), record.RECounts);
-        } 
+        }
 
         data
     }
@@ -134,7 +134,7 @@ impl CountRE {
         let mut data: IndexMap<String, u32> = IndexMap::new();
         for record in &self.records {
             data.insert(record.Contig.clone(), record.Length);
-        } 
+        }
 
         data
     }
@@ -146,8 +146,7 @@ impl CountRE {
             .delimiter(b'\t')
             .has_headers(false)
             .from_writer(writer);
-        
-        
+
         for record in &self.records {
             wtr.serialize(record).unwrap();
         }

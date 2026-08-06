@@ -2,51 +2,55 @@
 #![allow(dead_code)]
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
-use rand::Rng;
-use rand::rngs::SmallRng;
-use rand::distributions::{Bernoulli, Distribution};
-use rand::prelude::*;
-use std::borrow::Cow;
-use hashbrown::HashMap;
-use indexmap::IndexMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
-use std::sync::{Arc, RwLock, Mutex};
-use std::fmt::{self, Display, Arguments};
-use std::cell::RefCell;
-use std::marker::PhantomData;
-use std::time::Instant;
-use itertools::Itertools;
+use elkai_rs::DistanceMatrix;
+use genetic_algorithm::fitness::prelude::*;
 use genetic_algorithm::strategy::evolve::prelude::*;
 use genetic_algorithm::strategy::hill_climb::prelude::*;
-use genetic_algorithm::fitness::prelude::*;
-use elkai_rs::DistanceMatrix;
-use rayon::prelude::*;
+use hashbrown::HashMap;
+use indexmap::IndexMap;
+use itertools::Itertools;
+use rand::Rng;
+use rand::distributions::{Bernoulli, Distribution};
+use rand::prelude::*;
+use rand::rngs::SmallRng;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::fmt::{self, Arguments, Display};
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::marker::PhantomData;
+use std::path::Path;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct ContactMatrix<'a> {
     num_contigs: usize,
     length_data: &'a IndexMap<usize, usize>,
-    matrix: Vec<HashMap<usize, f64>>, 
-    adjacency: Vec<Vec<(usize, f32)>>, 
-    flat_edges: Vec<(usize, usize, f32)>,
+    matrix: Vec<HashMap<usize, f64>>,
+    adjacency: Vec<Vec<(usize, f32)>>,
+    flat_edges: Vec<(usize, usize, f64)>,
 }
 
 impl<'a> ContactMatrix<'a> {
-    pub fn new(length_data: &'a IndexMap<usize, usize>, contacts: Vec<HashMap<usize, u32>>) -> Self {
+    pub fn new(
+        length_data: &'a IndexMap<usize, usize>,
+        contacts: Vec<HashMap<usize, u32>>,
+    ) -> Self {
         let num_contigs = length_data.len();
 
         let mut adjacency = Vec::with_capacity(num_contigs);
         for contact_map in &contacts {
-            let mut row: Vec<(usize, f32)> = contact_map.into_iter()
+            let mut row: Vec<(usize, f32)> = contact_map
+                .into_iter()
                 .filter(|&(_, w)| *w > 0)
                 .map(|(target, weight)| (target.clone(), weight.clone() as f32))
                 .collect();
-            
-            row.sort_unstable_by_key(|k| k.0); 
-            
+
+            row.sort_unstable_by_key(|k| k.0);
+
             adjacency.push(row);
         }
 
@@ -60,13 +64,13 @@ impl<'a> ContactMatrix<'a> {
             }
             matrix.push(row);
         }
-        let mut flat_edges = Vec::with_capacity(num_contigs * 10); 
+        let mut flat_edges = Vec::with_capacity(num_contigs * 10);
         for (u, contact_map) in contacts.iter().enumerate() {
             let mut edges: Vec<_> = contact_map.iter().collect();
-            edges.sort_by_key(|(v, _)| **v); 
+            edges.sort_by_key(|(v, _)| **v);
             for (v, weight) in edges {
-                if *weight > 0 && u < *v { 
-                    flat_edges.push((u, *v, *weight as f32));
+                if *weight > 0 && u < *v {
+                    flat_edges.push((u, *v, *weight as f64));
                 }
             }
         }
@@ -75,10 +79,9 @@ impl<'a> ContactMatrix<'a> {
             length_data,
             matrix,
             adjacency,
-            flat_edges
+            flat_edges,
         }
     }
-
 
     #[inline(always)]
     fn get(&self, i: usize, j: usize) -> f64 {
@@ -100,8 +103,8 @@ impl<'a> ContactMatrix<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Tour<T = usize> {
-    pub contigs: Vec<T>, 
-    pub signs: Vec<bool>, 
+    pub contigs: Vec<T>,
+    pub signs: Vec<bool>,
 }
 
 impl<T: std::fmt::Display> Display for Tour<T> {
@@ -123,8 +126,10 @@ impl<T> Tour<T> {
         self.contigs.iter()
     }
 
-    pub fn map<U, F>(self, mut f: F) -> Tour<U> 
-    where F: FnMut(T) -> U {
+    pub fn map<U, F>(self, mut f: F) -> Tour<U>
+    where
+        F: FnMut(T) -> U,
+    {
         Tour {
             contigs: self.contigs.into_iter().map(f).collect(),
             signs: self.signs,
@@ -133,7 +138,7 @@ impl<T> Tour<T> {
 
     pub fn reverse(&mut self) {
         self.contigs.reverse();
-        // signs reverse and + to - - to + 
+        // signs reverse and + to - - to +
         self.signs.reverse();
         for sign in self.signs.iter_mut() {
             *sign = !*sign;
@@ -141,12 +146,10 @@ impl<T> Tour<T> {
     }
 }
 
-
 thread_local! {
     static MIDS_BUF: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     static POS_BUF: RefCell<Vec<usize>> = RefCell::new(Vec::new());
 }
-
 
 #[derive(Clone, Debug)]
 struct MyFitness<'a> {
@@ -154,28 +157,33 @@ struct MyFitness<'a> {
 }
 
 impl Fitness for MyFitness<'_> {
-    type Genotype = UniqueGenotype; 
- 
-    fn calculate_for_chromosome(&mut self, chromosome: &FitnessChromosome<Self>,
-                                _genotype: &FitnessGenotype<Self>,) -> Option<FitnessValue> {
+    type Genotype = UniqueGenotype;
+
+    fn calculate_for_chromosome(
+        &mut self,
+        chromosome: &FitnessChromosome<Self>,
+        _genotype: &FitnessGenotype<Self>,
+    ) -> Option<FitnessValue> {
         let genes = &chromosome.genes;
         let matrix = &self.matrix;
         let n = genes.len();
         let num_all_contigs = matrix.num_contigs;
         let mut score = 0.0;
-      
+
         MIDS_BUF.with(|mids_cell| {
             POS_BUF.with(|pos_cell| {
                 let mut mids = mids_cell.borrow_mut();
                 let mut pos_map = pos_cell.borrow_mut();
 
                 mids.clear();
-                if mids.capacity() < n { mids.reserve(n); }
-                
+                if mids.capacity() < n {
+                    mids.reserve(n);
+                }
+
                 let mut cum_sum = 0.0;
 
                 for &idx in genes {
-                    let size = unsafe { *matrix.length_data.get(&idx).unwrap_or(&0) } as f64;
+                    let size = *matrix.length_data.get(&idx).unwrap_or(&0) as f64;
                     mids.push(cum_sum + size * 0.5);
                     cum_sum += size;
                 }
@@ -183,7 +191,7 @@ impl Fitness for MyFitness<'_> {
                 if pos_map.len() < num_all_contigs {
                     pos_map.resize(num_all_contigs, usize::MAX);
                 }
-                
+
                 for (idx, &id) in genes.iter().enumerate() {
                     pos_map[id] = idx;
                 }
@@ -192,15 +200,15 @@ impl Fitness for MyFitness<'_> {
                 //     if let Some(row) = matrix.matrix.get(u) {
                 //         for (&v, &contact) in row {
                 //             if v >= pos_map.len() { continue; }
-                            
+
                 //             let j = pos_map[v];
 
                 //             if j != usize::MAX && j > i {
                 //                 let dist = (mids[j] - mids[i]).abs() as f32;
-                    
+
                 //                 let log_dist = (dist + 1.0).ln();
                 //                 score += contact as f32 * log_dist;
-                       
+
                 //             }
                 //         }
                 //     }
@@ -223,8 +231,11 @@ impl Fitness for MyFitness<'_> {
                     let idx_v = pos_map[v];
 
                     if idx_u != usize::MAX && idx_v != usize::MAX {
-                        let dist = (mids[idx_u] - mids[idx_v]).abs();
-                        let log_dist = (dist + 1.0).ln() as f32;
+                        let mut dist = (mids[idx_u] - mids[idx_v]).abs();
+                        if dist <= 1.0 {
+                            dist = 1.000001;
+                        }
+                        let log_dist = dist.ln();
                         score += weight * log_dist;
                     }
                 }
@@ -235,28 +246,27 @@ impl Fitness for MyFitness<'_> {
             })
         });
 
-        
-        Some((score * 1000000.0) as isize)     
-
-
+        Some((score * 1000000.0) as isize)
     }
-
 }
 
-
-pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
+/// Calculate the same log-distance ordering objective as ALLHiC's
+/// `Tour.Evaluate`. The optimizer minimizes this value.
+pub fn calculate_allhic_fitness(genes: &[usize], matrix: &ContactMatrix) -> f64 {
     let n = genes.len();
     let num_all_contigs = matrix.num_contigs;
     let mut score = 0.0;
-    
+
     MIDS_BUF.with(|mids_cell| {
         POS_BUF.with(|pos_cell| {
             let mut mids = mids_cell.borrow_mut();
             let mut pos_map = pos_cell.borrow_mut();
 
             mids.clear();
-            if mids.capacity() < n { mids.reserve(n); }
-            
+            if mids.capacity() < n {
+                mids.reserve(n);
+            }
+
             let mut cum_sum = 0.0;
 
             for &idx in genes {
@@ -268,7 +278,7 @@ pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
             if pos_map.len() < num_all_contigs {
                 pos_map.resize(num_all_contigs, usize::MAX);
             }
-            
+
             for (idx, &id) in genes.iter().enumerate() {
                 pos_map[id] = idx;
             }
@@ -277,16 +287,15 @@ pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
             //     if let Some(row) = matrix.matrix.get(u) {
             //         for (&v, &contact) in row {
             //             if v >= pos_map.len() { continue; }
-                        
+
             //             let j = pos_map[v];
 
             //             if j != usize::MAX && j > i {
             //                 let dist = (mids[j] - mids[i]).abs() as f64;
             //                 let log_dist = (dist + 1.0).ln();
 
-                            
             //                 score += contact * log_dist;
-                          
+
             //             }
             //         }
             //     }
@@ -295,12 +304,12 @@ pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
             //     if let Some(row) = matrix.adjacency.get(u) {
             //         for &(v, contact) in row {
             //             if v >= pos_map.len() { continue; }
-                        
+
             //             let j = pos_map[v];
 
             //             if j != usize::MAX && j > i {
             //                 let dist = (mids[j] - mids[i]).abs(); // f64
-                            
+
             //                 let log_dist = (dist + 1.0).ln() as f32;
 
             //                 score += contact * log_dist;
@@ -309,12 +318,13 @@ pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
             //     }
             // }
             for &(u, v, weight) in &matrix.flat_edges {
-              
                 if let (Some(&idx_u), Some(&idx_v)) = (pos_map.get(u), pos_map.get(v)) {
                     if idx_u != usize::MAX && idx_v != usize::MAX {
-                        let dist = (mids[idx_u] - mids[idx_v]).abs();
-                        
-                        let log_dist = (dist + 1.0).ln() as f32;
+                        let mut dist = (mids[idx_u] - mids[idx_v]).abs();
+                        if dist <= 1.0 {
+                            dist = 1.000001;
+                        }
+                        let log_dist = dist.ln();
                         score += weight * log_dist;
                     }
                 }
@@ -325,27 +335,27 @@ pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
         })
     });
 
-    // let final_score = if score.is_finite() { score } else { 0.0 };
-    
-    (score * 1000000.0) as isize
+    score
 }
 
+pub fn calculate_fitness(genes: &[usize], matrix: &ContactMatrix) -> isize {
+    (calculate_allhic_fitness(genes, matrix) * 1_000_000.0) as isize
+}
 
 pub fn calculate_cost(i: usize, j: usize, matrix: &ContactMatrix) -> f64 {
     let len_i = matrix.length_data.get(&i).unwrap_or(&1);
     let len_j = matrix.length_data.get(&j).unwrap_or(&1);
     let dist = (*len_i + *len_j) as f64 / 2.0;
     let log_dist = (dist + 1.0).ln();
-    
+
     let contact = matrix.get(i, j);
-    
+
     if log_dist > 1e-6 {
         contact / log_dist
     } else {
         contact * 1e4
     }
 }
-    
 
 pub fn two_opt_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_iterations: usize) {
     let n = genes.len();
@@ -354,7 +364,6 @@ pub fn two_opt_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_
     }
     log::info!("Starting 2-Opt optimization with {} contigs...", n);
 
-   
     let lengths: Vec<f64> = (0..matrix.num_contigs)
         .map(|i| *matrix.length_data.get(&i).unwrap_or(&1) as f64)
         .collect();
@@ -366,80 +375,104 @@ pub fn two_opt_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_
         improved = false;
         iterations += 1;
 
-        let best_move = (0..n - 2).into_par_iter().map(|i| {
-            let mut local_best_delta = 0.0;
-            let mut local_best_move = None;
+        let best_move = (0..n - 2)
+            .into_par_iter()
+            .map(|i| {
+                let mut local_best_delta = 0.0;
+                let mut local_best_move = None;
 
-            let n_i = genes[i];
-            let n_i1 = genes[i + 1];
+                let n_i = genes[i];
+                let n_i1 = genes[i + 1];
 
+                let w_i_i1 = matrix.get(n_i, n_i1);
+                let cost_i_i1 = if w_i_i1 > 0.0 {
+                    let dist = (lengths[n_i] + lengths[n_i1]) * 0.5;
+                    let log_dist = (dist + 1.0).ln();
+                    if log_dist > 1e-6 {
+                        w_i_i1 / log_dist
+                    } else {
+                        w_i_i1
+                    }
+                } else {
+                    0.0
+                };
 
-            let w_i_i1 = matrix.get(n_i, n_i1);
-            let cost_i_i1 = if w_i_i1 > 0.0 {
-                let dist = (lengths[n_i] + lengths[n_i1]) * 0.5;
-                let log_dist = (dist + 1.0).ln();
-                if log_dist > 1e-6 { w_i_i1 / log_dist } else { w_i_i1 }
-            } else {
-                0.0
-            };
+                for j in (i + 2)..n - 1 {
+                    let n_j = genes[j];
+                    let n_j1 = genes[j + 1];
 
-            for j in (i + 2)..n - 1 {
-                let n_j = genes[j];
-                let n_j1 = genes[j + 1];
+                    let w_i_j = matrix.get(n_i, n_j);
+                    let w_i1_j1 = matrix.get(n_i1, n_j1);
 
-                let w_i_j = matrix.get(n_i, n_j);
-                let w_i1_j1 = matrix.get(n_i1, n_j1);
+                    if w_i_j == 0.0 && w_i1_j1 == 0.0 {
+                        continue;
+                    }
 
-                if w_i_j == 0.0 && w_i1_j1 == 0.0 {
-                    continue;
+                    let cost_i_j = if w_i_j > 0.0 {
+                        let dist = (lengths[n_i] + lengths[n_j]) * 0.5;
+                        let log_dist = (dist + 1.0).ln();
+                        if log_dist > 1e-6 {
+                            w_i_j / log_dist
+                        } else {
+                            w_i_j
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    let cost_i1_j1 = if w_i1_j1 > 0.0 {
+                        let dist = (lengths[n_i1] + lengths[n_j1]) * 0.5;
+                        let log_dist = (dist + 1.0).ln();
+                        if log_dist > 1e-6 {
+                            w_i1_j1 / log_dist
+                        } else {
+                            w_i1_j1
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    let new_cost = cost_i_j + cost_i1_j1;
+
+                    let w_j_j1 = matrix.get(n_j, n_j1);
+                    let cost_j_j1 = if w_j_j1 > 0.0 {
+                        let dist = (lengths[n_j] + lengths[n_j1]) * 0.5;
+                        let log_dist = (dist + 1.0).ln();
+                        if log_dist > 1e-6 {
+                            w_j_j1 / log_dist
+                        } else {
+                            w_j_j1
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    let old_cost = cost_i_i1 + cost_j_j1;
+
+                    let delta = new_cost - old_cost;
+
+                    if delta > 0.0 && delta > local_best_delta {
+                        local_best_delta = delta;
+                        local_best_move = Some((delta, i, j));
+                    }
                 }
-
-                let cost_i_j = if w_i_j > 0.0 {
-                    let dist = (lengths[n_i] + lengths[n_j]) * 0.5;
-                    let log_dist = (dist + 1.0).ln();
-                    if log_dist > 1e-6 { w_i_j / log_dist } else { w_i_j }
-                } else { 0.0 };
-
-                let cost_i1_j1 = if w_i1_j1 > 0.0 {
-                    let dist = (lengths[n_i1] + lengths[n_j1]) * 0.5;
-                    let log_dist = (dist + 1.0).ln();
-                    if log_dist > 1e-6 { w_i1_j1 / log_dist } else { w_i1_j1 }
-                } else { 0.0 };
-
-                let new_cost = cost_i_j + cost_i1_j1;
-
-    
-                let w_j_j1 = matrix.get(n_j, n_j1);
-                let cost_j_j1 = if w_j_j1 > 0.0 {
-                    let dist = (lengths[n_j] + lengths[n_j1]) * 0.5;
-                    let log_dist = (dist + 1.0).ln();
-                    if log_dist > 1e-6 { w_j_j1 / log_dist } else { w_j_j1 }
-                } else { 0.0 };
-
-                let old_cost = cost_i_i1 + cost_j_j1;
-
-                let delta = new_cost - old_cost;
-
-                if delta > 0.0 && delta > local_best_delta {
-                    local_best_delta = delta;
-                    local_best_move = Some((delta, i, j));
-                }
-            }
-            local_best_move
-        })
-        .reduce(
-            || None,
-            |a, b| {
-                match (a, b) {
+                local_best_move
+            })
+            .reduce(
+                || None,
+                |a, b| match (a, b) {
                     (None, None) => None,
                     (Some(v), None) => Some(v),
                     (None, Some(v)) => Some(v),
                     (Some(va), Some(vb)) => {
-                        if va.0 > vb.0 { Some(va) } else { Some(vb) }
+                        if va.0 > vb.0 {
+                            Some(va)
+                        } else {
+                            Some(vb)
+                        }
                     }
-                }
-            }
-        );
+                },
+            );
 
         if let Some((_, best_i, best_j)) = best_move {
             genes[best_i + 1..=best_j].reverse();
@@ -448,10 +481,15 @@ pub fn two_opt_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_
     }
 }
 
-
-pub fn block_move_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_iterations: usize) {
+pub fn block_move_optimization(
+    genes: &mut Vec<usize>,
+    matrix: &ContactMatrix,
+    max_iterations: usize,
+) {
     let n = genes.len();
-    if n < 3 { return; }
+    if n < 3 {
+        return;
+    }
     log::info!("Starting Block-Move optimization with {} contigs...", n);
 
     let lengths: Vec<f64> = (0..matrix.num_contigs)
@@ -460,10 +498,12 @@ pub fn block_move_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, m
 
     let mut improved = true;
     let mut iterations = 0;
-    
+
     let get_cost = |i: usize, j: usize| -> f64 {
         let w = matrix.get(i, j);
-        if w <= 0.0 { return 0.0; }
+        if w <= 0.0 {
+            return 0.0;
+        }
         let dist = (lengths[i] + lengths[j]) * 0.5;
         let log_dist = (dist + 1.0).ln();
         if log_dist > 1e-6 { w / log_dist } else { w }
@@ -473,85 +513,107 @@ pub fn block_move_optimization(genes: &mut Vec<usize>, matrix: &ContactMatrix, m
         improved = false;
         iterations += 1;
 
-        let best_move = (0..n).into_par_iter().map(|i| {
-            let mut local_best = None;
-            let mut local_max_delta = 0.0;
-            
-            for j in i..n {
+        let best_move = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut local_best = None;
+                let mut local_max_delta = 0.0;
 
-                if i == 0 && j == n - 1 { continue; }
-                
-                let n_i = genes[i];
-                let n_j = genes[j];
-                
-                let n_prev = if i > 0 { Some(genes[i-1]) } else { None };
-                let n_next = if j < n - 1 { Some(genes[j+1]) } else { None };
-     
-                let mut current_edges_cost = 0.0;
-                if let Some(p) = n_prev { current_edges_cost += get_cost(p, n_i); }
-                if let Some(nx) = n_next { current_edges_cost += get_cost(n_j, nx); }
-                
-               
-                for k_idx in 0..=n {
-       
-                    if k_idx >= i && k_idx <= j + 1 { continue; }
-                    
-                    let target_prev = if k_idx > 0 { Some(genes[k_idx-1]) } else { None };
-                    let target_next = if k_idx < n { Some(genes[k_idx]) } else { None };
-                    
-                    let mut target_edges_cost = 0.0;
-                    if let (Some(tp), Some(tn)) = (target_prev, target_next) {
-                        target_edges_cost += get_cost(tp, tn);
+                for j in i..n {
+                    if i == 0 && j == n - 1 {
+                        continue;
                     }
 
-                    let mut new_edges_cost = 0.0;
+                    let n_i = genes[i];
+                    let n_j = genes[j];
 
-                    if let (Some(p), Some(nx)) = (n_prev, n_next) {
-                        new_edges_cost += get_cost(p, nx);
+                    let n_prev = if i > 0 { Some(genes[i - 1]) } else { None };
+                    let n_next = if j < n - 1 { Some(genes[j + 1]) } else { None };
+
+                    let mut current_edges_cost = 0.0;
+                    if let Some(p) = n_prev {
+                        current_edges_cost += get_cost(p, n_i);
                     }
-                    
-                    if let Some(tp) = target_prev {
-                        new_edges_cost += get_cost(tp, n_i);
+                    if let Some(nx) = n_next {
+                        current_edges_cost += get_cost(n_j, nx);
                     }
-                    if let Some(tn) = target_next {
-                        new_edges_cost += get_cost(n_j, tn);
-                    }
-                    
-                    let delta = new_edges_cost - (current_edges_cost + target_edges_cost);
-                    
-                    if delta > 1e-9 && delta > local_max_delta {
-                        local_max_delta = delta;
-                        local_best = Some((delta, i, j, k_idx));
+
+                    for k_idx in 0..=n {
+                        if k_idx >= i && k_idx <= j + 1 {
+                            continue;
+                        }
+
+                        let target_prev = if k_idx > 0 {
+                            Some(genes[k_idx - 1])
+                        } else {
+                            None
+                        };
+                        let target_next = if k_idx < n { Some(genes[k_idx]) } else { None };
+
+                        let mut target_edges_cost = 0.0;
+                        if let (Some(tp), Some(tn)) = (target_prev, target_next) {
+                            target_edges_cost += get_cost(tp, tn);
+                        }
+
+                        let mut new_edges_cost = 0.0;
+
+                        if let (Some(p), Some(nx)) = (n_prev, n_next) {
+                            new_edges_cost += get_cost(p, nx);
+                        }
+
+                        if let Some(tp) = target_prev {
+                            new_edges_cost += get_cost(tp, n_i);
+                        }
+                        if let Some(tn) = target_next {
+                            new_edges_cost += get_cost(n_j, tn);
+                        }
+
+                        let delta = new_edges_cost - (current_edges_cost + target_edges_cost);
+
+                        if delta > 1e-9 && delta > local_max_delta {
+                            local_max_delta = delta;
+                            local_best = Some((delta, i, j, k_idx));
+                        }
                     }
                 }
-            }
-            local_best
-        }).reduce(|| None, |a, b| {
-            match (a, b) {
-                (None, None) => None,
-                (Some(v), None) => Some(v),
-                (None, Some(v)) => Some(v),
-                (Some(va), Some(vb)) => if va.0 > vb.0 { Some(va) } else { Some(vb) },
-            }
-        });
-        
+                local_best
+            })
+            .reduce(
+                || None,
+                |a, b| match (a, b) {
+                    (None, None) => None,
+                    (Some(v), None) => Some(v),
+                    (None, Some(v)) => Some(v),
+                    (Some(va), Some(vb)) => {
+                        if va.0 > vb.0 {
+                            Some(va)
+                        } else {
+                            Some(vb)
+                        }
+                    }
+                },
+            );
+
         if let Some((_, best_i, best_j, best_k)) = best_move {
             let block: Vec<_> = genes.drain(best_i..=best_j).collect();
-            
+
             let insert_idx = if best_k > best_i {
                 best_k - (best_j - best_i + 1)
             } else {
                 best_k
             };
-            
+
             genes.splice(insert_idx..insert_idx, block);
             improved = true;
         }
     }
 }
 
-
-pub fn two_opt_optimization_fitness(genes: &mut Vec<usize>, matrix: &ContactMatrix, max_iterations: usize) {
+pub fn two_opt_optimization_fitness(
+    genes: &mut Vec<usize>,
+    matrix: &ContactMatrix,
+    max_iterations: usize,
+) {
     let n = genes.len();
     let mut improved = true;
     let mut iterations = 0;
@@ -562,42 +624,44 @@ pub fn two_opt_optimization_fitness(genes: &mut Vec<usize>, matrix: &ContactMatr
         improved = false;
         iterations += 1;
 
-        let best_move = (0..n - 1).into_par_iter().map(|i| {
-            let mut local_best_diff = 0;
-            let mut local_best_j = 0;
-            
-            
-            let mut best_move_for_i = None;
-            let mut max_score_for_i = -1.0; 
+        let best_move = (0..n - 1)
+            .into_par_iter()
+            .map(|i| {
+                let mut local_best_diff = 0;
+                let mut local_best_j = 0;
 
-            for j in i + 1..n {
-                
-                let mut new_genes = genes.clone();
-                new_genes[i..=j].reverse();
-                let new_score = calculate_fitness(&new_genes, &matrix);
-                
-                if new_score > current_score {
-                    if new_score > max_score_for_i as isize {
-                        max_score_for_i = new_score as f64;
-                        best_move_for_i = Some((i, j, new_score));
+                let mut best_move_for_i = None;
+                let mut max_score_for_i = -1.0;
+
+                for j in i + 1..n {
+                    let mut new_genes = genes.clone();
+                    new_genes[i..=j].reverse();
+                    let new_score = calculate_fitness(&new_genes, &matrix);
+
+                    if new_score > current_score {
+                        if new_score > max_score_for_i as isize {
+                            max_score_for_i = new_score as f64;
+                            best_move_for_i = Some((i, j, new_score));
+                        }
                     }
                 }
-            }
-            best_move_for_i
-        })
-        .reduce(
-            || None,
-            |a, b| {
-                match (a, b) {
+                best_move_for_i
+            })
+            .reduce(
+                || None,
+                |a, b| match (a, b) {
                     (Some((_, _, score_a)), Some((_, _, score_b))) => {
-                        if score_a > score_b { a } else { b }
+                        if score_a > score_b {
+                            a
+                        } else {
+                            b
+                        }
                     }
                     (Some(_), None) => a,
                     (None, Some(_)) => b,
                     (None, None) => None,
-                }
-            }
-        );
+                },
+            );
 
         if let Some((best_i, best_j, best_new_score)) = best_move {
             if best_new_score > current_score {
@@ -608,7 +672,6 @@ pub fn two_opt_optimization_fitness(genes: &mut Vec<usize>, matrix: &ContactMatr
         }
     }
 }
-
 
 pub fn run_lkh_optimizer(
     tour: &Tour,
@@ -621,7 +684,7 @@ pub fn run_lkh_optimizer(
     let num_contigs = contigsizes.len();
     log::info!("Starting LKH optimization with {} contigs...", num_contigs);
 
-    // filter contigsizes by length 
+    // filter contigsizes by length
     // let min_length = 20000;
     // let contigsizes: IndexMap<usize, usize> = contigsizes.iter()
     //     .filter(|&(_, &size)| size >= min_length)
@@ -639,16 +702,19 @@ pub fn run_lkh_optimizer(
 
     let dim = num_contigs + 1;
     let mut dist_matrix = vec![vec![0; dim]; dim];
-    
+
     // Scale factor for distance normalization
     const SCALE_FACTOR: f64 = 100_000.0;
     // Maximum distance for no-contact pairs
-    const MAX_DIST: u32 = 10_000_000; 
+    const MAX_DIST: u32 = 10_000_000;
 
     let mut max_weights = vec![1.0; num_contigs];
     for (u, neighbors) in contacts.iter().enumerate() {
         if let Some(&u_idx) = id_to_idx.get(&u) {
-            let max_w = neighbors.values().cloned().fold(0u32, |a, b| a.max(b as u32));
+            let max_w = neighbors
+                .values()
+                .cloned()
+                .fold(0u32, |a, b| a.max(b as u32));
             max_weights[u_idx] = max_w as f64;
         }
     }
@@ -658,27 +724,27 @@ pub fn run_lkh_optimizer(
             let length_u = *contigsizes_idx.get(&u_idx).unwrap_or(&1) as f64;
             for (&v, &weight) in neighbors {
                 if let Some(&v_idx) = id_to_idx.get(&v) {
-                    if u_idx == v_idx { continue; }
-                    
-                    
+                    if u_idx == v_idx {
+                        continue;
+                    }
+
                     // let w = weight as f64;
                     // let score_u = w / max_weights[u_idx];
                     // let score_v = w / max_weights[v_idx];
 
                     // let combined_score = (score_u * score_v).sqrt();
-                    
-    
+
                     // let dist_val = (1.0 - combined_score.powf(0.5)) * SCALE_FACTOR;
-                    
+
                     // let dist = dist_val.max(1.0) as u32;
                     let length_v = *contigsizes_idx.get(&v_idx).unwrap_or(&1) as f64;
                     let w = weight as f64;
 
                     let density = w / (length_u + length_v);
-                    
+
                     let dist_val = SCALE_FACTOR / (1.0 + 5.0 * 1e5 * density);
                     let dist = dist_val.max(1.0).min(SCALE_FACTOR) as u32;
-                   
+
                     dist_matrix[u_idx][v_idx] = dist;
                     dist_matrix[v_idx][u_idx] = dist;
                 }
@@ -690,8 +756,8 @@ pub fn run_lkh_optimizer(
         dist_matrix[num_contigs][i] = 0;
         dist_matrix[i][num_contigs] = 0;
     }
-    
-    // To ensure symmetry and handle missing edges    
+
+    // To ensure symmetry and handle missing edges
     for i in 0..num_contigs {
         for j in (i + 1)..num_contigs {
             if dist_matrix[i][j] == 0 {
@@ -703,10 +769,9 @@ pub fn run_lkh_optimizer(
 
     let contig_dist_matrix = DistanceMatrix::new(dist_matrix);
 
-
     log::info!("Ordering with LKH...");
     let mut results = contig_dist_matrix.solve(iterations);
-    
+
     let dummy_idx = num_contigs;
 
     let dummy_position = results.iter().position(|&x| x == dummy_idx).unwrap_or(0);
@@ -714,53 +779,67 @@ pub fn run_lkh_optimizer(
 
     results.rotate_left(dummy_position);
 
-    let mut raw_indices: Vec<usize> = results.into_par_iter()
+    let mut raw_indices: Vec<usize> = results
+        .into_par_iter()
         .filter(|&x| x < num_contigs)
         .collect();
 
-    let best_ordered_ids = raw_indices.iter().cloned().map(|idx| idx_to_id[idx]).collect::<Vec<usize>>();
-    log::info!("Raw ordering LKH score: {}", calculate_fitness(&best_ordered_ids, matrix));
+    let best_ordered_ids = raw_indices
+        .iter()
+        .cloned()
+        .map(|idx| idx_to_id[idx])
+        .collect::<Vec<usize>>();
+    log::info!(
+        "Raw ordering LKH score: {}",
+        calculate_fitness(&best_ordered_ids, matrix)
+    );
 
-    let (best_ordered_ids, best_score) = (0..num_contigs).into_par_iter().flat_map(|i| {
-        let mut candidates = Vec::with_capacity(4);
+    let (best_ordered_ids, best_score) = (0..num_contigs)
+        .into_par_iter()
+        .flat_map(|i| {
+            let mut candidates = Vec::with_capacity(4);
 
-        let mut rot = raw_indices.clone();
-        rot.rotate_left(i);
-        candidates.push(rot);
+            let mut rot = raw_indices.clone();
+            rot.rotate_left(i);
+            candidates.push(rot);
 
-        let mut global_rev = raw_indices.clone();
-        global_rev.reverse();
-        global_rev.rotate_left(i);
-        candidates.push(global_rev);
+            let mut global_rev = raw_indices.clone();
+            global_rev.reverse();
+            global_rev.rotate_left(i);
+            candidates.push(global_rev);
 
-        let mut rev_suffix = raw_indices.clone();
-        rev_suffix[i..].reverse();
-        rev_suffix.rotate_left(i);
-        candidates.push(rev_suffix);
+            let mut rev_suffix = raw_indices.clone();
+            rev_suffix[i..].reverse();
+            rev_suffix.rotate_left(i);
+            candidates.push(rev_suffix);
 
-        let mut rev_prefix = raw_indices.clone();
-        rev_prefix[..=i].reverse();
-        if i + 1 < num_contigs {
-            rev_prefix.rotate_left(i + 1);
-            candidates.push(rev_prefix);
-        } else {
-            candidates.push(rev_prefix);
-        }
+            let mut rev_prefix = raw_indices.clone();
+            rev_prefix[..=i].reverse();
+            if i + 1 < num_contigs {
+                rev_prefix.rotate_left(i + 1);
+                candidates.push(rev_prefix);
+            } else {
+                candidates.push(rev_prefix);
+            }
 
-        candidates.into_iter().map(|indices| {
-            let ordered_ids: Vec<usize> = indices.iter().map(|&idx| idx_to_id[idx]).collect();
-            let score = calculate_fitness(&ordered_ids, matrix);
-            (ordered_ids, score)
-        }).collect::<Vec<_>>() 
-        
-    }).min_by_key(|&(_, score)| score)
-    .unwrap();
+            candidates
+                .into_iter()
+                .map(|indices| {
+                    let ordered_ids: Vec<usize> =
+                        indices.iter().map(|&idx| idx_to_id[idx]).collect();
+                    let score = calculate_fitness(&ordered_ids, matrix);
+                    (ordered_ids, score)
+                })
+                .collect::<Vec<_>>()
+        })
+        .min_by_key(|&(_, score)| score)
+        .unwrap();
 
     log::info!("Best LKH score: {}", best_score);
 
     let mut optimized_order = best_ordered_ids;
     log::info!("LKH optimization finished.");
-   
+
     Tour {
         contigs: optimized_order,
         signs: tour.signs.clone(),
@@ -770,14 +849,18 @@ pub fn run_lkh_optimizer(
 pub fn run_lkh_optimizer_dual_node(
     tour: &Tour,
     contigsizes: IndexMap<usize, usize>,
-    matrix: &ContactMatrix, 
-    split_contacts: &crate::splitcontacts::SplitContacts, 
+    matrix: &ContactMatrix,
+    split_contacts: &crate::splitcontacts::SplitContacts,
     contig2idx: &HashMap<String, usize>,
     iterations: usize,
     seed: u64,
 ) -> Tour {
     let num_contigs = contigsizes.len();
-    log::info!("Starting LKH Dual-Node optimization with {} contigs ({} nodes)...", num_contigs, num_contigs * 2);
+    log::info!(
+        "Starting LKH Dual-Node optimization with {} contigs ({} nodes)...",
+        num_contigs,
+        num_contigs * 2
+    );
 
     let mut id_to_idx = HashMap::new();
     let mut idx_to_id = Vec::with_capacity(num_contigs);
@@ -789,11 +872,11 @@ pub fn run_lkh_optimizer_dual_node(
     let num_nodes = 2 * num_contigs;
     let dim = num_nodes + 1;
     let mut dist_matrix = vec![vec![0; dim]; dim];
-    
+
     const SCALE_FACTOR: f64 = 1_000.0;
-    const BASE_OFFSET: u32 = 2_000; 
-    const MAX_DIST: u32 = 100_000; 
-    const INTERNAL_DIST: u32 = 1; 
+    const BASE_OFFSET: u32 = 2_000;
+    const MAX_DIST: u32 = 100_000;
+    const INTERNAL_DIST: u32 = 1;
 
     for i in 0..dim {
         for j in 0..dim {
@@ -814,9 +897,15 @@ pub fn run_lkh_optimizer_dual_node(
         let c1_name = &pair.Contig1;
         let c2_name = &pair.Contig2;
 
-        if let (Some(&u_orig_idx), Some(&v_orig_idx)) = (contig2idx.get(c1_name), contig2idx.get(c2_name)) {
-            if let (Some(&u_idx), Some(&v_idx)) = (id_to_idx.get(&u_orig_idx), id_to_idx.get(&v_orig_idx)) {
-                if u_idx == v_idx { continue; }
+        if let (Some(&u_orig_idx), Some(&v_orig_idx)) =
+            (contig2idx.get(c1_name), contig2idx.get(c2_name))
+        {
+            if let (Some(&u_idx), Some(&v_idx)) =
+                (id_to_idx.get(&u_orig_idx), id_to_idx.get(&v_orig_idx))
+            {
+                if u_idx == v_idx {
+                    continue;
+                }
 
                 let u_head = 2 * u_idx;
                 let u_tail = 2 * u_idx + 1;
@@ -875,7 +964,6 @@ pub fn run_lkh_optimizer_dual_node(
                     dist_matrix[u_tail][v_tail] = d_tt;
                     dist_matrix[v_tail][u_tail] = d_tt;
                 }
-               
             }
         }
     }
@@ -892,7 +980,7 @@ pub fn run_lkh_optimizer_dual_node(
 
     let dummy_pos = results.iter().position(|&x| x == dummy_idx).unwrap();
     results.rotate_left(dummy_pos);
-    
+
     let path: Vec<usize> = results.into_iter().filter(|&x| x != dummy_idx).collect();
 
     let mut optimized_order = Vec::with_capacity(num_contigs);
@@ -902,8 +990,8 @@ pub fn run_lkh_optimizer_dual_node(
     let mut i = 0;
     while i < path.len() - 1 {
         let n1 = path[i];
-        let n2 = path[i+1];
-        
+        let n2 = path[i + 1];
+
         let c1 = n1 / 2;
         let c2 = n2 / 2;
 
@@ -923,7 +1011,7 @@ pub fn run_lkh_optimizer_dual_node(
             if !visited[c1] {
                 optimized_order.push(idx_to_id[c1]);
                 visited[c1] = true;
-                optimized_signs.push(true); 
+                optimized_signs.push(true);
             }
             i += 1;
         }
@@ -954,7 +1042,9 @@ pub fn run_lkh_optimizer_dual_node(
         orig_index_map.insert(id, idx);
     }
 
-    let mapped_indices: Vec<usize> = final_tour.contigs.iter()
+    let mapped_indices: Vec<usize> = final_tour
+        .contigs
+        .iter()
         .map(|id| *orig_index_map.get(id).unwrap_or(&0))
         .collect();
 
@@ -969,7 +1059,9 @@ pub fn run_lkh_optimizer_dual_node(
     }
 
     if decreases > increases {
-        log::info!("Detected LKH reverse traversal. Reversing tour to restore correct order and signs...");
+        log::info!(
+            "Detected LKH reverse traversal. Reversing tour to restore correct order and signs..."
+        );
         final_tour.reverse();
     }
 
@@ -978,14 +1070,12 @@ pub fn run_lkh_optimizer_dual_node(
     final_tour
 }
 
-
-
 #[derive(Clone, Debug)]
 pub struct MyMutation<G: EvolveGenotype> {
     _phantom: PhantomData<G>,
     pub initial_mutation_rate: f32,
     pub max_mutation_rate: f32,
-    pub growth_step: f32, 
+    pub growth_step: f32,
 }
 
 impl<G: EvolveGenotype> MyMutation<G> {
@@ -999,7 +1089,6 @@ impl<G: EvolveGenotype> MyMutation<G> {
     }
 }
 
-
 impl<G: EvolveGenotype> Mutate for MyMutation<G> {
     type Genotype = G;
 
@@ -1007,8 +1096,8 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
         &mut self,
         _genotype: &G,
         state: &mut EvolveState<G>,
-        _config: &EvolveConfig, 
-        _reporter: &mut SR,    
+        _config: &EvolveConfig,
+        _reporter: &mut SR,
         rng: &mut R,
     ) {
         let now = Instant::now();
@@ -1018,10 +1107,9 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
         let current_prob = if growth_step <= 0.0 {
             self.initial_mutation_rate
         } else {
-            let steps = generation / 10000; 
+            let steps = generation / 10000;
             let max_rate = self.max_mutation_rate;
-            (self.initial_mutation_rate + (steps as f32 * growth_step))
-                .min(max_rate)
+            (self.initial_mutation_rate + (steps as f32 * growth_step)).min(max_rate)
         };
 
         let random_two_int = |rng: &mut R, len: usize| -> (usize, usize) {
@@ -1035,24 +1123,30 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
             }
             (i, j)
         };
-   
 
-        for chromosome in state.population.chromosomes.iter_mut().filter(|c| c.is_offspring()) {
+        for chromosome in state
+            .population
+            .chromosomes
+            .iter_mut()
+            .filter(|c| c.is_offspring())
+        {
             if !rng.gen_bool(current_prob as f64) {
                 continue;
             }
 
             let genes = &mut chromosome.genes;
             let len = genes.len();
-            if len < 2 { continue; }
+            if len < 2 {
+                continue;
+            }
 
             let strategy: f64 = rng.r#gen();
-            
 
             let i = rng.gen_range(0..len);
             let mut j = rng.gen_range(0..len - 1);
-            if j >= i { j += 1; } 
-            
+            if j >= i {
+                j += 1;
+            }
 
             let (min_idx, max_idx) = if i < j { (i, j) } else { (j, i) };
 
@@ -1060,11 +1154,11 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
                 genes.swap(i, j);
             } else if strategy < 0.4 {
                 let k = rng.gen_range(1..len);
-                genes.rotate_left(k); 
+                genes.rotate_left(k);
             // } else if strategy < 0.55 {
-            //     if len < 4 { 
+            //     if len < 4 {
             //         genes[min_idx..=max_idx].reverse();
-            //         continue; 
+            //         continue;
             //     }
             //     let k = rng.gen_range(0..len);
             //     let mut cuts = [min_idx, max_idx, k];
@@ -1082,7 +1176,6 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
             //     } else {
             //         genes[min_idx..=max_idx].reverse();
             //     }
-
             } else if strategy < 0.70 {
                 if i < j {
                     genes[i..=j].rotate_left(1);
@@ -1099,20 +1192,17 @@ impl<G: EvolveGenotype> Mutate for MyMutation<G> {
             } else {
                 genes[min_idx..=max_idx].reverse();
             }
-            
+
             chromosome.fitness_score = None;
         }
-      
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub struct MyTournament<G: EvolveGenotype> {
     _phantom: PhantomData<G>,
     pub tournament_size: usize,
-} 
-
+}
 
 impl<G: EvolveGenotype> Select for MyTournament<G> {
     type Genotype = G;
@@ -1127,7 +1217,7 @@ impl<G: EvolveGenotype> Select for MyTournament<G> {
     ) {
         let now = Instant::now();
         let target_population_size = config.target_population_size;
-     
+
         let mut chromosomes = std::mem::take(&mut state.population.chromosomes);
 
         self.selection::<R>(
@@ -1144,8 +1234,6 @@ impl<G: EvolveGenotype> Select for MyTournament<G> {
     }
 }
 
-
-
 impl<G: EvolveGenotype> MyTournament<G> {
     pub fn new(tournament_size: usize) -> Self {
         Self {
@@ -1153,7 +1241,6 @@ impl<G: EvolveGenotype> MyTournament<G> {
             tournament_size,
         }
     }
-
 
     pub fn selection<R: Rng>(
         &self,
@@ -1224,7 +1311,6 @@ impl<G: EvolveGenotype> MyTournament<G> {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub enum Wrapper<G: EvolveGenotype> {
     Elite(SelectElite<G>),
@@ -1278,15 +1364,11 @@ impl<G: EvolveGenotype> From<SelectTournament<G>> for Wrapper<G> {
     }
 }
 
-
 impl<G: EvolveGenotype> From<MyTournament<G>> for Wrapper<G> {
     fn from(select: MyTournament<G>) -> Self {
         Wrapper::MyTournament(select)
     }
 }
-
-
-
 
 #[derive(Clone)]
 pub struct Simple<G: EvolveGenotype> {
@@ -1346,7 +1428,6 @@ impl<G: EvolveGenotype> StrategyReporter for Simple<G> {
         state: &S,
         config: &C,
     ) {
-      
     }
 
     fn on_selection_complete<S: StrategyState<Self::Genotype>, C: StrategyConfig>(
@@ -1356,18 +1437,14 @@ impl<G: EvolveGenotype> StrategyReporter for Simple<G> {
         config: &C,
     ) {
         if state.current_generation() % self.period == 0 {
-            log::info!("Current generation {}; best fitness score: {:.6?}",
+            log::info!(
+                "Current generation {}; best fitness score: {:.6?}",
                 state.current_generation(),
                 state.best_fitness_score().unwrap()
             );
-
-        
         }
     }
-
-
 }
-
 
 #[derive(Clone, Debug)]
 pub struct MyOX1Crossover {
@@ -1380,7 +1457,6 @@ impl MyOX1Crossover {
     }
 }
 
-
 impl Crossover for MyOX1Crossover {
     type Genotype = UniqueGenotype;
 
@@ -1392,7 +1468,6 @@ impl Crossover for MyOX1Crossover {
         _reporter: &mut SR,
         rng: &mut R,
     ) {
-
         let mut parent_indices: Vec<usize> = (0..state.population.size()).collect();
 
         let pop_size = state.population.size();
@@ -1403,7 +1478,6 @@ impl Crossover for MyOX1Crossover {
 
         for chunk in parent_indices.chunks(2) {
             if chunk.len() < 2 {
-
                 let p1 = &state.population.chromosomes[chunk[0]];
                 new_chromosomes.push(p1.clone());
                 continue;
@@ -1422,12 +1496,13 @@ impl Crossover for MyOX1Crossover {
             let p1 = &state.population.chromosomes[p1_idx];
             let p2 = &state.population.chromosomes[p2_idx];
 
-
             let n = p1.genes.len();
- 
+
             let mut i = rng.gen_range(0..n);
             let mut j = rng.gen_range(0..n);
-            if i > j { std::mem::swap(&mut i, &mut j); }
+            if i > j {
+                std::mem::swap(&mut i, &mut j);
+            }
 
             if i == j || (i == 0 && j == n - 1) {
                 new_chromosomes.push(p1.clone());
@@ -1436,14 +1511,15 @@ impl Crossover for MyOX1Crossover {
             }
             let create_child = |parent_a: &Vec<usize>, parent_b: &Vec<usize>| -> Vec<usize> {
                 let mut child = vec![usize::MAX; n];
-                let mut used = vec![false; n]; 
+                let mut used = vec![false; n];
                 for k in i..=j {
                     let gene = parent_a[k];
                     child[k] = gene;
-                    if gene < n { used[gene] = true; }
+                    if gene < n {
+                        used[gene] = true;
+                    }
                 }
 
-               
                 let mut child_idx = (j + 1) % n;
                 for k in 0..n {
                     let b_idx = (j + 1 + k) % n;
@@ -1460,9 +1536,9 @@ impl Crossover for MyOX1Crossover {
             let c1_genes = create_child(&p1.genes, &p2.genes);
             let c2_genes = create_child(&p2.genes, &p1.genes);
 
-            let mut c1 = p1.clone(); 
+            let mut c1 = p1.clone();
             c1.genes = c1_genes;
-            c1.fitness_score = None; 
+            c1.fitness_score = None;
 
             let mut c2 = p2.clone();
             c2.genes = c2_genes;
@@ -1470,28 +1546,23 @@ impl Crossover for MyOX1Crossover {
 
             new_chromosomes.push(c1);
             new_chromosomes.push(c2);
-
         }
-
 
         state.population.chromosomes = new_chromosomes;
     }
 }
 
-
 pub fn run_evolove_optimizer(
     tour: &Tour,
     contigsizes: IndexMap<usize, usize>,
-    contacts: Vec<HashMap<usize, u32>>, 
+    contacts: Vec<HashMap<usize, u32>>,
     mutation_rate: f64,
-    population_size: usize, 
+    population_size: usize,
     generations: usize,
     round: usize,
     resume: bool,
     seed: u64,
 ) -> Tour {
-
-    
     let mut sizes: Vec<usize> = Vec::with_capacity(contigsizes.len());
     let mut initial_genes: Vec<usize> = Vec::with_capacity(contigsizes.len());
     for i in tour.clone().into_iter() {
@@ -1501,7 +1572,7 @@ pub fn run_evolove_optimizer(
 
     let matrix = ContactMatrix::new(&contigsizes, contacts);
     let num_contigs = matrix.num_contigs;
-    
+
     let mut best_genes = initial_genes.clone();
     let mut best_fitness_score = 0.0;
     if !resume {
@@ -1509,8 +1580,12 @@ pub fn run_evolove_optimizer(
     }
     best_fitness_score = calculate_fitness(&initial_genes, &matrix) as f64;
     for round_idx in 0..round {
-        if round > 1{
-            log::info!("Starting optimization round {} with score: {:.2}", round_idx + 1, best_fitness_score);
+        if round > 1 {
+            log::info!(
+                "Starting optimization round {} with score: {:.2}",
+                round_idx + 1,
+                best_fitness_score
+            );
         } else {
             log::info!("Genetic Algorithm Optimization started.");
             log::info!("Generation-0, score: {:.2}", best_fitness_score);
@@ -1522,10 +1597,13 @@ pub fn run_evolove_optimizer(
             .with_chromosome_recycling(false)
             .build()
             .unwrap();
-  
+
+        // genetic_algorithm cycles the seed list to the requested population
+        // size. A single seed therefore clones the same initial tour across
+        // the whole population, matching ALLHiC's MakeTour behavior.
         genotype.set_seed_genes_list(vec![initial_genes]);
         // let mut seed_population = vec![initial_genes.clone()];
-        
+
         // let num_perturbed = (population_size as f64 * 0.5) as usize;
         // let mut rng = SmallRng::seed_from_u64(seed + round_idx as u64); // 确保每轮扰动不同
 
@@ -1547,61 +1625,70 @@ pub fn run_evolove_optimizer(
         //     seed_population.push(perturbed_genes);
         // }
 
-
         // genotype.set_seed_genes_list(seed_population);
-    
-    
+
         let mut evolve = Evolve::builder()
-                .with_genotype(genotype)
-                .with_target_population_size(population_size)
-                .with_max_stale_generations(generations) 
-                .with_max_generations(1000_000_000)      
-                .with_par_fitness(true)    
-                .with_target_fitness_score(isize::MIN) 
-                .with_fitness_ordering(FitnessOrdering::Minimize)   
-                .with_crossover(CrossoverClone::new(1.0))
-                // .with_crossover(DirectlyClone::new())
-                .with_mutate(MyMutation::new(mutation_rate as f32, 0.9, 0.0))
-                .with_fitness(fitness)
-                .with_select(MyTournament::new(3))
-                .with_reporter(Simple::new(500))
-                .with_rng_seed_from_u64(seed)   
-                // .with_replace_on_equal_fitness(true)
-                // .with_select(SelectTournament::new(0.4, 0.02, 3)) 
-                // .with_extension(ExtensionMassExtinction::new(10, 0.05, 0.2))
-                // .with_max_chromosome_age(10) 
-                // .with_crossover(MyOX1Crossover::new(0.5))
-                // .with_valid_fitness_score(10)             
-                // .with_reporter(EvolveReporterSimple::new(500)) 
-                // .with_target_fitness_score(isize::MIN) 
-                .build()
-                .unwrap();
+            .with_genotype(genotype)
+            .with_target_population_size(population_size)
+            .with_max_stale_generations(generations)
+            .with_max_generations(1000_000_000)
+            .with_par_fitness(true)
+            .with_target_fitness_score(isize::MIN)
+            .with_fitness_ordering(FitnessOrdering::Minimize)
+            .with_crossover(CrossoverClone::new(1.0))
+            // .with_crossover(DirectlyClone::new())
+            .with_mutate(MyMutation::new(mutation_rate as f32, 0.9, 0.0))
+            .with_fitness(fitness)
+            .with_select(MyTournament::new(3))
+            .with_reporter(Simple::new(500))
+            .with_rng_seed_from_u64(seed)
+            // .with_replace_on_equal_fitness(true)
+            // .with_select(SelectTournament::new(0.4, 0.02, 3))
+            // .with_extension(ExtensionMassExtinction::new(10, 0.05, 0.2))
+            // .with_max_chromosome_age(10)
+            // .with_crossover(MyOX1Crossover::new(0.5))
+            // .with_valid_fitness_score(10)
+            // .with_reporter(EvolveReporterSimple::new(500))
+            // .with_target_fitness_score(isize::MIN)
+            .build()
+            .unwrap();
 
         evolve.call();
 
         let current_generation = evolve.state.current_generation();
-        
+
         let best_chromosome = evolve.best_chromosome().unwrap();
         best_genes = best_chromosome.genes;
 
         best_fitness_score = best_chromosome.fitness_score.unwrap() as f64;
-        if round > 1{
-            log::info!("Round {} finished. Best Score: {:.2}", round_idx + 1, best_fitness_score);
+        if round > 1 {
+            log::info!(
+                "Round {} finished. Best Score: {:.2}",
+                round_idx + 1,
+                best_fitness_score
+            );
         } else {
-            log::info!("Generation-{}, score: {:.2}", current_generation, best_fitness_score);
-
+            log::info!(
+                "Generation-{}, score: {:.2}",
+                current_generation,
+                best_fitness_score
+            );
         }
         initial_genes = best_genes.clone();
     }
 
-    log::info!("Optimization finished. Best Score: {:.4}", best_fitness_score);
+    log::info!(
+        "Optimization finished. Best Score: {:.4}",
+        best_fitness_score
+    );
 
     let mut sign_map = HashMap::with_capacity(tour.contigs.len());
     for (i, &id) in tour.contigs.iter().enumerate() {
         sign_map.insert(id, tour.signs[i]);
     }
 
-    let final_signs: Vec<bool> = best_genes.iter()
+    let final_signs: Vec<bool> = best_genes
+        .iter()
         .map(|&id| *sign_map.get(&id).unwrap_or(&true))
         .collect();
 
@@ -1611,39 +1698,38 @@ pub fn run_evolove_optimizer(
     }
 }
 
-
 pub fn run_hill_climbing(
     contigsizes: IndexMap<usize, usize>,
-    contacts: Vec<HashMap<usize, u32>>, 
+    contacts: Vec<HashMap<usize, u32>>,
     mutation_rate: f64,
-    population_size: usize, 
+    population_size: usize,
     generations: usize,
     round: usize,
     resume: bool,
     seed: u64,
 ) -> Tour {
-
-   
     let mut initial_genes: Vec<usize> = Vec::with_capacity(contigsizes.len());
     for i in contigsizes.keys() {
-        
         initial_genes.push(*i);
     }
 
     let matrix = ContactMatrix::new(&contigsizes, contacts);
     let num_contigs = matrix.num_contigs;
-    
-    
+
     let mut best_genes = initial_genes.clone();
     let mut best_fitness_score = 0.0;
     if !resume {
         initial_genes.shuffle(&mut SmallRng::seed_from_u64(seed));
     }
     best_fitness_score = calculate_fitness(&initial_genes, &matrix) as f64;
-    
+
     for round_idx in 0..round {
         if round > 1 {
-            log::info!("Starting optimization round {} with score: {:.2}", round_idx + 1, best_fitness_score);
+            log::info!(
+                "Starting optimization round {} with score: {:.2}",
+                round_idx + 1,
+                best_fitness_score
+            );
         } else {
             log::info!("Hill Climbing Optimization started.");
             log::info!("Generation-0, score: {:.2}", best_fitness_score);
@@ -1667,7 +1753,7 @@ pub fn run_hill_climbing(
             .with_fitness_ordering(FitnessOrdering::Minimize)
             // .with_reporter(HillClimbReporterSimple::new(500))
             .with_max_stale_generations(generations)
-            .with_max_generations(500_000_000) 
+            .with_max_generations(500_000_000)
             .build()
             .unwrap();
 
@@ -1677,31 +1763,39 @@ pub fn run_hill_climbing(
         best_genes = best_chromosome.genes;
         best_fitness_score = best_chromosome.fitness_score.unwrap() as f64;
         if round > 1 {
-            log::info!("Round {} finished. Best Score: {:.2}", round_idx + 1, best_fitness_score);
+            log::info!(
+                "Round {} finished. Best Score: {:.2}",
+                round_idx + 1,
+                best_fitness_score
+            );
         } else {
             let current_generation = hill_climb_builder.state.current_generation();
-            log::info!("Generation-{}, score: {:.2}", current_generation, best_fitness_score);
+            log::info!(
+                "Generation-{}, score: {:.2}",
+                current_generation,
+                best_fitness_score
+            );
         }
         initial_genes = best_genes.clone();
     }
 
-   
-    log::info!("Optimization finished. Best Score: {:.4}", best_fitness_score);
+    log::info!(
+        "Optimization finished. Best Score: {:.4}",
+        best_fitness_score
+    );
 
     Tour {
         contigs: best_genes.clone(),
         signs: vec![true; num_contigs],
     }
-
 }
-
 
 pub fn run_hybrid(
     tour: &Tour,
     contigsizes: IndexMap<usize, usize>,
-    contacts: Vec<HashMap<usize, u32>>, 
+    contacts: Vec<HashMap<usize, u32>>,
     mutation_rate: f64,
-    population_size: usize, 
+    population_size: usize,
     generations: usize,
     round: usize,
     is_lkh: bool,
@@ -1712,39 +1806,38 @@ pub fn run_hybrid(
     split_contacts: Option<&crate::splitcontacts::SplitContacts>,
     contig2idx: Option<&HashMap<String, usize>>,
 ) -> Tour {
- 
-    let matrix = ContactMatrix::new(
-        &contigsizes,
-        contacts.clone(),
-    );
+    let matrix = ContactMatrix::new(&contigsizes, contacts.clone());
 
     let best_tour = tour.clone();
 
-    
-        
     let best_tour = if is_lkh {
-        log::info!("Ordering score before optimization: {:?}", calculate_fitness(&best_tour.contigs, &matrix));
+        log::info!(
+            "Ordering score before optimization: {:?}",
+            calculate_fitness(&best_tour.contigs, &matrix)
+        );
         // let tour = run_lkh_optimizer(
         //     &best_tour,
-        //     contigsizes.clone(), 
+        //     contigsizes.clone(),
         //     &matrix,
         //     10,
         //     seed,
         // );
         let tour = run_lkh_optimizer_dual_node(
-                &best_tour,
-                contigsizes.clone(),
-                &matrix,
-                split_contacts.expect("REASON"),
-                contig2idx.expect("REASON"),
-                10,
-                seed,
-            );
-        log::info!("Ordering score after LKH optimization: {:?}", calculate_fitness(&tour.contigs, &matrix));
+            &best_tour,
+            contigsizes.clone(),
+            &matrix,
+            split_contacts.expect("REASON"),
+            contig2idx.expect("REASON"),
+            10,
+            seed,
+        );
+        log::info!(
+            "Ordering score after LKH optimization: {:?}",
+            calculate_fitness(&tour.contigs, &matrix)
+        );
         tour
     } else {
         best_tour.clone()
-        
     };
 
     // log::info!("Initial score before optimization: {:?}", calculate_fitness(&initial_contigs, &matrix));
@@ -1753,7 +1846,7 @@ pub fn run_hybrid(
     //     &matrix,
     //     num_contigs,
     // );
-    
+
     // block_move_optimization(
     //     &mut initial_contigs,
     //     &matrix,
@@ -1785,11 +1878,9 @@ pub fn run_hybrid(
     //     1,
     //     true,
     //     seed,
-    // ); 
+    // );
 
-
-   
-    let mut best_tour = if is_ga { 
+    let mut best_tour = if is_ga {
         let tour = run_evolove_optimizer(
             &best_tour,
             contigsizes.clone(),
@@ -1802,35 +1893,28 @@ pub fn run_hybrid(
             seed,
         );
 
-
-        let new_mutation_rate = if mutation_rate * 3.0 < 1.0 {
-            mutation_rate * 3.0
-        } else {
-            1.0
-        };
+        // ALLHiC runs both ordering phases with the same mutation
+        // probability. Keep the second phase identical for parity.
         let tour = run_evolove_optimizer(
-                                &tour,
-                                contigsizes.clone(),
-                                contacts.clone(),
-                                new_mutation_rate,
-                                population_size,
-                                generations,
-                                1,
-                                true,
-                                seed,
-                            );
-        tour    
+            &tour,
+            contigsizes.clone(),
+            contacts.clone(),
+            mutation_rate,
+            population_size,
+            generations,
+            1,
+            true,
+            seed,
+        );
+        tour
     } else {
         best_tour.clone()
     };
 
-   
+    log::info!(
+        "Final fitness: {}",
+        calculate_fitness(&best_tour.contigs, &matrix)
+    );
 
-    log::info!("Final fitness: {}", calculate_fitness(&best_tour.contigs, &matrix));
-    
     best_tour
-
-
 }
-
-

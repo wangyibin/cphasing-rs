@@ -10,22 +10,24 @@ pub mod core;
 pub mod count_re;
 pub mod cutsite;
 pub mod fastx;
+pub mod gfa;
 pub mod kprune;
-pub mod methy;
 pub mod methalign;
+pub mod methy;
 pub mod mnd;
+pub mod optimize;
+pub mod order;
+pub mod orientation;
 pub mod paf;
 pub mod pairs;
 pub mod porec;
-pub mod prune;
 pub mod pqs;
+pub mod prune;
 pub mod realign;
 pub mod scaffolding;
-pub mod order;
-pub mod orientation;
-pub mod splitcontacts;
 pub mod simulation;
 pub mod sketch;
+pub mod splitcontacts;
 
 #[cfg(test)]
 mod tests {
@@ -35,7 +37,6 @@ mod tests {
     fn test_reader() {
         let fastq = String::from("test/test.fq");
         core::common_reader(&fastq);
-        
     }
 
     #[test]
@@ -49,21 +50,19 @@ mod tests {
     #[test]
     fn test_chrom_size() {
         let file = String::from("test/test.contigsizes");
-        
+
         let chromsizes: core::ChromSize = core::ChromSize::new(&file);
         // println!("{:?}", chromsizes.to_vec());
         // println!("{:?}", chromsizes.data());
     }
 
-
     #[test]
     fn test_pairs() {
         let file = String::from("test/test.pairs");
-        let mut ph:pairs::PairHeader = pairs::PairHeader::new();
+        let mut ph: pairs::PairHeader = pairs::PairHeader::new();
 
         ph.from_pairs(&file);
         // println!("{:?}", ph);
-        
     }
 
     #[test]
@@ -73,25 +72,6 @@ mod tests {
         assert_eq!(pt.file_name(), "test.paf");
 
         // pt.paf2table(&"test/test.out.csv.gz".to_string(), &1, &0.75, &10).unwrap();
-        
-    }
-
-    #[test]
-    fn test_paf2() {
-        let paf = String::from("test/test.paf");
-        let paf = paf2::PAFTable::new(&paf);
-        let parse_result = paf.parse();
-        let mut rdr = match parse_result {
-            Ok(v) => v,
-            Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
-        };
-
-        for line in rdr.deserialize() {
-            let record: paf2::PAFLine = line.unwrap();
-
-            println!("{:?}", record.tp);
-        }
-
     }
 
     #[test]
@@ -102,17 +82,16 @@ mod tests {
 
     //     pct.to_pairs(&chromsizes, &output).unwrap();
     // }
-
     #[test]
     fn test_sketch() {
-        let seq = String::from("AAAAACAAAAATAAGCGGGTTGACTTTTTTATATTCCCCCCCGAACCGGAACCGGGGGGGGATACGA");
+        let seq =
+            String::from("AAAAACAAAAATAAGCGGGTTGACTTTTTTATATTCCCCCCCGAACCGGAACCGGGGGGGGATACGA");
         let rid: u64 = 0;
         let k: usize = 3;
         let w: usize = 3;
 
         let sketch = sketch::sketch(&seq, rid, k, w);
         println!("{:?}", sketch);
-
     }
 
     // #[test]
@@ -158,7 +137,7 @@ mod tests {
         // println!("{:?}", co.contig_units[2].orientation);
         co.rotate(2 as usize);
         // println!("{:?}", co.contig_units[2].orientation);
-        
+
         // println!("{}", co.cost());
     }
 
@@ -169,7 +148,7 @@ mod tests {
         let co = cst.read();
         let mut sa = optimize::SimulatedAnnealing::new(co, 1000.0, 0.999, 0.01, 1000000);
         let best = sa.run();
-        
+
         println!("{:.?}", best.contigs());
 
         // write contig order to file
@@ -188,7 +167,7 @@ mod tests {
     //     let mut co = cst.read();
     //     let mut ga = optimize::GeneticAlgorithm::new(co, 100, 100, 0.01, 0.01);
     //     let best = ga.run();
-        
+
     //     println!("{:.?}", best.contigs());
     // }
 
@@ -197,7 +176,6 @@ mod tests {
         use crate::fastx::Fastx;
         let fastq = String::from("test/test.fq.gz");
         let fastq = Fastx::new(&fastq);
-   
     }
 
     #[test]
@@ -206,23 +184,20 @@ mod tests {
         let pt = PruneTable::new(&String::from("test/prune.contig.table"));
 
         println!("{:?}", pt.contig_pairs());
-    
     }
 
     #[test]
     fn test_remove_by_contig_pairs() {
-        use std::collections::HashSet;
         use crate::core::ContigPair;
         use crate::kprune::PruneTable;
-        
+        use std::collections::HashSet;
+
         let pt = PruneTable::new(&String::from("test/prune.contig.table"));
         let pairs = String::from("test/test.pairs");
         let mut pairs = pairs::Pairs::new(&pairs);
         let output = String::from("test/test.pairs.prune");
         let contigs: HashSet<ContigPair> = pt.contig_pairs().unwrap().into_iter().collect();
         pairs.remove_by_contig_pairs(contigs, &output);
-
-
     }
 
     #[test]
@@ -232,14 +207,14 @@ mod tests {
         let fastq = String::from("test/output.hifi.call_mods.modbam.fastq.gz");
         let min_prob = 0.1f32;
         let _ = modbam2fastq(&bam, min_prob, &fastq);
-        
     }
 
     #[test]
     fn test_modify_fasta() {
         use crate::methy::modify_fasta;
         let fasta = String::from("test/hprc.chr20.100k.fasta");
-        let bed = String::from("test/hprc.output.hifi.call_mods.modbam.pbmm2.freq.aggregate.all.bed");
+        let bed =
+            String::from("test/hprc.output.hifi.call_mods.modbam.pbmm2.freq.aggregate.all.bed");
         let output = String::from("test/hprc.chr20.100k.modify.fasta");
         let min_score = 3u32;
         let min_frac = 0.8f32;
@@ -255,5 +230,4 @@ mod tests {
             println!("{:?}", b);
         }
     }
-
 }

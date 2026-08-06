@@ -88,6 +88,14 @@ block-aligner = { version = "0.5", features = ["simd_avx2"] }
 block-aligner = { version = "0.5", features = ["simd_neon"] }
 
 
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+debug = 1
+strip = "none"
+
+
 [profile.release]
 opt-level = 'z'
 lto = true

@@ -1,4 +1,3 @@
-
 use petgraph::prelude::*;
 use petgraph::visit::NodeIndexable;
 use std::collections::HashSet;
@@ -26,8 +25,14 @@ fn bron_kerbosch(
         let mut r_new = r.clone();
         r_new.insert(v);
 
-        let p_new = p.intersection(&neighbors.clone().collect::<HashSet<_>>()).cloned().collect();
-        let x_new = x.intersection(&neighbors.collect::<HashSet<_>>()).cloned().collect();
+        let p_new = p
+            .intersection(&neighbors.clone().collect::<HashSet<_>>())
+            .cloned()
+            .collect();
+        let x_new = x
+            .intersection(&neighbors.collect::<HashSet<_>>())
+            .cloned()
+            .collect();
 
         bron_kerbosch(graph, r_new, p_new, x_new, cliques);
 
@@ -67,12 +72,12 @@ mod tests {
         graph.add_edge(b, d, ());
         graph.add_edge(c, d, ());
         graph.add_edge(c, e, ());
- 
+
         // Find cliques in the graph
         let cliques = find_cliques(&graph);
 
         // Print the cliques
-   
+
         for clique in cliques {
             let clique_nodes = clique.iter().collect::<Vec<_>>();
             println!("{:?}", clique_nodes);

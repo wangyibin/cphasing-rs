@@ -1,23 +1,19 @@
-
+use rust_lapper::{Interval, Lapper};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{ Write, BufRead };
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use rust_lapper::{Interval, Lapper};
 
 use crate::core::{common_reader, common_writer};
 use crate::methy::ModRecord;
 
-
 type IvU8 = Interval<usize, u8>;
 type IvString = Interval<usize, String>;
 
-
 pub trait BedIterator {
     fn next(&mut self) -> Option<ModRecord>;
-
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -55,9 +51,8 @@ impl Bed3 {
                     .from_reader(File::create(bed).unwrap().try_clone().unwrap()),
             }
         }
-        
     }
-    
+
     // pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
     //     let mut hcr: HashMap<String, Vec<IvU8>> = HashMap::new();
     //     for i in self {
@@ -85,9 +80,11 @@ impl Bed3 {
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, u8>> {
         let mut hcr: HashMap<String, Vec<IvU8>> = HashMap::new();
         for i in self {
-            hcr.entry(i.chrom)
-                .or_default()
-                .push(IvU8 { start: i.start, stop: i.end, val: 0 });
+            hcr.entry(i.chrom).or_default().push(IvU8 {
+                start: i.start,
+                stop: i.end,
+                val: 0,
+            });
         }
         let mut hcr_lapper: HashMap<String, Lapper<usize, u8>> = HashMap::with_capacity(hcr.len());
         for (k, v) in hcr.into_iter() {
@@ -95,9 +92,7 @@ impl Bed3 {
         }
         hcr_lapper
     }
-
 }
-
 
 impl Iterator for Bed3 {
     type Item = Bed3Record;
@@ -119,7 +114,6 @@ impl Iterator for Bed3 {
         }
     }
 }
-
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Bed4Record {
@@ -157,9 +151,8 @@ impl Bed4 {
                     .from_reader(File::create(bed).unwrap().try_clone().unwrap()),
             }
         }
-        
     }
-    
+
     // pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, String>> {
     //     let mut hcr: HashMap<String, Vec<IvString>> = HashMap::new();
     //     for i in self {
@@ -187,18 +180,20 @@ impl Bed4 {
     pub fn to_interval_hash(self) -> HashMap<String, Lapper<usize, String>> {
         let mut hcr: HashMap<String, Vec<IvString>> = HashMap::new();
         for i in self {
-            hcr.entry(i.chrom)
-                .or_default()
-                .push(IvString { start: i.start, stop: i.end, val: i.gene });
+            hcr.entry(i.chrom).or_default().push(IvString {
+                start: i.start,
+                stop: i.end,
+                val: i.gene,
+            });
         }
-        let mut hcr_lapper: HashMap<String, Lapper<usize, String>> = HashMap::with_capacity(hcr.len());
+        let mut hcr_lapper: HashMap<String, Lapper<usize, String>> =
+            HashMap::with_capacity(hcr.len());
         for (k, v) in hcr.into_iter() {
             hcr_lapper.insert(k, Lapper::new(v)); // move v
         }
         hcr_lapper
     }
 }
-
 
 impl Iterator for Bed4 {
     type Item = Bed4Record;
@@ -215,14 +210,13 @@ impl Iterator for Bed4 {
                     chrom: chrom,
                     start: start,
                     end: end,
-                    gene: gene
+                    gene: gene,
                 })
             }
             _ => None,
         }
     }
 }
-
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BedCpGRecord {
@@ -251,11 +245,9 @@ impl BedCpG {
             reader: reader,
         }
     }
-    
 }
 
 impl BedIterator for BedCpG {
-
     fn next(&mut self) -> Option<ModRecord> {
         let record = self.reader.records().next();
         match record {
@@ -307,11 +299,9 @@ impl BedMethylSimple {
             reader: reader,
         }
     }
-    
 }
 
 impl BedIterator for BedMethylSimple {
-
     fn next(&mut self) -> Option<ModRecord> {
         let record = self.reader.records().next();
         match record {
@@ -333,21 +323,19 @@ impl BedIterator for BedMethylSimple {
                         }
                     }
                 };
-                
 
                 Some(ModRecord {
                     chrom: chrom,
                     start: start,
                     end: end,
                     frac: frac,
-                    score: score
+                    score: score,
                 })
             }
             _ => None,
         }
     }
 }
-
 
 impl Iterator for Box<dyn BedIterator> {
     type Item = ModRecord;
@@ -357,7 +345,6 @@ impl Iterator for Box<dyn BedIterator> {
     }
 }
 
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BedGraph {
     pub chrom: String,
@@ -365,5 +352,3 @@ pub struct BedGraph {
     pub end: usize,
     pub score: f32,
 }
-
-

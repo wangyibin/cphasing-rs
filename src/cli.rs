@@ -1,14 +1,14 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{arg, Arg, ArgAction, 
-            builder::{
-                styling::{AnsiColor, Effects},
-                Styles,
-            },
-            Command, 
-            Subcommand, 
-            value_parser, ColorChoice};
+use clap::{
+    Arg, ArgAction, ColorChoice, Command, Subcommand, arg,
+    builder::{
+        Styles,
+        styling::{AnsiColor, Effects},
+    },
+    value_parser,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -20,13 +20,35 @@ fn non_negative_f64(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+fn unit_interval_f64(value: &str) -> Result<f64, String> {
+    let parsed = non_negative_f64(value)?;
+    if parsed > 1.0 {
+        return Err("value must be between 0 and 1".to_string());
+    }
+    Ok(parsed)
+}
+
+fn positive_unit_interval_f64(value: &str) -> Result<f64, String> {
+    let parsed = unit_interval_f64(value)?;
+    if parsed == 0.0 {
+        return Err("value must be greater than 0".to_string());
+    }
+    Ok(parsed)
+}
+
+fn positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value.parse::<usize>().map_err(|error| error.to_string())?;
+    if parsed == 0 {
+        return Err("value must be greater than 0".to_string());
+    }
+    Ok(parsed)
+}
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Yellow.on_default());
-
 
 pub fn cli() -> Command {
     Command::new("cphasing")
@@ -267,20 +289,6 @@ pub fn cli() -> Command {
                         .help("method of prune: [fast, precise, greedy]")
                         )
                 .arg(
-                    Arg::new("MIN_CONTACTS")
-                        .long("min-contacts")
-                        .value_parser(non_negative_f64)
-                        .default_value("1")
-                        .help("minimum combined raw contacts required for cross-allelic evidence")
-                )
-                .arg(
-                    Arg::new("MIN_MARGIN")
-                        .long("min-margin")
-                        .value_parser(non_negative_f64)
-                        .default_value("0.10")
-                        .help("minimum relative score advantage required for cross-allelic evidence")
-                )
-                .arg(
                     Arg::new("NORMALIZATION_METHOD")
                         .long("normalization-method")
                         .short('n')
@@ -395,6 +403,32 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("clm")
+                .about("Read, write, and convert CLM/CLMB files.")
+                .subcommand(
+                    Command::new("convert")
+                        .about("Convert between text CLM/CLM.GZ and binary CLMB.")
+                        .arg(Arg::new("INPUT").required(true).help("input CLM, CLM.GZ, or CLMB"))
+                        .arg(
+                            Arg::new("OUTPUT")
+                                .long("output")
+                                .short('o')
+                                .required(true)
+                                .help("output .clmb, .clm, or .clm.gz"),
+                        )
+                        .arg(
+                            Arg::new("BLOCK_MIB")
+                                .long("block-mib")
+                                .value_parser(value_parser!(usize))
+                                .default_value("8")
+                                .help("target uncompressed CLMB block size in MiB"),
+                        )
+                        .arg_required_else_help(true),
+                )
+                .subcommand_required(true)
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("mergeclm")
                 .alias("clm-merge")
                 .alias("merge-clm")
@@ -421,8 +455,8 @@ pub fn cli() -> Command {
             Command::new("splitclm")
                 .alias("split-clm")
                 .alias("clm-split")
-                .about("Split clm by the cluster file.")
-                .arg(arg!(<CLM> "clm"))
+                .about("Split CLM or CLMB by the cluster file.")
+                .arg(arg!(<CLM> "input CLM, CLM.GZ, or CLMB"))
                 .arg(arg!(<CLUSTER> "cluster"))
                 .arg(
                     Arg::new("OUTPUT")
@@ -448,6 +482,57 @@ pub fn cli() -> Command {
                         .default_value("./"))
                 .arg_required_else_help(true)
                 
+        )
+        .subcommand(
+            Command::new("gfa")
+                .about("Process GFA-derived inputs for scaffolding.")
+                .subcommand(
+                    Command::new("aggregate-contacts")
+                        .about("Aggregate split contacts into normalized GFA-end evidence.")
+                        .arg(Arg::new("SEGMENTS").long("segments").required(true).help("allowed segment lengths TSV"))
+                        .arg(Arg::new("CONTACTS").long("contacts").required(true).help("input split contacts"))
+                        .arg(Arg::new("GFA_LINKS").long("gfa-links").required(true).help("GFA physical links to summarize"))
+                        .arg(Arg::new("OUTPUT").long("output").required(true).help("output normalized end-contact TSV"))
+                        .arg(
+                            Arg::new("THREADS")
+                                .long("threads")
+                                .short('t')
+                                .value_parser(value_parser!(usize))
+                                .default_value("8")
+                                .help("parallel contact parsing and aggregation workers")
+                        )
+                        .arg_required_else_help(true)
+                )
+                .subcommand(
+                    Command::new("contract-inputs")
+                        .about("Contract split contacts and CLM records onto selected GFA blocks.")
+                        .arg(Arg::new("MAPPING").long("mapping").required(true).help("precomputed GFA block contraction table"))
+                        .arg(Arg::new("CONTACTS").long("contacts").required(true).help("input split contacts"))
+                        .arg(Arg::new("CONTACTS_OUTPUT").long("contacts-output").required(true).help("output contracted split contacts"))
+                        .arg(Arg::new("CLM").long("clm").help("optional input CLM"))
+                        .arg(Arg::new("CLM_OUTPUT").long("clm-output").help("output contracted CLM"))
+                        .arg(Arg::new("CLUSTERS").long("clusters").help("cluster table used to route contracted CLM records directly by group"))
+                        .arg(Arg::new("CLM_OUTPUT_DIR").long("clm-output-dir").help("directory for directly split <group>.clm files"))
+                        .arg(Arg::new("TMP_DIR").long("tmp-dir").help("temporary directory"))
+                        .arg(
+                            Arg::new("SORT_BUFFER")
+                                .long("sort-buffer")
+                                .value_parser(value_parser!(String))
+                                .default_value("64M")
+                                .help("maximum memory used by external sort")
+                        )
+                        .arg(
+                            Arg::new("THREADS")
+                                .long("threads")
+                                .short('t')
+                                .value_parser(value_parser!(usize))
+                                .default_value("8")
+                                .help("parallel sort and CLM block workers")
+                        )
+                        .arg_required_else_help(true)
+                )
+                .subcommand_required(true)
+                .arg_required_else_help(true)
         )
         .subcommand(
             Command::new("splitfastq")
@@ -1777,8 +1862,8 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-")
-                        .help("output file, default is stdout"))
+                        .default_value("output.clmb")
+                        .help("output CLMB by default; use .clm or .clm.gz for legacy text"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -2423,10 +2508,11 @@ pub fn cli() -> Command {
             Command::new("optimize")
                 .about("optimize contigs order and orientation.")
                 .arg(arg!(<COUNTRE> "count RE file of single cluster"))
-                .arg(arg!(<SPLITCONTACTS> "split contacts file"))
+                .arg(arg!(<CLMB> "CLMB contact-distance file for ALLHiC ordering and orientation"))
                 .arg(
                     Arg::new("MUTATION")
-                        .long("mutabp")
+                        .long("mutapb")
+                        .alias("mutabp")
                         .short('m')
                         .value_parser(value_parser!(f64))
                         .default_value("0.2")
@@ -2468,19 +2554,27 @@ pub fn cli() -> Command {
                 )
                 .arg(
                     Arg::new("SKIPGA")
-                        .long("skipga")
+                        .long("skipGA")
+                        .alias("skipga")
                         .action(ArgAction::SetTrue)
                         .help("skip genetic algorithm and")
                         .value_parser(value_parser!(bool))
                         .default_value("false")
                 )
                 .arg(
-                    Arg::new("RUNLKH")
-                        .long("runlkh")
+                    Arg::new("LOGDIST")
+                        .long("logDist")
+                        .alias("log-dist")
                         .action(ArgAction::SetTrue)
-                        .help("run LKH optimization")
+                        .help("use ALLHiC's links * log(distance) ordering objective")
                         .value_parser(value_parser!(bool))
                         .default_value("false")
+                )
+                .arg(
+                    Arg::new("NO_BACKBONE")
+                        .long("no-backbone")
+                        .action(ArgAction::SetTrue)
+                        .help("disable high-confidence path-block initialization")
                 )
                 .arg(
                     Arg::new("THREADS")
@@ -2491,5 +2585,4 @@ pub fn cli() -> Command {
                         .help("number of threads"))
                 .arg_required_else_help(true),
         )
-        
 }

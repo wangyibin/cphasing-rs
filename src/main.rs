@@ -1,42 +1,39 @@
 #![allow(dead_code)]
 #![allow(unused_variables, unused_assignments)]
-use std::io::BufReader;
-use std::io::BufRead;
-use std::path::Path;
-use indexmap::IndexMap;
-use rayon::ThreadPoolBuilder;
-use cphasing::alleles::AllelesFasta;
 use cphasing::aligner::read_bam;
+use cphasing::alleles::AllelesFasta;
 use cphasing::bam::*;
 use cphasing::cli::cli;
-use cphasing::clm::{Clm, merge_clm};
-use cphasing::core::{ 
-    BaseTable,  common_reader, 
-    common_writer, ContigPair,
-    check_program};
+use cphasing::clm::{CLMB_DEFAULT_BLOCK_SIZE, Clm, convert_clm, merge_clm};
+use cphasing::core::{BaseTable, ContigPair, check_program, common_reader, common_writer};
 use cphasing::count_re::CountRE;
+use indexmap::IndexMap;
+use rayon::ThreadPoolBuilder;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::path::Path;
 // use cphasing::contacts::Contacts;
+use chrono::Local;
 use cphasing::cutsite::cut_site;
-use cphasing::fastx::{ Fastx, split_fastq };
-use cphasing::methy::{ modbam2fastq, modify_fasta };
+use cphasing::fastx::{Fastx, split_fastq};
+use cphasing::gfa::{aggregate_gfa_end_contacts, contract_gfa_scaffolding_inputs};
+use cphasing::kprune::*;
+use cphasing::methy::{modbam2fastq, modify_fasta};
+use cphasing::optimize::{
+    AllhicProblem, BackboneConfig, OptimizeConfig, OrderObjective, optimize_order,
+};
+use cphasing::order::*;
 use cphasing::paf::PAFTable;
 use cphasing::pairs::*;
-use cphasing::porec::{
-        PoreCTable, merge_porec_tables };
-use cphasing::kprune::{ PruneTable, KPruner, PruneThresholds };
-use cphasing::prune::{ Pruner };
+use cphasing::porec::{PoreCTable, merge_porec_tables};
 use cphasing::pqs::*;
-use cphasing::simulation::{ 
-        simulation_from_split_read, simulate_porec,
-        simulate_hic };
-use cphasing::order::*;
-use cphasing::orientation::*;
+use cphasing::prune::Pruner;
+use cphasing::simulation::{simulate_hic, simulate_porec, simulation_from_split_read};
 use cphasing::splitcontacts::*;
-use std::collections::{ HashMap, HashSet };
-use std::io::Write; 
-use chrono::Local;
 use env_logger::Builder;
 use log::LevelFilter;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 
 // #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 // use jemallocator::Jemalloc;
@@ -50,10 +47,11 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
-
     Builder::new()
         .format(|buf, record| {
-            writeln!(buf, "{} [{}] - {}", 
+            writeln!(
+                buf,
+                "{} [{}] - {}",
                 Local::now().format("%Y-%m-%dT%H:%M:%S"),
                 record.level(),
                 record.args()
@@ -97,7 +95,6 @@ fn main() {
                 .build_global()
                 .unwrap();
 
-
             match import_format.as_str() {
                 "bam" => {
                     read_bam(&input, *min_mapq, &output, *threads, contacts);
@@ -109,17 +106,25 @@ fn main() {
                     eprintln!("No such format.");
                 }
             }
-
         }
         Some(("methalign", submathes)) => {
             use cphasing::methalign::parse_bam;
             let input_bam = submathes.get_one::<String>("BAM").expect("required");
-            let fasta_opt: Option<String> = submathes
-                .get_one::<String>("FASTA")
-                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
-            let bedgraph_opt: Option<String> = submathes
-                .get_one::<String>("BEDGRAPH")
-                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
+            let fasta_opt: Option<String> = submathes.get_one::<String>("FASTA").and_then(|s| {
+                if s == "none" || s == "-" {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            });
+            let bedgraph_opt: Option<String> =
+                submathes.get_one::<String>("BEDGRAPH").and_then(|s| {
+                    if s == "none" || s == "-" {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                });
             let match_score = submathes.get_one::<i32>("MATCH_SCORE").expect("error");
             let ref_penalty = submathes.get_one::<i32>("REF_PENALTY").expect("error");
             let read_penalty = submathes.get_one::<i32>("READ_PENALTY").expect("error");
@@ -128,31 +133,34 @@ fn main() {
             let designate_mapq = submathes.get_one::<u8>("DESIGNATE_MAPQ").expect("error");
             let is_set_y = submathes.get_one::<bool>("IS_SET_Y").expect("error");
             let cpg = submathes.get_one::<bool>("CPG").expect("error");
-            let output_secondary = submathes.get_one::<bool>("OUTPUT_SECONDARY").expect("error");
+            let output_secondary = submathes
+                .get_one::<bool>("OUTPUT_SECONDARY")
+                .expect("error");
             let output_bam = submathes.get_one::<String>("OUTPUT").expect("error");
             let threads = submathes.get_one::<usize>("THREADS").expect("error");
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
                 .unwrap();
-            
-            parse_bam(&input_bam, 
-                      &fasta_opt,
-                      &bedgraph_opt,
-                      *match_score,
-                      *ref_penalty,
-                      *read_penalty,
-                      *ref_prob_cutoff,
-                      *prob_cutoff,
-                      *designate_mapq,
-                      *is_set_y,
-                      *cpg,
-                      *output_secondary,
-                      &output_bam,
-                      *threads);
+
+            parse_bam(
+                &input_bam,
+                &fasta_opt,
+                &bedgraph_opt,
+                *match_score,
+                *ref_penalty,
+                *read_penalty,
+                *ref_prob_cutoff,
+                *prob_cutoff,
+                *designate_mapq,
+                *is_set_y,
+                *cpg,
+                *output_secondary,
+                &output_bam,
+                *threads,
+            );
         }
         Some(("alleles", sub_matches)) => {
-
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let kmer_size = sub_matches.get_one::<usize>("K").expect("error");
             let window_size = sub_matches.get_one::<usize>("W").expect("error");
@@ -167,7 +175,6 @@ fn main() {
 
             let mut alleles = AllelesFasta::new(&fasta);
             alleles.run(*kmer_size, *window_size, *minimum_similarity, output);
-
         }
 
         Some(("kprune", sub_matches)) => {
@@ -182,10 +189,6 @@ fn main() {
                 .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
             let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
-            let thresholds = PruneThresholds {
-                min_contacts: *sub_matches.get_one::<f64>("MIN_CONTACTS").expect("defaulted"),
-                min_margin: *sub_matches.get_one::<f64>("MIN_MARGIN").expect("defaulted"),
-            };
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let partial_whitelist = sub_matches.get_one::<bool>("PARTIAL_WHITELIST").expect("error");
             let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
@@ -269,7 +272,6 @@ fn main() {
                         let mut kpruner = KPruner::new(
                             &alleletable, &contacts, &prunetable, &count_re_opt,
                             normalization_method);
-                        kpruner.thresholds = thresholds;
 
                         let white_refs: HashSet<&String> = v.iter().collect();
 
@@ -307,7 +309,6 @@ fn main() {
                 }
 
                 let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, &count_re_opt, normalization_method);
-                kpruner.thresholds = thresholds;
                 kpruner.prune(&method.as_str(), &whitehash2, &mut writer, *partial_whitelist);
             }
             
@@ -317,21 +318,38 @@ fn main() {
         Some(("prune", sub_matches)) => {
             use rayon::prelude::*;
             use std::sync::{Arc, Mutex};
-            let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
-            let allele_strand_table = sub_matches.get_one::<String>("ALLELESTRANDTABLE").expect("required");
+            let alleletable = sub_matches
+                .get_one::<String>("ALLELETABLE")
+                .expect("required");
+            let allele_strand_table = sub_matches
+                .get_one::<String>("ALLELESTRANDTABLE")
+                .expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
-            let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
-            let count_re_opt: Option<String> = sub_matches
-                .get_one::<String>("COUNTRE")
-                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
+            let prunetable = sub_matches
+                .get_one::<String>("PRUNETABLE")
+                .expect("required");
+            let count_re_opt: Option<String> =
+                sub_matches.get_one::<String>("COUNTRE").and_then(|s| {
+                    if s == "none" || s == "-" {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
-            let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
+            let normalization_method = sub_matches
+                .get_one::<String>("NORMALIZATION_METHOD")
+                .expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
-            let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
+            let first_cluster = sub_matches
+                .get_one::<String>("FIRST_CLUSTER")
+                .expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            assert !(method == "fast" || method == "precise" || method == "greedy", 
-                     "method must be in ['fast', 'precise', 'greedy']");
+            assert!(
+                method == "fast" || method == "precise" || method == "greedy",
+                "method must be in ['fast', 'precise', 'greedy']"
+            );
             let method = method.as_str();
 
             ThreadPoolBuilder::new()
@@ -359,12 +377,13 @@ fn main() {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
 
-                let first_cluster_hashmap = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
+                let first_cluster_hashmap =
+                    Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
             }
             if first_cluster != "none" {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
-              
+
                 let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
                 lines.into_par_iter().for_each(|line| {
                     // split tab
@@ -373,8 +392,9 @@ fn main() {
                     let _count = line.next().unwrap().to_string();
                     // split next with space
                     let contigs: HashSet<_> = line.next().unwrap().split(" ").collect();
-                   
-                    let mut contigs: HashSet<String> = contigs.into_par_iter().map(|x| x.to_string()).collect();
+
+                    let mut contigs: HashSet<String> =
+                        contigs.into_par_iter().map(|x| x.to_string()).collect();
                     if !whitehash.is_empty() {
                         contigs = contigs.intersection(&whitehash).cloned().collect();
                     }
@@ -388,16 +408,25 @@ fn main() {
             let first_cluster_hashmap = first_cluster_hashmap.clone();
 
             let mut writer = common_writer(&prunetable);
-       
+
             if first_cluster != "none" {
-            
                 log::set_max_level(log::LevelFilter::Off);
                 let mut pruners: HashMap<String, Pruner> = first_cluster_hashmap
-                            .keys().map(|x| (x.to_string(), Pruner::new(
-                                &alleletable,  &allele_strand_table, &contacts,
+                    .keys()
+                    .map(|x| {
+                        (
+                            x.to_string(),
+                            Pruner::new(
+                                &alleletable,
+                                &allele_strand_table,
+                                &contacts,
                                 &count_re_opt,
-                                normalization_method))).collect();
-                
+                                normalization_method,
+                            ),
+                        )
+                    })
+                    .collect();
+
                 for (k, v) in first_cluster_hashmap {
                     log::info!("Pruning cluster `{}`", k);
                     let pruner = pruners.get_mut(&k).unwrap();
@@ -406,7 +435,7 @@ fn main() {
                     for x in _whitehash.iter() {
                         _whitehash2.insert(&x);
                     }
-                    
+
                     match method {
                         "fast" => {
                             pruner.kprune(&_whitehash2, &method, &mut writer);
@@ -421,33 +450,36 @@ fn main() {
                             eprintln!("No such method.");
                         }
                     }
-                  
                 }
                 log::set_max_level(log::LevelFilter::Info);
-                
             } else {
-                let mut pruner = Pruner::new(&alleletable, &allele_strand_table, &contacts, 
-                                                    &count_re_opt,
-                                                 normalization_method);
+                let mut pruner = Pruner::new(
+                    &alleletable,
+                    &allele_strand_table,
+                    &contacts,
+                    &count_re_opt,
+                    normalization_method,
+                );
                 match method {
-                        "fast" => {
-                            pruner.kprune(&whitehash2, &method, &mut writer);
-                        }
-                        "precise" => {
-                            pruner.kprune(&whitehash2, &method, &mut writer);
-                        }
-                        "greedy" => {
-                            pruner.prune(&whitehash2, &mut writer);
-                        }
-                        _ => {
-                            eprintln!("No such method.");
-                        }
+                    "fast" => {
+                        pruner.kprune(&whitehash2, &method, &mut writer);
                     }
-                
+                    "precise" => {
+                        pruner.kprune(&whitehash2, &method, &mut writer);
+                    }
+                    "greedy" => {
+                        pruner.prune(&whitehash2, &mut writer);
+                    }
+                    _ => {
+                        eprintln!("No such method.");
+                    }
+                }
             }
-            
-            log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
 
+            log::info!(
+                "Allelic and cross-allelic information written into `{}`",
+                prunetable
+            );
         }
         Some(("splitbam", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
@@ -456,8 +488,26 @@ fn main() {
 
             split_bam(&input_bam, &output_prefix, *record_num).unwrap();
         }
+        Some(("clm", clm_matches)) => match clm_matches.subcommand() {
+            Some(("convert", sub_matches)) => {
+                let input = sub_matches.get_one::<String>("INPUT").expect("required");
+                let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
+                let block_mib = sub_matches
+                    .get_one::<usize>("BLOCK_MIB")
+                    .copied()
+                    .unwrap_or(CLMB_DEFAULT_BLOCK_SIZE / (1024 * 1024));
+                let block_size = block_mib
+                    .checked_mul(1024 * 1024)
+                    .expect("CLMB block size is too large");
+                convert_clm(input, output, block_size).unwrap();
+            }
+            _ => unreachable!(),
+        },
         Some(("mergeclm", sub_matches)) => {
-            let inputs: Vec<_> = sub_matches.get_many::<String>("INPUTS").expect("required").collect();
+            let inputs: Vec<_> = sub_matches
+                .get_many::<String>("INPUTS")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut clm_files = Vec::new();
@@ -474,7 +524,10 @@ fn main() {
                 } else if path.is_file() {
                     clm_files.push(input.to_string());
                 } else {
-                    log::warn!("Input `{}` is neither a file nor a directory, ignored.", input);
+                    log::warn!(
+                        "Input `{}` is neither a file nor a directory, ignored.",
+                        input
+                    );
                 }
             }
 
@@ -484,25 +537,77 @@ fn main() {
             }
 
             merge_clm(clm_files, &output).unwrap();
-
         }
         Some(("splitclm", sub_matches)) => {
             let input_clm = sub_matches.get_one::<String>("CLM").expect("required");
             let cluster_file = sub_matches.get_one::<String>("CLUSTER").expect("required");
             let output_dir = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             let clm = Clm::new(&input_clm);
             clm.split_clm(&cluster_file, &output_dir).unwrap();
-
         }
         Some(("splitcontacts", sub_matches)) => {
             let input_contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
             let cluster_file = sub_matches.get_one::<String>("CLUSTER").expect("required");
             let output_dir = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
-            let _ = split_contacts_by_clusters(&input_contacts, &cluster_file, &output_dir);
 
+            let _ = split_contacts_by_clusters(&input_contacts, &cluster_file, &output_dir);
         }
+        Some(("gfa", gfa_matches)) => match gfa_matches.subcommand() {
+            Some(("aggregate-contacts", sub_matches)) => {
+                let segments = sub_matches.get_one::<String>("SEGMENTS").expect("required");
+                let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
+                let gfa_links = sub_matches
+                    .get_one::<String>("GFA_LINKS")
+                    .expect("required");
+                let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
+                let threads = *sub_matches.get_one::<usize>("THREADS").expect("defaulted");
+                if let Err(error) =
+                    aggregate_gfa_end_contacts(segments, contacts, gfa_links, output, threads)
+                {
+                    log::error!("GFA contact aggregation failed: {:#}", error);
+                    std::process::exit(1);
+                }
+            }
+            Some(("contract-inputs", sub_matches)) => {
+                let mapping = sub_matches.get_one::<String>("MAPPING").expect("required");
+                let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
+                let contacts_output = sub_matches
+                    .get_one::<String>("CONTACTS_OUTPUT")
+                    .expect("required");
+                let clm = sub_matches.get_one::<String>("CLM").map(String::as_str);
+                let clm_output = sub_matches
+                    .get_one::<String>("CLM_OUTPUT")
+                    .map(String::as_str);
+                let clusters = sub_matches
+                    .get_one::<String>("CLUSTERS")
+                    .map(String::as_str);
+                let clm_output_dir = sub_matches
+                    .get_one::<String>("CLM_OUTPUT_DIR")
+                    .map(String::as_str);
+                let tmp_dir = sub_matches.get_one::<String>("TMP_DIR").map(String::as_str);
+                let sort_buffer = sub_matches
+                    .get_one::<String>("SORT_BUFFER")
+                    .expect("defaulted");
+                let threads = *sub_matches.get_one::<usize>("THREADS").expect("defaulted");
+                if let Err(error) = contract_gfa_scaffolding_inputs(
+                    mapping,
+                    contacts,
+                    contacts_output,
+                    clm,
+                    clm_output,
+                    clusters,
+                    clm_output_dir,
+                    tmp_dir,
+                    sort_buffer,
+                    threads,
+                ) {
+                    log::error!("GFA input contraction failed: {:#}", error);
+                    std::process::exit(1);
+                }
+            }
+            _ => unreachable!("clap requires a GFA subcommand"),
+        },
         Some(("splitfastq", sub_matches)) => {
             let input_fastq = sub_matches.get_one::<String>("FASTQ").expect("required");
             let output_prefix = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -524,17 +629,27 @@ fn main() {
             let window = sub_matches.get_one::<u64>("WINDOW").expect("error");
             let step = sub_matches.get_one::<u64>("STEP").expect("error");
             let min_length = sub_matches.get_one::<u64>("MIN_LENGTH").expect("error");
-            let filetype = sub_matches.get_one::<String>("FILETYPE").expect("error").as_str();
+            let filetype = sub_matches
+                .get_one::<String>("FILETYPE")
+                .expect("error")
+                .as_str();
             let coordinate_suffix = sub_matches.get_one::<bool>("COORDINATE").expect("error");
             let fa = Fastx::new(&input_fastq);
-            let _ = fa.slide(&output, *window, *step, *min_length, &filetype, *coordinate_suffix);
+            let _ = fa.slide(
+                &output,
+                *window,
+                *step,
+                *min_length,
+                &filetype,
+                *coordinate_suffix,
+            );
         }
         Some(("slidefasta", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let window = sub_matches.get_one::<u64>("WINDOW").expect("error");
             let step = sub_matches.get_one::<u64>("STEP").expect("error");
-            
+
             let fa = Fastx::new(&input_fasta);
             let _ = fa.slidefasta(&output, *window, *step);
         }
@@ -543,80 +658,84 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             slide2raw(&input_bam, &output, *threads);
-            
         }
-        Some(("simulator", sub_matches)) => {
-            match sub_matches.subcommand() {
-                Some(("split-ont", sub_sub_matches)) => {
-                    let input_bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
-                    let min_quality = sub_sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
-                    simulation_from_split_read(&input_bam, &output, *min_quality);
-                }
-                Some(("porec", sub_sub_matches)) => {
-                    let fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
-                    let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
-                    let bed = sub_sub_matches.get_one::<String>("BED").expect("required");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+        Some(("simulator", sub_matches)) => match sub_matches.subcommand() {
+            Some(("split-ont", sub_sub_matches)) => {
+                let input_bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+                let min_quality = sub_sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+                simulation_from_split_read(&input_bam, &output, *min_quality);
+            }
+            Some(("porec", sub_sub_matches)) => {
+                let fasta = sub_sub_matches
+                    .get_one::<String>("FASTA")
+                    .expect("required");
+                let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
+                let bed = sub_sub_matches.get_one::<String>("BED").expect("required");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-                    simulate_porec(&fasta, &vcf, &bed, &output);
-                }
-                Some(("hic", sub_sub_matches)) => {
-                    let fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
-                    let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
-                    let bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
-                    let min_mapq = sub_sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
-                    let threads = sub_sub_matches.get_one::<usize>("THREADS").expect("error");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+                simulate_porec(&fasta, &vcf, &bed, &output);
+            }
+            Some(("hic", sub_sub_matches)) => {
+                let fasta = sub_sub_matches
+                    .get_one::<String>("FASTA")
+                    .expect("required");
+                let vcf = sub_sub_matches.get_one::<String>("VCF").expect("required");
+                let bam = sub_sub_matches.get_one::<String>("BAM").expect("required");
+                let min_mapq = sub_sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
+                let threads = sub_sub_matches.get_one::<usize>("THREADS").expect("error");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-                    simulate_hic(&fasta, &vcf, &bam, *min_mapq, *threads, &output);
-                }
-                _ => {
-                    eprintln!("No such subcommand.");
+                simulate_hic(&fasta, &vcf, &bam, *min_mapq, *threads, &output);
+            }
+            _ => {
+                eprintln!("No such subcommand.");
+            }
+        },
+        Some(("kmer", sub_matches)) => match sub_matches.subcommand() {
+            Some(("count", sub_sub_matches)) => {
+                let input_fasta = sub_sub_matches
+                    .get_one::<String>("FASTA")
+                    .expect("required");
+                let k = sub_sub_matches.get_one::<usize>("K").expect("error");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+                let fasta = Fastx::new(&input_fasta);
+                let kmer_count = fasta.kmer_count(*k).unwrap();
+                let mut writer = common_writer(&output);
+                for (k, v) in kmer_count.iter() {
+                    writer.write(format!("{}\t{}\n", k, v).as_bytes()).unwrap();
                 }
             }
-            
-        }
-        Some(("kmer", sub_matches)) => {
-            match sub_matches.subcommand() {
-                Some(("count", sub_sub_matches)) => {
-                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
-                    let k = sub_sub_matches.get_one::<usize>("K").expect("error");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+            Some(("mask", sub_sub_matches)) => {
+                let input_fasta = sub_sub_matches
+                    .get_one::<String>("FASTA")
+                    .expect("required");
+                let k = sub_sub_matches.get_one::<usize>("K").expect("error");
+                let ploidy = sub_sub_matches.get_one::<u64>("PLOIDY").expect("error");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-                    let fasta = Fastx::new(&input_fasta);
-                    let kmer_count = fasta.kmer_count(*k).unwrap();
-                    let mut writer = common_writer(&output);
-                    for (k, v) in kmer_count.iter() {
-                        writer.write(format!("{}\t{}\n", k, v).as_bytes()).unwrap();
-                    }
-
-                }
-                Some(("mask", sub_sub_matches)) => {
-                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
-                    let k = sub_sub_matches.get_one::<usize>("K").expect("error");
-                    let ploidy = sub_sub_matches.get_one::<u64>("PLOIDY").expect("error");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
-                    
-                    let fasta = Fastx::new(&input_fasta);
-                    fasta.mask_high_frequency_kmer(*k, *ploidy, output).unwrap();
-                },
-                Some(("position", sub_sub_matches)) => {
-                    let input_fasta = sub_sub_matches.get_one::<String>("FASTA").expect("required");
-                    let k = sub_sub_matches.get_one::<usize>("K").expect("required");
-                    let kmer_list = sub_sub_matches.get_one::<String>("KMER_LIST").expect("required");
-                    let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
-                    
-                    let fasta = Fastx::new(&input_fasta);
-                    let _ = fasta.kmer_positions(*k, &kmer_list, &output);
-
-                }
-                _ => {
-                    eprintln!("{:?}", sub_matches.subcommand());
-                    eprintln!("No such subcommand.");
-                }
+                let fasta = Fastx::new(&input_fasta);
+                fasta.mask_high_frequency_kmer(*k, *ploidy, output).unwrap();
             }
-        }
+            Some(("position", sub_sub_matches)) => {
+                let input_fasta = sub_sub_matches
+                    .get_one::<String>("FASTA")
+                    .expect("required");
+                let k = sub_sub_matches.get_one::<usize>("K").expect("required");
+                let kmer_list = sub_sub_matches
+                    .get_one::<String>("KMER_LIST")
+                    .expect("required");
+                let output = sub_sub_matches.get_one::<String>("OUTPUT").expect("error");
+
+                let fasta = Fastx::new(&input_fasta);
+                let _ = fasta.kmer_positions(*k, &kmer_list, &output);
+            }
+            _ => {
+                eprintln!("{:?}", sub_matches.subcommand());
+                eprintln!("No such subcommand.");
+            }
+        },
         Some(("digest", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
@@ -630,9 +749,10 @@ fn main() {
                 for pos in v {
                     let pos_start = pos[0];
                     let pos_end = pos[1];
-                    writer.write(format!("{}\t{}\t{}\n", k, pos_start, pos_end).as_bytes()).unwrap();
+                    writer
+                        .write(format!("{}\t{}\t{}\n", k, pos_start, pos_end).as_bytes())
+                        .unwrap();
                 }
-                
             }
 
             log::info!("Digest results written to `{}`", output);
@@ -643,24 +763,23 @@ fn main() {
             let pattern = sub_matches.get_one::<String>("PATTERN").expect("error");
             let min_re = sub_matches.get_one::<u64>("MIN_RE").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             // let fasta = Fastx::new(&input_fasta);
             // let contigsizes = fasta.get_chrom_size().unwrap();
             let fasta = Fastx::new(&input_fasta);
             let (counts, contigsizes) = fasta.count_re(&pattern).unwrap();
             let mut count_re = CountRE::new(&output);
 
-            // counts + 1 
-            let counts: IndexMap<String, u64> = counts.into_iter()
-                                                    .map(|(k, v)| (k, v + 1))
-                                                    .collect();
+            // counts + 1
+            let counts: IndexMap<String, u64> =
+                counts.into_iter().map(|(k, v)| (k, v + 1)).collect();
             // filter counts which are less than min re
-            let counts: IndexMap<String, u64> = counts.into_iter()
-                                                    .filter(|(_, v)| *v >= *min_re)
-                                                    .collect();
-            let contigsizes = contigsizes.into_iter()
-                                        .filter(|(k, _)| counts.contains_key(k))
-                                        .collect();
+            let counts: IndexMap<String, u64> =
+                counts.into_iter().filter(|(_, v)| *v >= *min_re).collect();
+            let contigsizes = contigsizes
+                .into_iter()
+                .filter(|(k, _)| counts.contains_key(k))
+                .collect();
             count_re.from_hashmap(counts, contigsizes);
             count_re.write(&output);
         }
@@ -673,14 +792,16 @@ fn main() {
         }
         Some(("paf2depth", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
-            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .expect("required");
             let window_size = sub_matches.get_one::<usize>("WINSIZE").expect("error");
             let mut step_size = sub_matches.get_one::<usize>("STEPSIZE").expect("error");
             let min_mapq = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -689,16 +810,25 @@ fn main() {
             let pt = PAFTable::new(&paf);
             if *step_size == 0 {
                 step_size = window_size;
-            } 
-            pt.to_depth(&chromsizes, *window_size, *step_size, *min_mapq, *secondary, &output).unwrap();
-
+            }
+            pt.to_depth(
+                &chromsizes,
+                *window_size,
+                *step_size,
+                *min_mapq,
+                *secondary,
+                &output,
+            )
+            .unwrap();
         }
         Some(("paf2porec", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let empty_string = String::new();
-            let bed = sub_matches.get_one::<String>("BED").unwrap_or(&empty_string);
+            let bed = sub_matches
+                .get_one::<String>("BED")
+                .unwrap_or(&empty_string);
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
@@ -710,21 +840,35 @@ fn main() {
 
             let pt = PAFTable::new(&paf);
 
-            pt.paf2table(bed, output, min_quality, min_identity, 
-                            min_length, max_order, max_edge, *secondary, *threads).unwrap();
-
+            pt.paf2table(
+                bed,
+                output,
+                min_quality,
+                min_identity,
+                min_length,
+                max_order,
+                max_edge,
+                *secondary,
+                *threads,
+            )
+            .unwrap();
         }
         Some(("porec2pairs", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
-            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .expect("required");
 
             if !Path::new(chromsizes).exists() {
                 log::error!("Chromsizes file `{}` not found.", chromsizes);
                 std::process::exit(1);
             }
-            
+
             let output_raw = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            let output = output_raw.strip_suffix("/").unwrap_or(output_raw).to_string();
+            let output = output_raw
+                .strip_suffix("/")
+                .unwrap_or(output_raw)
+                .to_string();
             let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_order = sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
@@ -734,47 +878,70 @@ fn main() {
 
             if output.ends_with(".pqs") {
                 let output = if output == "-" {
-                    let output = table.strip_suffix(".porec.gz").unwrap_or(&table).strip_suffix(".con.gz").unwrap_or(&table).strip_suffix(".concatemer.gz").unwrap_or(&table);
+                    let output = table
+                        .strip_suffix(".porec.gz")
+                        .unwrap_or(&table)
+                        .strip_suffix(".con.gz")
+                        .unwrap_or(&table)
+                        .strip_suffix(".concatemer.gz")
+                        .unwrap_or(&table);
                     format!("{}.pqs", output)
                 } else {
                     output.to_string()
                 };
-                
+
                 if Path::new(&output).exists() {
-                    log::info!("Output directory {} already exists. Removing it first.", output);
+                    log::info!(
+                        "Output directory {} already exists. Removing it first.",
+                        output
+                    );
                     std::fs::remove_dir_all(&output).unwrap();
                 }
-                prt.to_pairs_pqs(&chromsizes, &output, *chunksize, *min_quality, *min_order, *max_order, *threads).unwrap();
+                prt.to_pairs_pqs(
+                    &chromsizes,
+                    &output,
+                    *chunksize,
+                    *min_quality,
+                    *min_order,
+                    *max_order,
+                    *threads,
+                )
+                .unwrap();
             } else {
-                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order).unwrap();
+                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order)
+                    .unwrap();
             }
-            
         }
         Some(("porec-break", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
-            let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let break_bed = sub_matches
+                .get_one::<String>("BREAK_BED")
+                .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut prt = PoreCTable::new(&table);
             prt.break_contigs(&break_bed, &output, *threads);
-
         }
 
         Some(("porec-dup", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
-            let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let collapsed_list = sub_matches
+                .get_one::<String>("COLLAPSED")
+                .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut prt = PoreCTable::new(&table);
             prt.dup(&collapsed_list, 123, &output, *threads);
-
         }
         Some(("porec-merge", sub_matches)) => {
-            let tables: Vec<_> = sub_matches.get_many::<String>("TABLES").expect("required").collect();
+            let tables: Vec<_> = sub_matches
+                .get_many::<String>("TABLES")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             merge_porec_tables(tables, output)
         }
         Some(("porec2reads", m)) => {
@@ -782,22 +949,28 @@ fn main() {
             // let fasta = m.get_one::<String>("FASTA").unwrap();
             // let out_prefix = m.get_one::<String>("OUTPUT").unwrap();
             // let length_arg = *m.get_one::<usize>("LENGTH").unwrap();
-            
-           
+
             // let read_len = if length_arg == 0 { None } else { Some(length_arg) };
-            
+
             // let mut porec_table = PoreCTable::new(table);
             // porec_table.to_pe_pair_reads(fasta, out_prefix, read_len).unwrap();
             let table = m.get_one::<String>("TABLE").unwrap();
             let fasta = m.get_one::<String>("FASTA").unwrap();
             let out_prefix = m.get_one::<String>("OUTPUT").unwrap();
             let length_arg = *m.get_one::<usize>("LENGTH").unwrap();
-            
-           
-            let read_len = if length_arg == 0 { None } else { Some(length_arg) };
-            
-            let read_len = if length_arg == 0 { None } else { Some(length_arg) };
-                        
+
+            let read_len = if length_arg == 0 {
+                None
+            } else {
+                Some(length_arg)
+            };
+
+            let read_len = if length_arg == 0 {
+                None
+            } else {
+                Some(length_arg)
+            };
+
             let mut temp_files = Vec::new();
 
             let actual_table = if table.ends_with(".bam") {
@@ -818,12 +991,22 @@ fn main() {
 
                 // 1. BAM -> PAF
                 bam2paf(table, &tmp_paf, threads, secondary);
-                
+
                 // 2. PAF -> PoreC
                 let pt = PAFTable::new(&tmp_paf);
                 let empty_string = String::new();
-                pt.paf2table(&empty_string, &tmp_porec, &min_quality, &min_identity, 
-                                &min_length, &max_order, &max_edge, secondary, threads).unwrap();
+                pt.paf2table(
+                    &empty_string,
+                    &tmp_porec,
+                    &min_quality,
+                    &min_identity,
+                    &min_length,
+                    &max_order,
+                    &max_edge,
+                    secondary,
+                    threads,
+                )
+                .unwrap();
 
                 tmp_porec
             } else if table.ends_with(".paf") || table.ends_with(".paf.gz") {
@@ -840,8 +1023,18 @@ fn main() {
 
                 let pt = PAFTable::new(table);
                 let empty_string = String::new();
-                pt.paf2table(&empty_string, &tmp_porec, &min_quality, &min_identity, 
-                                &min_length, &max_order, &max_edge, secondary, threads).unwrap();
+                pt.paf2table(
+                    &empty_string,
+                    &tmp_porec,
+                    &min_quality,
+                    &min_identity,
+                    &min_length,
+                    &max_order,
+                    &max_edge,
+                    secondary,
+                    threads,
+                )
+                .unwrap();
 
                 tmp_porec
             } else {
@@ -849,12 +1042,13 @@ fn main() {
             };
 
             let mut porec_table = PoreCTable::new(&actual_table);
-            porec_table.to_pe_pair_reads(fasta, out_prefix, read_len).unwrap();
+            porec_table
+                .to_pe_pair_reads(fasta, out_prefix, read_len)
+                .unwrap();
 
             for tmp in temp_files {
                 std::fs::remove_file(tmp).ok();
             }
-            
         }
         Some(("porec-intersect", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
@@ -862,12 +1056,12 @@ fn main() {
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
                 .unwrap();
-            
+
             let mut prt = PoreCTable::new(&table);
             if *invert {
                 log::info!("Invert the table.");
@@ -875,12 +1069,15 @@ fn main() {
             // prt.intersect(&bed, *invert, &output);
             prt.intersect_multi_threads(&bed, *invert, &output);
         }
-              
+
         Some(("paf-downsample", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mode = sub_matches.get_one::<String>("MODE").expect("error").as_str();
+            let mode = sub_matches
+                .get_one::<String>("MODE")
+                .expect("error")
+                .as_str();
             let by = sub_matches.get_one::<String>("BY").expect("error").as_str();
 
             let pairs = *sub_matches.get_one::<u64>("PAIRS").expect("error");
@@ -893,7 +1090,9 @@ fn main() {
             let min_length = *sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
             let min_order = *sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = *sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
-            let keep_comments = *sub_matches.get_one::<bool>("KEEP_COMMENTS").unwrap_or(&false);
+            let keep_comments = *sub_matches
+                .get_one::<bool>("KEEP_COMMENTS")
+                .unwrap_or(&false);
 
             // translate args into Option targets (same as porec-downsample)
             let (target_reads, target_pairs, target_bases, frac_opt) = match mode {
@@ -961,7 +1160,10 @@ fn main() {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
-            let mode = sub_matches.get_one::<String>("MODE").expect("error").as_str();
+            let mode = sub_matches
+                .get_one::<String>("MODE")
+                .expect("error")
+                .as_str();
             let by = sub_matches.get_one::<String>("BY").expect("error").as_str();
 
             let pairs = *sub_matches.get_one::<u64>("PAIRS").expect("error");
@@ -1028,7 +1230,9 @@ fn main() {
 
         Some(("porec2depth", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
-            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .expect("required");
             let window_size = sub_matches.get_one::<usize>("WINSIZE").expect("error");
             let mut step_size = *sub_matches.get_one::<usize>("STEPSIZE").expect("error");
             let min_mapq = *sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
@@ -1045,14 +1249,19 @@ fn main() {
             }
 
             let mut prt = PoreCTable::new(&table);
-            prt.to_depth(&chromsizes, *window_size, step_size, min_mapq, &output).unwrap();
+            prt.to_depth(&chromsizes, *window_size, step_size, min_mapq, &output)
+                .unwrap();
         }
         Some(("paf2pairs", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
-            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES").expect("required");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .expect("required");
             let empty_string = String::new();
-            let bed = sub_matches.get_one::<String>("BED").unwrap_or(&empty_string);
-           
+            let bed = sub_matches
+                .get_one::<String>("BED")
+                .unwrap_or(&empty_string);
+
             let min_quality = sub_matches.get_one::<u8>("MIN_MAPQ").expect("error");
             let min_identity = sub_matches.get_one::<f32>("MIN_IDENTITY").expect("error");
             let min_length = sub_matches.get_one::<u32>("MIN_LENGTH").expect("error");
@@ -1062,45 +1271,79 @@ fn main() {
             let secondary = sub_matches.get_one::<bool>("SECONDARY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output_raw = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            let output = output_raw.strip_suffix("/").unwrap_or(output_raw).to_string();
+            let output = output_raw
+                .strip_suffix("/")
+                .unwrap_or(output_raw)
+                .to_string();
 
             let pt = PAFTable::new(&paf);
             let prefix = output.strip_suffix(".pairs").unwrap_or(&output);
             let prefix = prefix.strip_suffix(".pairs.gz").unwrap_or(prefix);
             let prefix: &str = prefix.strip_suffix(".pairs.pqs").unwrap_or(prefix);
             let table_output = format!("{}.porec.gz", prefix);
-            pt.paf2table(&bed, &table_output, min_quality, min_identity, 
-                            min_length, max_order, max_edge, *secondary, *threads).unwrap();
+            pt.paf2table(
+                &bed,
+                &table_output,
+                min_quality,
+                min_identity,
+                min_length,
+                max_order,
+                max_edge,
+                *secondary,
+                *threads,
+            )
+            .unwrap();
             let mut prt = PoreCTable::new(&table_output);
             if output.ends_with(".pqs") {
                 let output = if output == "-" {
-                    let output = table_output.strip_suffix(".porec.gz").unwrap_or(&table_output).strip_suffix(".con.gz").unwrap_or(&table_output).strip_suffix(".concatemer.gz").unwrap_or(&table_output);
+                    let output = table_output
+                        .strip_suffix(".porec.gz")
+                        .unwrap_or(&table_output)
+                        .strip_suffix(".con.gz")
+                        .unwrap_or(&table_output)
+                        .strip_suffix(".concatemer.gz")
+                        .unwrap_or(&table_output);
                     format!("{}.pqs", output)
                 } else {
                     output.to_string()
                 };
                 if Path::new(&output).exists() {
-                    log::info!("Output directory {} already exists. Removing it first.", output);
+                    log::info!(
+                        "Output directory {} already exists. Removing it first.",
+                        output
+                    );
                     std::fs::remove_dir_all(&output).unwrap();
                 }
-                prt.to_pairs_pqs(&chromsizes, &output, 1000000, *min_quality, *min_order, *max_order as usize, *threads).unwrap();
-               
-               
+                prt.to_pairs_pqs(
+                    &chromsizes,
+                    &output,
+                    1000000,
+                    *min_quality,
+                    *min_order,
+                    *max_order as usize,
+                    *threads,
+                )
+                .unwrap();
             } else {
-                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order as usize).unwrap();
+                prt.to_pairs(
+                    &chromsizes,
+                    &output,
+                    *min_quality,
+                    *min_order,
+                    *max_order as usize,
+                )
+                .unwrap();
             }
-
         }
         Some(("pairs-downsample", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let percent = sub_matches.get_one::<f64>("PERCENT").expect("error");
             let number = sub_matches.get_one::<usize>("NUMBER").expect("error");
-            let seed = sub_matches.get_one::<usize>("SEED").expect("error");  
+            let seed = sub_matches.get_one::<usize>("SEED").expect("error");
 
             let min_mapq = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
-
 
             match (*percent, *number) {
                 (0.0, 0) => {
@@ -1113,7 +1356,10 @@ fn main() {
                         match p.is_pqs() {
                             true => {
                                 if Path::new(output).exists() {
-                                    log::info!("Output directory {} already exists. Removing it first.", output);
+                                    log::info!(
+                                        "Output directory {} already exists. Removing it first.",
+                                        output
+                                    );
                                     std::fs::remove_dir_all(output).unwrap();
                                 }
                                 // ✅ prefer using unified downsample for PQS (supports mapq + threads)
@@ -1125,7 +1371,8 @@ fn main() {
                                     *seed as u64,
                                     min_mapq,
                                     threads,
-                                ).unwrap();
+                                )
+                                .unwrap();
                             }
                             false => log::error!("The input directory is not a PQS directory."),
                         }
@@ -1140,7 +1387,10 @@ fn main() {
                         match p.is_pqs() {
                             true => {
                                 if Path::new(output).exists() {
-                                    log::info!("Output directory {} already exists. Removing it first.", output);
+                                    log::info!(
+                                        "Output directory {} already exists. Removing it first.",
+                                        output
+                                    );
                                     std::fs::remove_dir_all(output).unwrap();
                                 }
                                 downsample_pqs(
@@ -1151,7 +1401,8 @@ fn main() {
                                     *seed as u64,
                                     min_mapq,
                                     threads,
-                                ).unwrap();
+                                )
+                                .unwrap();
                             }
                             false => log::error!("The input directory is not a PQS directory."),
                         }
@@ -1160,14 +1411,15 @@ fn main() {
                     }
                 }
             }
-
         }
         Some(("pairs-merge", sub_matches)) => {
-            
-            let files: Vec<_> = sub_matches.get_many::<String>("FILES").expect("required").collect();
+            let files: Vec<_> = sub_matches
+                .get_many::<String>("FILES")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -1175,32 +1427,36 @@ fn main() {
 
             // get first file
             let first_file = files.first().unwrap();
-     
+
             if Path::new(first_file).is_dir() {
                 let p = PQS::new(&first_file);
                 match p.is_pqs() {
                     true => {
                         if Path::new(&output).exists() {
-                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            log::info!(
+                                "Output directory {} already exists. Removing it first.",
+                                output
+                            );
                             std::fs::remove_dir_all(&output).unwrap();
                         }
                         let _ = merge_pqs(files, &output);
-                    },
+                    }
                     false => {
                         log::error!("The first input directory is not a PQS directory.");
                     }
                 }
             } else {
                 merge_pairs(files, output)
-
             }
         }
         Some(("pairs-break", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
-            let break_bed = sub_matches.get_one::<String>("BREAK_BED").expect("required");
+            let break_bed = sub_matches
+                .get_one::<String>("BREAK_BED")
+                .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -1211,11 +1467,14 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         if Path::new(&output).exists() {
-                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            log::info!(
+                                "Output directory {} already exists. Removing it first.",
+                                output
+                            );
                             std::fs::remove_dir_all(&output).unwrap();
                         }
                         let _ = p.break_contigs(&break_bed, &output);
-                    },
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
@@ -1227,7 +1486,9 @@ fn main() {
         }
         Some(("pairs-dup", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
-            let collapsed_list = sub_matches.get_one::<String>("COLLAPSED").expect("required");
+            let collapsed_list = sub_matches
+                .get_one::<String>("COLLAPSED")
+                .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
@@ -1241,11 +1502,14 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         if Path::new(&output).exists() {
-                            log::info!("Output directory {} already exists. Removing it first.", output);
+                            log::info!(
+                                "Output directory {} already exists. Removing it first.",
+                                output
+                            );
                             std::fs::remove_dir_all(&output).unwrap();
                         }
-                        let _ = p.dup(&collapsed_list, 123, &output);
-                    },
+                        p.dup(&collapsed_list, 123, &output).unwrap();
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
@@ -1260,7 +1524,7 @@ fn main() {
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -1277,12 +1541,10 @@ fn main() {
                 }
             }
 
-          
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
-            
 
             if Path::new(pairs).is_dir() {
-               log::error!("The input directory is not a pairs or pairs.gz file.");
+                log::error!("The input directory is not a pairs or pairs.gz file.");
             } else {
                 let mut pairs = Pairs::new(&pairs);
                 pairs.filter_by_mapq(*min_quality, &whitehash, &output);
@@ -1306,9 +1568,9 @@ fn main() {
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let split_num = sub_matches.get_one::<u32>("SPLIT_NUM").expect("error");
-            
+
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -1319,11 +1581,16 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         if *split_num > 1 {
-                            let _ = p.to_split_contacts(*min_contacts, *split_num, *min_quality, &output);
+                            let _ = p.to_split_contacts(
+                                *min_contacts,
+                                *split_num,
+                                *min_quality,
+                                &output,
+                            );
                         } else {
                             let _ = p.to_contacts(*min_contacts, *min_quality, &output);
                         }
-                    },
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
@@ -1331,16 +1598,17 @@ fn main() {
             } else {
                 let mut _pairs = Pairs::new(&pairs);
                 let contacts = if *split_num > 1 {
-                    _pairs.to_split_contacts(*min_contacts, *split_num, *min_quality).unwrap()
+                    _pairs
+                        .to_split_contacts(*min_contacts, *split_num, *min_quality)
+                        .unwrap()
                 } else {
                     let mut _pairs = Pairs::new(&pairs);
                     _pairs.to_contacts(*min_contacts, *min_quality).unwrap()
                 };
-            
+
                 contacts.write(&output);
             }
             log::info!("Contacts written to {}", output);
-            
         }
         Some(("pairs2clm", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -1348,15 +1616,20 @@ fn main() {
             let binsize = sub_matches.get_one::<u32>("BINSIZE").expect("error");
             let min_contacts = sub_matches.get_one::<u32>("MIN_CONTACTS").expect("error");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
-            let no_output_split_contacts = sub_matches.get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS").expect("error");
+            let no_output_split_contacts = sub_matches
+                .get_one::<bool>("NO_OUTPUT_SPLIT_CONTACTS")
+                .expect("error");
             let output_depth = sub_matches.get_one::<bool>("OUTPUT_DEPTH").expect("error");
             // let low_memory = sub_matches.get_one::<bool>("LOW_MEMORY").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let disable_filter = sub_matches.get_one::<bool>("DISABLE_FILTER").expect("error");
-            let max_depth_ratio = sub_matches.get_one::<f64>("MAX_DEPTH_RATIO").expect("error");
+            let disable_filter = sub_matches
+                .get_one::<bool>("DISABLE_FILTER")
+                .expect("error");
+            let max_depth_ratio = sub_matches
+                .get_one::<f64>("MAX_DEPTH_RATIO")
+                .expect("error");
             let max_q0_ratio = sub_matches.get_one::<f64>("MAX_Q0_RATIO").expect("error");
-            
-            
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -1364,38 +1637,46 @@ fn main() {
 
             let output_split_contacts = match no_output_split_contacts {
                 true => false,
-                false => true
+                false => true,
             };
-            
-            // pairs is dir 
+
+            // pairs is dir
             if std::path::Path::new(&pairs).is_dir() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
-                    true => { 
-                        let _ = p.to_clm(*min_contacts, 
-                                    *min_quality, &output, 
-                                    output_split_contacts, 
-                                    *output_depth, *binsize,
-                                    *threads,
-                                    *disable_filter,
-                                    *max_depth_ratio,
-                                    *max_q0_ratio,
-                                    );
-                    },
+                    true => {
+                        let _ = p.to_clm(
+                            *min_contacts,
+                            *min_quality,
+                            &output,
+                            output_split_contacts,
+                            *output_depth,
+                            *binsize,
+                            *threads,
+                            *disable_filter,
+                            *max_depth_ratio,
+                            *max_q0_ratio,
+                        );
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
                 }
             } else {
                 let mut pairs = Pairs::new(&pairs);
-                pairs.to_clm(*min_contacts, *min_quality, 
-                            &output, output_split_contacts, 
-                            *output_depth, *binsize, *threads, true,
-                            *disable_filter,
-                            *max_depth_ratio
-                        );
+                pairs.to_clm(
+                    *min_contacts,
+                    *min_quality,
+                    &output,
+                    output_split_contacts,
+                    *output_depth,
+                    *binsize,
+                    *threads,
+                    true,
+                    *disable_filter,
+                    *max_depth_ratio,
+                );
             }
-
         }
         Some(("pairs2depth", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
@@ -1414,7 +1695,7 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         let _ = p.to_depth(*binsize, *min_quality, &output);
-                    },
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
@@ -1428,14 +1709,13 @@ fn main() {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
 
             if Path::new(&pairs).is_dir() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
                         let _ = p.to_mnd(*min_quality, &output);
-                    },
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
@@ -1485,19 +1765,22 @@ fn main() {
         }
         Some(("pairs-prune", sub_matches)) => {
             let input = sub_matches.get_one::<String>("INPUT").expect("required");
-            let prune_table = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let prune_table = sub_matches
+                .get_one::<String>("PRUNETABLE")
+                .expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
             let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
-            if Path::new(&input).is_dir(){
+            if Path::new(&input).is_dir() {
                 prune_pqs(input, prune_table, output, threads).unwrap();
             } else {
                 prune_pairs(input, prune_table, output, threads).unwrap();
             }
-            
         }
         Some(("bam-prune", sub_matches)) => {
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");
-            let prune_table = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
+            let prune_table = sub_matches
+                .get_one::<String>("PRUNETABLE")
+                .expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
             let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
 
@@ -1524,18 +1807,31 @@ fn main() {
             let mapq = sub_matches.get_one::<u8>("MAPQ").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let empty_string = String::new();
-            let enzyme_bed = sub_matches.get_one::<String>("ENZYME").unwrap_or(&empty_string);
+            let enzyme_bed = sub_matches
+                .get_one::<String>("ENZYME")
+                .unwrap_or(&empty_string);
             let min_edge_support = *sub_matches.get_one::<u32>("MIN_EDGE_SUPPORT").unwrap_or(&1);
-            let min_clique_size = *sub_matches.get_one::<usize>("MIN_CLIQUE_SIZE").unwrap_or(&3);
-            let max_comp_size = *sub_matches.get_one::<usize>("MAX_COMP_SIZE").unwrap_or(&1000);
+            let min_clique_size = *sub_matches
+                .get_one::<usize>("MIN_CLIQUE_SIZE")
+                .unwrap_or(&3);
+            let max_comp_size = *sub_matches
+                .get_one::<usize>("MAX_COMP_SIZE")
+                .unwrap_or(&1000);
             let threads = *sub_matches.get_one::<usize>("THREADS").unwrap_or(&4);
 
             if Path::new(&pairs).is_dir() {
                 let pqs = PQS::new(&pairs);
-                let _ = pqs.to_porec(*mapq, &output, enzyme_bed, min_edge_support, min_clique_size, max_comp_size, threads);
+                let _ = pqs.to_porec(
+                    *mapq,
+                    &output,
+                    enzyme_bed,
+                    min_edge_support,
+                    min_clique_size,
+                    max_comp_size,
+                    threads,
+                );
             } else {
                 log::error!("The input is not a directory, that is not a pairs or pairs.gz file.");
-            
             }
         }
 
@@ -1548,9 +1844,11 @@ fn main() {
             bam2paf(&bam, &output, *threads, *is_secondary);
         }
 
-        
         Some(("bam2fastq", sub_matches)) => {
-            let bams: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let bams: Vec<_> = sub_matches
+                .get_many::<String>("BAM")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
@@ -1561,37 +1859,46 @@ fn main() {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
+
             bam2fasta(&bam, &output, *threads);
         }
-        
+
         Some(("bamstat", sub_matches)) => {
-            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let bam: Vec<_> = sub_matches
+                .get_many::<String>("BAM")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
-            bamstat(&bam,  &output, *threads);
+
+            bamstat(&bam, &output, *threads);
         }
         Some(("hicbamstat", sub_matches)) => {
-            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let bam: Vec<_> = sub_matches
+                .get_many::<String>("BAM")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
-            bamstat_hic(&bam,  &output, *threads);
+
+            bamstat_hic(&bam, &output, *threads);
         }
         Some(("porecbamstat", sub_matches)) => {
-            let bam: Vec<_> = sub_matches.get_many::<String>("BAM").expect("required").collect();
+            let bam: Vec<_> = sub_matches
+                .get_many::<String>("BAM")
+                .expect("required")
+                .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            
-            bamstat_porec(&bam,  &output, *threads);
+
+            bamstat_porec(&bam, &output, *threads);
         }
         Some(("bam2pairs", sub_matches)) => {
             let bam = sub_matches.get_one::<String>("BAM").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-           
+
             if Path::new(&output).exists() {
                 log::info!("Output path {} existed, removing it first.", output);
                 std::fs::remove_dir_all(&output).unwrap();
@@ -1602,11 +1909,8 @@ fn main() {
             } else {
                 bam2pairs(&bam, *min_quality, &output, *threads);
             }
-               
-            
-
         }
-        
+
         Some(("pairs-intersect", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
@@ -1617,7 +1921,6 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-
             if *invert {
                 log::info!("Invert the table.");
             }
@@ -1626,7 +1929,6 @@ fn main() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
-                        
                         if output == "-" {
                             let output = pairs.strip_suffix(".pqs").unwrap_or(&pairs);
                             log::info!("Output path set to {}.", output);
@@ -1635,28 +1937,33 @@ fn main() {
                             log::info!("Output path {} existed, removing it first.", output);
                             std::fs::remove_dir_all(&output).unwrap();
                         }
-                        let _ = p.intersect(&bed, *invert, *min_quality, *threads, *max_q0_ratio, &output);
-                    },
+                        let _ = p.intersect(
+                            &bed,
+                            *invert,
+                            *min_quality,
+                            *threads,
+                            *max_q0_ratio,
+                            &output,
+                        );
+                    }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
                 }
             } else {
-
                 ThreadPoolBuilder::new()
                     .num_threads(*threads)
                     .build_global()
                     .unwrap();
                 let mut pairs = Pairs::new(&pairs);
-                pairs.intersect_multi_threads(&bed, *invert, *min_quality,
-                                                 *edge_length, &output);
+                pairs.intersect_multi_threads(&bed, *invert, *min_quality, *edge_length, &output);
             }
         }
 
         Some(("chromsizes", sub_matches)) => {
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
+
             let fasta = Fastx::new(&fasta);
             let mut writer = common_writer(&output);
             let chromsizes = fasta.get_chrom_size().unwrap();
@@ -1674,10 +1981,10 @@ fn main() {
 
             let mut pairs = Pairs::new(&pairs);
             let prunetable = PruneTable::new(&prune);
-            let contigs:HashSet<ContigPair> = prunetable.contig_pairs().unwrap().into_iter().collect();
+            let contigs: HashSet<ContigPair> =
+                prunetable.contig_pairs().unwrap().into_iter().collect();
 
             pairs.remove_by_contig_pairs(contigs, &output).unwrap();
-
         }
 
         Some(("modbam2fq", sub_matches)) => {
@@ -1690,7 +1997,10 @@ fn main() {
         Some(("phase-reads", sub_matches)) => {
             let input = sub_matches.get_one::<String>("INPUT").expect("required");
             let groups = sub_matches.get_one::<String>("GROUPS").expect("required");
-            let format = sub_matches.get_one::<String>("FORMAT").expect("error").as_str();
+            let format = sub_matches
+                .get_one::<String>("FORMAT")
+                .expect("error")
+                .as_str();
             let min_quality = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
@@ -1702,14 +2012,15 @@ fn main() {
                 } else if input.ends_with(".paf") || input.ends_with(".paf.gz") {
                     actual_format = "paf".to_string();
                 } else {
-                    log::error!("Cannot determine format from file extension. Please specify --format.");
+                    log::error!(
+                        "Cannot determine format from file extension. Please specify --format."
+                    );
                     std::process::exit(1);
                 }
             }
 
             match actual_format.as_str() {
                 "bam" => {
-                
                     cphasing::bam::phase_reads(input, groups, output, min_quality, threads);
                 }
                 "paf" => {
@@ -1725,21 +2036,20 @@ fn main() {
         Some(("modfa", sub_matches)) => {
             let input_fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
-            
+
             let min_frac = sub_matches.get_one::<f64>("MIN_FRAC").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
-            
-            modify_fasta(&input_fasta, &bed, 
-                            *min_frac, &output).unwrap();
+
+            modify_fasta(&input_fasta, &bed, *min_frac, &output).unwrap();
         }
 
         Some(("optimize", sub_matches)) => {
-            use rand::rngs::SmallRng;
+            use hashbrown::HashMap;
             use rand::SeedableRng;
             use rand::prelude::SliceRandom;
-            use hashbrown::HashMap;
-        
-            let split_contacts = sub_matches.get_one::<String>("SPLITCONTACTS").expect("required");
+            use rand::rngs::SmallRng;
+
+            let clmb = sub_matches.get_one::<String>("CLMB").expect("required");
             let count_re = sub_matches.get_one::<String>("COUNTRE").expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let mutation_rate = sub_matches.get_one::<f64>("MUTATION").expect("error");
@@ -1749,13 +2059,12 @@ fn main() {
             let resume = sub_matches.get_one::<bool>("RESUME").expect("error");
             let seed = sub_matches.get_one::<u64>("SEED").expect("error");
             let skip_ga = sub_matches.get_one::<bool>("SKIPGA").expect("error");
-            let run_lkh = sub_matches.get_one::<bool>("RUNLKH").expect("error");
+            let log_distance = sub_matches.get_one::<bool>("LOGDIST").expect("error");
+            let no_backbone = sub_matches
+                .get_one::<bool>("NO_BACKBONE")
+                .expect("error");
 
-            let _output = Path::new(&count_re)
-                            .file_stem()
-                            .unwrap()
-                            .to_str()
-                            .unwrap();
+            let _output = Path::new(&count_re).file_stem().unwrap().to_str().unwrap();
             let output = Path::new(_output).with_extension("tour");
 
             ThreadPoolBuilder::new()
@@ -1767,9 +2076,9 @@ fn main() {
             count_re.parse();
 
             let contigsizes = count_re.to_lengths();
-            
+
             let initial_contigs = contigsizes.keys().cloned().collect::<Vec<String>>();
-            
+
             let mut contigsizes_idx: IndexMap<usize, usize> = IndexMap::new();
             let mut contig2idx: HashMap<String, usize> = HashMap::new();
             let mut idx2contig: HashMap<usize, String> = HashMap::new();
@@ -1780,98 +2089,132 @@ fn main() {
                 idx2contig.insert(i, contig.clone());
             }
 
-            let white_list = contig2idx.keys().cloned().collect::<HashSet<String>>();
-            let mut split_contacts = SplitContacts::read_from_file(&split_contacts, Some(&white_list)).unwrap();
-          
-            let contacts_map = split_contacts.to_contacts(&contig2idx);
-            let num_contigs = contigsizes_idx.len();
-            let mut contacts_vec: Vec<HashMap<usize, u32>> = vec![HashMap::new(); num_contigs];
-            for (&(u, v), &weight) in contacts_map.iter() {
-                
-                contacts_vec[u].insert(v, weight as u32);
-                contacts_vec[v].insert(u, weight as u32);
-            }
             let signs = vec![true; contigsizes_idx.len()];
             let mut tour = Tour {
                 contigs: contigsizes_idx.keys().cloned().collect(),
-                signs: signs
+                signs: signs,
             };
 
             if *resume && Path::new(&output).exists() {
-                log::info!("Resume optimization from existing output directory: {}", output.display());
+                log::info!(
+                    "Resume optimization from existing output directory: {}",
+                    output.display()
+                );
                 // mv output to output.sav
-               
+
                 let input_tour = common_reader(&output.to_str().unwrap());
                 // read the last line of the file
                 let reader = BufReader::new(input_tour);
                 let last_line = reader.lines().last().unwrap().unwrap();
                 let _tour: Vec<String> = last_line
-                                        .split_whitespace()
-                                        .map(|x| x.parse::<String>().unwrap())
-                                        .collect();
-                
+                    .split_whitespace()
+                    .map(|x| x.parse::<String>().unwrap())
+                    .collect();
+
                 // get signs and contigs from tour : tig1+, tig2-, ...
                 let mut initial_tour: Vec<usize> = Vec::new();
                 let mut signs = Vec::new();
                 for contig in _tour.iter() {
                     let (contig, sign) = if contig.ends_with('+') {
-                        (&contig[..contig.len()-1], true)
+                        (&contig[..contig.len() - 1], true)
                     } else if contig.ends_with('-') {
-                        (&contig[..contig.len()-1], false)
+                        (&contig[..contig.len() - 1], false)
                     } else {
                         (contig.as_str(), true)
                     };
                     let contig_idx = contig2idx.get(contig).unwrap();
                     initial_tour.push(*contig_idx);
                     signs.push(sign);
-                } 
+                }
 
                 log::info!("Backup previous to {}.sav", output.display());
                 std::fs::rename(&output, format!("{}.sav", output.display())).unwrap();
 
-                
                 tour = Tour {
                     contigs: initial_tour,
-                    signs: vec![true; num_contigs],
+                    signs,
                 };
-                
             } else {
                 log::info!("Starting optimization with random tour.");
                 let mut rng = SmallRng::seed_from_u64(*seed);
                 tour.contigs.shuffle(&mut rng);
             }
 
-            
-            let mut tour = run_hybrid(
-                &tour,
-                contigsizes_idx, 
-                contacts_vec, 
-                *mutation_rate,
-                *npop, 
-                *ngen, 
-                1,
-                *run_lkh,
-                !*skip_ga,
-                *resume,
-                *seed,
-                threads.clone(),
-                Some(&split_contacts),
-                Some(&contig2idx),
-            );
+            let objective = if *log_distance {
+                OrderObjective::LogDistance
+            } else {
+                OrderObjective::ReciprocalDistance
+            };
+            let lengths: Vec<u64> = initial_contigs
+                .iter()
+                .map(|name| contigsizes[name] as u64)
+                .collect();
+            let allhic = AllhicProblem::from_clmb(clmb, &initial_contigs, &lengths)
+                .map(|problem| problem.with_objective(objective))
+                .unwrap_or_else(|error| panic!("invalid CLMB optimize input: {error}"));
+            let problem = allhic.ordering;
+            let orientation_problem = allhic.orientation;
+            let mut tour = if *skip_ga {
+                tour
+            } else {
+                let config = OptimizeConfig {
+                    population_size: *npop,
+                    stale_generations: *ngen,
+                    mutation_probability: *mutation_rate,
+                    seed: *seed,
+                    backbone: BackboneConfig {
+                        enabled: !*no_backbone,
+                        ..BackboneConfig::default()
+                    },
+                    ..OptimizeConfig::default()
+                };
+                let result = optimize_order(&tour, &problem, &config)
+                    .unwrap_or_else(|error| panic!("optimization failed: {error}"));
+                if let Some(backbone) = &result.backbone {
+                    if backbone.used {
+                        log::info!(
+                            "Backbone GA: {} path blocks, {} units, {} accepted edges for {} contigs",
+                            backbone.block_count,
+                            backbone.unit_count,
+                            backbone.accepted_edges,
+                            backbone.contig_count
+                        );
+                    } else {
+                        log::info!(
+                            "Backbone GA skipped after confidence filtering: {} blocks, {} units for {} contigs",
+                            backbone.block_count,
+                            backbone.unit_count,
+                            backbone.contig_count
+                        );
+                    }
+                } else {
+                    log::info!("Backbone GA disabled; using standard ALLHiC ordering.");
+                }
+                log::info!("Initial fitness: {:.6}", result.initial_score);
+                log::info!("Final fitness: {:.6}", result.final_score);
+                result.tour
+            };
             // let matrix = ContactMatrix::new(&contigsizes_idx, contacts_vec);
             // let mut tour = run_lkh_optimizer_dual_node(
             //     &tour,
-            //     contigsizes_idx.clone(), 
+            //     contigsizes_idx.clone(),
             //     &matrix,
             //     &split_contacts,
             //     &contig2idx,
             //     10,
             //     *seed,
             // );
-            split_contacts.normalize_by_cis();
-            let detailed_matrix = DetailedContactMatrix::new(split_contacts.to_detailed_contact_matrix(&contig2idx));
-
-            robust_orient_contigs(&mut tour, &detailed_matrix, 10);
+            let result = if *resume {
+                orientation_problem.refine(&mut tour)
+            } else {
+                orientation_problem.optimize(&mut tour)
+            };
+            log::info!(
+                "ALLHiC orientation fitness: {:.6} -> {:.6} ({} phases)",
+                result.initial_score,
+                result.final_score,
+                result.phases
+            );
 
             let mut writer = common_writer(output.to_str().unwrap());
 
@@ -1881,12 +2224,11 @@ fn main() {
                 write!(writer, "{}{} ", name, sign).unwrap();
             }
             writeln!(writer).unwrap();
-
         }
 
         _ => {
-            let input_arg = matches.subcommand().unwrap().0; 
+            let input_arg = matches.subcommand().unwrap().0;
             eprintln!("No such subcommand: {}", input_arg);
-        },
+        }
     }
 }

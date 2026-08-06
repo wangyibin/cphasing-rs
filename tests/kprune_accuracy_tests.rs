@@ -1,9 +1,15 @@
 use cphasing::cli;
 use cphasing::contacts::{ContactEvidence, ContactRecord, Contacts2};
 use cphasing::kprune::{
-    GroupDecision, KPruner, PruneThresholds, all_informative_groups_cross_allelic,
-    classify_selected_alternative,
+    GroupDecision, GroupVote, KPruner, PruneThresholds, StabilityConfig,
+    all_informative_groups_cross_allelic, classify_candidate_by_bidirectional_gap,
+    classify_candidate_by_global_gap, classify_candidate_by_stability,
+    classify_selected_alternative, group_decisions_indicate_cross_allelic,
+    solve_maximum_bipartite_matching,
 };
+use ordered_float::OrderedFloat;
+use pathfinding::matrix::Matrix;
+use pathfinding::prelude::kuhn_munkres;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -36,6 +42,24 @@ fn aggregates_duplicate_contacts_before_normalization() {
 }
 
 #[test]
+fn two_row_matching_matches_kuhn_munkres_for_scores_and_ties() {
+    for columns in 2..=5 {
+        let cases = 3usize.pow((2 * columns) as u32);
+        for mut encoded in 0..cases {
+            let matrix = Matrix::from_fn(2, columns, |_| {
+                let value = encoded % 3;
+                encoded /= 3;
+                OrderedFloat(value as f64)
+            });
+
+            let actual = solve_maximum_bipartite_matching(&matrix);
+            let expected = kuhn_munkres(&matrix);
+            assert_eq!(actual, expected, "matrix={matrix:?}");
+        }
+    }
+}
+
+#[test]
 fn missing_alternative_is_insufficient_evidence() {
     assert_eq!(
         classify_selected_alternative(
@@ -49,6 +73,181 @@ fn missing_alternative_is_insufficient_evidence() {
         ),
         GroupDecision::InsufficientEvidence,
     );
+}
+
+#[test]
+fn global_gap_detects_candidate_displaced_by_stronger_matching() {
+    let matrix = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(10.0), OrderedFloat(0.0)],
+    ])
+    .unwrap();
+
+    assert_eq!(
+        classify_candidate_by_global_gap(&matrix, 0, 0, 5.0, PruneThresholds::default(),),
+        GroupDecision::CrossAllelic,
+    );
+}
+
+#[test]
+fn global_gap_retains_candidate_in_an_optimal_matching() {
+    let matrix = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(0.0), OrderedFloat(4.0)],
+    ])
+    .unwrap();
+
+    assert_eq!(
+        classify_candidate_by_global_gap(&matrix, 0, 0, 5.0, PruneThresholds::default(),),
+        GroupDecision::Compatible,
+    );
+}
+
+#[test]
+fn bidirectional_gap_reuses_global_gap_for_unselected_candidate() {
+    let normalized = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(10.0), OrderedFloat(0.0)],
+    ])
+    .unwrap();
+    let raw = normalized.clone();
+
+    assert_eq!(
+        classify_candidate_by_bidirectional_gap(
+            &normalized,
+            &raw,
+            0,
+            0,
+            5.0,
+            PruneThresholds::default(),
+            0.50,
+        ),
+        GroupDecision::CrossAllelic,
+    );
+}
+
+#[test]
+fn bidirectional_gap_recovers_weak_selected_candidate_rejected_by_raw_contacts() {
+    let normalized = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(4.9)],
+        vec![OrderedFloat(4.9), OrderedFloat(5.0)],
+    ])
+    .unwrap();
+    let raw = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(10.0)],
+        vec![OrderedFloat(10.0), OrderedFloat(5.0)],
+    ])
+    .unwrap();
+
+    assert_eq!(
+        classify_candidate_by_bidirectional_gap(
+            &normalized,
+            &raw,
+            0,
+            0,
+            5.0,
+            PruneThresholds::default(),
+            0.05,
+        ),
+        GroupDecision::CrossAllelic,
+    );
+}
+
+#[test]
+fn bidirectional_gap_keeps_selected_candidate_supported_by_raw_contacts() {
+    let normalized = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(4.9)],
+        vec![OrderedFloat(4.9), OrderedFloat(5.0)],
+    ])
+    .unwrap();
+    let raw = Matrix::from_rows(vec![
+        vec![OrderedFloat(10.0), OrderedFloat(5.0)],
+        vec![OrderedFloat(5.0), OrderedFloat(10.0)],
+    ])
+    .unwrap();
+
+    assert_eq!(
+        classify_candidate_by_bidirectional_gap(
+            &normalized,
+            &raw,
+            0,
+            0,
+            10.0,
+            PruneThresholds::default(),
+            0.02,
+        ),
+        GroupDecision::Compatible,
+    );
+}
+
+#[test]
+fn bidirectional_gap_is_not_diluted_by_unrelated_large_assignments() {
+    let normalized = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(4.9), OrderedFloat(0.0)],
+        vec![OrderedFloat(4.9), OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(0.0), OrderedFloat(0.0), OrderedFloat(100.0)],
+    ])
+    .unwrap();
+    let raw = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(10.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(10.0), OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(0.0), OrderedFloat(0.0), OrderedFloat(100.0)],
+    ])
+    .unwrap();
+
+    assert_eq!(
+        classify_candidate_by_bidirectional_gap(
+            &normalized,
+            &raw,
+            0,
+            0,
+            5.0,
+            PruneThresholds::default(),
+            0.02,
+        ),
+        GroupDecision::Compatible,
+    );
+}
+
+#[test]
+fn stability_vote_detects_consistent_candidate_displacement() {
+    let matrix = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(10.0), OrderedFloat(0.0)],
+    ])
+    .unwrap();
+    let config = StabilityConfig {
+        replicates: 8,
+        jitter: 0.1,
+        vote_threshold: 0.5,
+    };
+
+    assert_eq!(
+        classify_candidate_by_stability(&matrix, 0, 0, 5.0, PruneThresholds::default(), config,),
+        GroupDecision::CrossAllelic,
+    );
+}
+
+#[test]
+fn stability_vote_is_deterministic_for_stable_candidate() {
+    let matrix = Matrix::from_rows(vec![
+        vec![OrderedFloat(5.0), OrderedFloat(0.0)],
+        vec![OrderedFloat(0.0), OrderedFloat(4.0)],
+    ])
+    .unwrap();
+    let config = StabilityConfig {
+        replicates: 8,
+        jitter: 0.2,
+        vote_threshold: 0.5,
+    };
+
+    let first =
+        classify_candidate_by_stability(&matrix, 0, 0, 5.0, PruneThresholds::default(), config);
+    let second =
+        classify_candidate_by_stability(&matrix, 0, 0, 5.0, PruneThresholds::default(), config);
+
+    assert_eq!(first, GroupDecision::Compatible);
+    assert_eq!(first, second);
 }
 
 #[test]
@@ -100,6 +299,20 @@ fn conflicting_group_votes_retain_pair() {
     assert!(!all_informative_groups_cross_allelic([
         GroupDecision::InsufficientEvidence,
     ]));
+}
+
+#[test]
+fn any_cross_vote_prunes_despite_compatible_groups() {
+    let decisions = [GroupDecision::CrossAllelic, GroupDecision::Compatible];
+
+    assert!(!group_decisions_indicate_cross_allelic(
+        decisions,
+        GroupVote::Conservative,
+    ));
+    assert!(group_decisions_indicate_cross_allelic(
+        decisions,
+        GroupVote::AnyCross,
+    ));
 }
 
 #[derive(Clone, Default)]
@@ -207,8 +420,8 @@ fn cli_parses_finite_non_negative_prune_thresholds() {
         .try_get_matches_from(["cphasing", "kprune", "a", "c", "o"])
         .unwrap();
     let (_, subcommand) = matches.subcommand().unwrap();
-    assert_eq!(subcommand.get_one::<f64>("MIN_CONTACTS"), Some(&1.0));
-    assert_eq!(subcommand.get_one::<f64>("MIN_MARGIN"), Some(&0.10));
+    assert_eq!(subcommand.get_one::<f64>("MIN_CONTACTS"), Some(&0.0));
+    assert_eq!(subcommand.get_one::<f64>("MIN_MARGIN"), Some(&0.0));
 
     for argument in ["--min-contacts=-1", "--min-margin=NaN", "--min-margin=inf"] {
         assert!(
@@ -217,4 +430,113 @@ fn cli_parses_finite_non_negative_prune_thresholds() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn cli_parses_group_vote_strategy() {
+    let matches = cli::cli()
+        .try_get_matches_from(["cphasing", "kprune", "a", "c", "o"])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+    assert_eq!(
+        subcommand.get_one::<String>("GROUP_VOTE"),
+        Some(&"any-cross".to_string()),
+    );
+
+    let matches = cli::cli()
+        .try_get_matches_from([
+            "cphasing",
+            "kprune",
+            "a",
+            "c",
+            "o",
+            "--group-vote",
+            "any-cross",
+        ])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+    assert_eq!(
+        subcommand.get_one::<String>("GROUP_VOTE"),
+        Some(&"any-cross".to_string()),
+    );
+}
+
+#[test]
+fn cli_parses_decision_mode() {
+    let matches = cli::cli()
+        .try_get_matches_from(["cphasing", "kprune", "a", "c", "o"])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+    assert_eq!(
+        subcommand.get_one::<String>("DECISION_MODE"),
+        Some(&"bidirectional-gap".to_string()),
+    );
+    assert_eq!(subcommand.get_one::<f64>("MAX_SELECTED_GAP"), Some(&0.50),);
+
+    let matches = cli::cli()
+        .try_get_matches_from([
+            "cphasing",
+            "kprune",
+            "a",
+            "c",
+            "o",
+            "--decision-mode",
+            "global-gap",
+        ])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+    assert_eq!(
+        subcommand.get_one::<String>("DECISION_MODE"),
+        Some(&"global-gap".to_string()),
+    );
+
+    let matches = cli::cli()
+        .try_get_matches_from([
+            "cphasing",
+            "kprune",
+            "a",
+            "c",
+            "o",
+            "--decision-mode",
+            "bidirectional-gap",
+            "--max-selected-gap",
+            "0.02",
+        ])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+    assert_eq!(
+        subcommand.get_one::<String>("DECISION_MODE"),
+        Some(&"bidirectional-gap".to_string()),
+    );
+    assert_eq!(subcommand.get_one::<f64>("MAX_SELECTED_GAP"), Some(&0.02),);
+}
+
+#[test]
+fn cli_parses_stability_voting_parameters() {
+    let matches = cli::cli()
+        .try_get_matches_from([
+            "cphasing",
+            "kprune",
+            "a",
+            "c",
+            "o",
+            "--decision-mode",
+            "stability",
+        ])
+        .unwrap();
+    let (_, subcommand) = matches.subcommand().unwrap();
+
+    assert_eq!(
+        subcommand.get_one::<String>("DECISION_MODE"),
+        Some(&"stability".to_string()),
+    );
+    assert_eq!(
+        subcommand.get_one::<usize>("STABILITY_REPLICATES"),
+        Some(&16),
+    );
+    assert_eq!(subcommand.get_one::<f64>("STABILITY_JITTER"), Some(&0.10),);
+    assert_eq!(
+        subcommand.get_one::<f64>("STABILITY_VOTE_THRESHOLD"),
+        Some(&0.50),
+    );
 }

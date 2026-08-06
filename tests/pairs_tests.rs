@@ -1,5 +1,5 @@
-use cphasing::pairs::*;
 use cphasing::core::BaseTable;
+use cphasing::pairs::*;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7,10 +7,10 @@ mod tests {
     // #[test]
     // fn test_pairs_to_bam() {
     //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        
+
     //     let bam = String::from("test/tests.pairs2bam.bam");
     //     pairs.to_bam(&bam);
-        
+
     // }
 
     // #[test]
@@ -26,7 +26,7 @@ mod tests {
     //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
     //     let clm = pairs.to_clm(3, &String::from("test/test.clm"), );
     // }
-    
+
     // #[test]
     // fn test_intersect() {
     //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
@@ -37,9 +37,9 @@ mod tests {
     // #[test]
     // fn test_split_contacts() {
     //     let mut pairs = Pairs::new(&String::from("test/test.pairs"));
-        
+
     //     let _ = pairs.to_split_contacts(3, 2);
-        
+
     // }
 
     // #[test]
@@ -58,9 +58,7 @@ mod tests {
         let mut output = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.rust.pqs");
         let chunksize = 1000000 as usize;
         let mut pairs = Pairs::new(&pairs);
-        
+
         let _ = pairs.to_pqs(chunksize, &output);
     }
-
 }
-

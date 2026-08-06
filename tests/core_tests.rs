@@ -1,6 +1,5 @@
 use cphasing::core::*;
 
-
 #[cfg(test)]
 mod tests {
     use supper::*;

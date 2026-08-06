@@ -3,24 +3,21 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as anyResult;
-use crossbeam_channel::{bounded, Receiver, Sender};
-use std::thread;
-use rust_htslib::bam::{ 
-    self,
-    record::Aux, record::CigarStringView, 
-    record::Cigar, record::CigarString,
-    Read, Reader, Record, HeaderView, 
-    Header, header::HeaderRecord,
-    Writer};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use rayon::prelude::*;
+use rust_htslib::bam::{
+    self, Header, HeaderView, Read, Reader, Record, Writer, header::HeaderRecord, record::Aux,
+    record::Cigar, record::CigarString, record::CigarStringView,
+};
 use std::borrow::Cow;
-use std::collections::{ HashMap, HashSet };
-use std::str::FromStr;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
+use std::str::FromStr;
+use std::thread;
 
-use crate::core::{ common_reader, common_writer };
 use crate::core::BaseTable;
+use crate::core::{common_reader, common_writer};
 
 #[derive(Debug, Clone)]
 pub struct PAFLine {
@@ -29,9 +26,9 @@ pub struct PAFLine {
     pub query_start: u32,
     pub query_end: u32,
     pub query_strand: char,
-    pub target: String, 
+    pub target: String,
     pub target_length: u64,
-    pub target_start: u64, 
+    pub target_start: u64,
     pub target_end: u64,
     pub match_n: u32,
     pub alignment_length: u32,
@@ -104,7 +101,7 @@ impl PAFLine {
             tags: paf_line.tags.clone(),
         }
     }
-    
+
     fn to_string(&self) -> String {
         let mut fields: Vec<String> = Vec::new();
         fields.push(self.query.clone());
@@ -136,7 +133,6 @@ impl PAFLine {
         self.match_n as i32
     }
 }
-
 
 fn parse_paf_line_from_str(line: &str) -> Option<PAFLine> {
     let mut it = line.split('\t');
@@ -172,12 +168,10 @@ fn parse_paf_line_from_str(line: &str) -> Option<PAFLine> {
     })
 }
 
-
 #[derive(Debug)]
 pub struct PAFTable {
     file: String,
 }
-
 
 impl BaseTable for PAFTable {
     fn new(name: &String) -> PAFTable {
@@ -187,7 +181,7 @@ impl BaseTable for PAFTable {
     fn file_name(&self) -> Cow<'_, str> {
         let path = Path::new(&self.file);
         path.file_name().expect("REASON").to_string_lossy()
-    }  
+    }
 
     fn prefix(&self) -> String {
         let binding = self.file_name().to_string();
@@ -195,7 +189,7 @@ impl BaseTable for PAFTable {
         let file_prefix = file_path.file_stem().unwrap().to_str().unwrap();
 
         (*file_prefix).to_string()
-    }  
+    }
 }
 
 impl PAFTable {
@@ -203,7 +197,6 @@ impl PAFTable {
         let reader = common_reader(&self.file);
         Ok(reader)
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -213,12 +206,10 @@ pub struct PAFReadUnit {
 
 impl PAFReadUnit {
     fn new() -> Self {
-        PAFReadUnit {
-            data: Vec::new(),
-        }
+        PAFReadUnit { data: Vec::new() }
     }
 
-    fn clear (&mut self) {
+    fn clear(&mut self) {
         self.data.clear();
     }
 }
@@ -242,7 +233,7 @@ impl PAFAlignmentUnit {
         }
     }
 
-    fn clear (&mut self) {
+    fn clear(&mut self) {
         self.Primary.clear();
         self.Secondary.clear();
     }
@@ -265,111 +256,29 @@ impl PAFAlignmentUnit {
         self.Primary[0].query.clone()
     }
 
-    // fn rescue(&mut self, mapq: u8) {
-    //     let mut anchor_counts: HashMap<String, u32> = HashMap::new();
-    //     for r in &self.Primary {
-    //         if r.mapq >= mapq {
-    //             anchor_counts.entry(r.target.clone()).and_modify(|c| *c += 1).or_insert(1);
-    //         }
-    //     }
-    //     if anchor_counts.is_empty() {
-    //         return;
-    //     }
-
-    //     if anchor_counts.is_empty() {
-    //         return;
-    //     }
-
-    //     let best_anchor = anchor_counts.into_iter()
-    //         .max_by_key(|entry| entry.1)
-    //         .map(|(k, _)| k)
-    //         .unwrap();
-
-    //     let prim_scores: Vec<i32> = self.Primary.iter().map(|p| p.score()).collect();
-    //     let prim_idents: Vec<f32> = self.Primary
-    //         .iter()
-    //         .map(|p| {
-    //             if p.alignment_length > 0 {
-    //                 p.match_n as f32 / p.alignment_length as f32
-    //             } else {
-    //                 0.0
-    //             }
-    //         })
-    //         .collect();
-        
-    //     for idx in 0..self.Primary.len() {
-    //         // short-circuit
-    //         if self.Primary[idx].mapq >= mapq { continue; }
-    //         let p_score = prim_scores[idx];
-    //         let p_identity = prim_idents[idx];
-
-    //         // candidate: 0 means keep primary (maybe just raise mapq), >0 means index in secondary +1
-    //         let mut best_cand_idx: Option<usize> = None;
-    //         let mut best_cand_score = i32::MIN;
-
-    //         // if primary already on best_anchor, prefer it
-    //         if self.Primary[idx].target == best_anchor {
-    //             best_cand_idx = Some(0);
-    //             best_cand_score = p_score;
-    //         }
-
-    //         // search secondaries
-    //         let s_list = &self.Secondary[idx];
-    //         for (i, s) in s_list.iter().enumerate() {
-    //             if s.target != best_anchor { continue; }
-    //             let s_score = s.score();
-    //             let s_identity = if s.alignment_length > 0 { s.match_n as f32 / s.alignment_length as f32 } else { 0.0 };
-    //             if (s_score as f32) >= (p_score as f32) && s_identity >= (p_identity * 0.90) {
-    //                 if best_cand_idx.is_none() || s_score > best_cand_score {
-    //                     best_cand_score = s_score;
-    //                     best_cand_idx = Some(i + 1);
-    //                 }
-    //             }
-    //         }
-
-    //         if let Some(cidx) = best_cand_idx {
-    //             if cidx == 0 {
-    //                 // keep primary, just boost mapq modestly
-    //                 self.Primary[idx].mapq = std::cmp::min(mapq, 10);
-    //             } else {
-    //                 // move chosen secondary into primary position to avoid clone
-    //                 // remove chosen secondary (swap_remove to avoid shifting many elements)
-    //                 let s_cand = self.Secondary[idx].swap_remove(cidx - 1);
-    //                 let mut new_p = s_cand; // moved ownership
-    //                 new_p.mapq = std::cmp::min(mapq, 10);
-    //                 // fix tp tag in-place if exists
-    //                 for t in new_p.tags.iter_mut() {
-    //                     if t.starts_with("tp:A:") {
-    //                         *t = "tp:A:P".to_string();
-    //                     }
-    //                 }
-    //                 // replace primary (move)
-    //                 self.Primary[idx] = new_p;
-    //             }
-    //         }
-    //     }
-    // }
     fn rescue(&mut self, mapq: u8) {
         let mut anchor_counts: HashMap<&str, u32> = HashMap::with_capacity(8);
-        
+
         for r in &self.Primary {
             if r.mapq >= mapq {
                 *anchor_counts.entry(&r.target).or_insert(0) += 1;
             }
         }
-    
+
         if anchor_counts.is_empty() {
             return;
         }
 
-        let best_anchor = anchor_counts.iter()
+        let best_anchor = anchor_counts
+            .iter()
             .max_by_key(|&(_, count)| count)
             .map(|(k, _)| k.to_string())
             .unwrap();
-    
-        
+
         for idx in 0..self.Primary.len() {
-            if self.Primary[idx].mapq >= mapq { continue; }
+            if self.Primary[idx].mapq >= mapq {
+                continue;
+            }
             let (p_score, p_identity, is_target_best) = {
                 let p = &self.Primary[idx];
                 let score = p.score();
@@ -379,11 +288,11 @@ impl PAFAlignmentUnit {
                     0.0
                 };
                 (score, ident, p.target == best_anchor)
-            }; 
-    
+            };
+
             let mut best_cand_idx: Option<usize> = None;
             let mut best_cand_score = i32::MIN;
-    
+
             if is_target_best {
                 best_cand_idx = Some(0);
                 best_cand_score = p_score;
@@ -391,16 +300,17 @@ impl PAFAlignmentUnit {
 
             let s_list = &self.Secondary[idx];
             for (i, s) in s_list.iter().enumerate() {
-               
-                if s.target != best_anchor { continue; }
-                
+                if s.target != best_anchor {
+                    continue;
+                }
+
                 let s_score = s.score();
-                let s_identity = if s.alignment_length > 0 { 
-                    s.match_n as f32 / s.alignment_length as f32 
-                } else { 
-                    0.0 
+                let s_identity = if s.alignment_length > 0 {
+                    s.match_n as f32 / s.alignment_length as f32
+                } else {
+                    0.0
                 };
-    
+
                 if (s_score as f32) >= (p_score as f32) && s_identity >= (p_identity * 0.90) {
                     if best_cand_idx.is_none() || s_score > best_cand_score {
                         best_cand_score = s_score;
@@ -408,19 +318,18 @@ impl PAFAlignmentUnit {
                     }
                 }
             }
-    
+
             if let Some(cidx) = best_cand_idx {
                 if cidx == 0 {
-                    self.Primary[idx].mapq = mapq.min(10); 
+                    self.Primary[idx].mapq = mapq.min(10);
                 } else {
                     let mut new_p = self.Secondary[idx].swap_remove(cidx - 1);
                     new_p.mapq = mapq.min(10);
-                    
+
                     for t in new_p.tags.iter_mut() {
                         if t.starts_with("tp:A:") {
-                            
-                            *t = String::from("tp:A:P"); 
-                            break; 
+                            *t = String::from("tp:A:P");
+                            break;
                         }
                     }
 
@@ -429,15 +338,12 @@ impl PAFAlignmentUnit {
             }
         }
     }
-    
 }
-
 
 pub fn parse_paf_read_unit(read_unit: &mut PAFReadUnit) -> PAFAlignmentUnit {
     let mut idx: u64 = 0;
     let mut au = PAFAlignmentUnit::new();
     for r in read_unit.data.drain(..) {
-
         if !r.is_secondary() {
             au.add_primary(r);
             idx += 1;
@@ -449,11 +355,9 @@ pub fn parse_paf_read_unit(read_unit: &mut PAFReadUnit) -> PAFAlignmentUnit {
             let idx2 = idx - 1;
             au.add_secondary(r, idx2 as usize);
         }
-        
     }
     au
 }
-
 
 fn process_paf_batch_with_rayon(batch: Vec<(usize, Vec<PAFLine>)>, mapq: u8) -> Vec<PAFLine> {
     batch
@@ -468,140 +372,18 @@ fn process_paf_batch_with_rayon(batch: Vec<(usize, Vec<PAFLine>)>, mapq: u8) -> 
         .collect()
 }
 
-// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-//     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-//     use std::time::Duration;
-
-//     let paf = PAFTable::new(input_paf);
-//     let parse_result = paf.parse();
-//     let rdr = match parse_result {
-//         Ok(v) => v,
-//         Err(_) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
-//     };
-
-//     // channel for serialized output bytes
-//     let (wtx, wrx) = crossbeam_channel::bounded::<Vec<u8>>(4096);
-//     let out_path = output.clone();
-//     let writer_handle = std::thread::spawn(move || {
-//         let wtr = common_writer(&out_path);
-//         let mut writer = std::io::BufWriter::new(wtr);
-//         while let Ok(buf) = wrx.recv() {
-//             let _ = writer.write_all(&buf);
-//         }
-//         let _ = writer.flush();
-//     });
-
-//     let chunksize: usize = 50_000; 
-//     let mut batch: Vec<(usize, Vec<PAFLine>)> = Vec::with_capacity(4);
-//     let mut records_to_process: Vec<PAFLine> = Vec::with_capacity(128);
-//     let mut previous_read_id = String::new();
-//     let mut idx: usize = 0;
-//     let mut total_reads: u64 = 0;
-//     let mut total_unmapped: u64 = 0;
-
-
-//     let pending = Arc::new(AtomicUsize::new(0));
-//     let send_arc = Arc::new(wtx);
-
-//     for line in rdr.lines() {
-//         let line = match line { Ok(l) => l, Err(_) => continue };
-//         if line.is_empty() { continue; }
-
-//         let paf_line = match parse_paf_line_from_str(&line) {
-//             Some(p) => p,
-//             None => continue,
-//         };
-
-//         if paf_line.target == "*" {
-//             total_unmapped += 1;
-//             total_reads += 1;
-//             continue;
-//         }
-
-//         let read_id = &paf_line.query;
-//         if previous_read_id.is_empty() {
-//             previous_read_id = read_id.clone();
-//         }
-
-//         if read_id != &previous_read_id {
-//             batch.push((idx, std::mem::take(&mut records_to_process)));
-//             records_to_process = Vec::with_capacity(128);
-
-//             if batch.len() >= chunksize {
-//                 let to_proc = std::mem::take(&mut batch);
-//                 let send = send_arc.clone();
-//                 let pend = pending.clone();
-//                 pend.fetch_add(1, Ordering::SeqCst);
-//                 rayon::spawn_fifo(move || {
-//                     let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 200);
-//                     for (_, records) in to_proc {
-//                         let mut ru = PAFReadUnit { data: records };
-//                         let mut au = parse_paf_read_unit(&mut ru); // consumes records
-//                         au.rescue(mapq);
-//                         for r in au.Primary {
-//                             let s = r.to_string();
-//                             outbuf.extend_from_slice(s.as_bytes());
-//                             outbuf.push(b'\n');
-//                         }
-//                     }
-//                     let _ = send.send(outbuf);
-//                     pend.fetch_sub(1, Ordering::SeqCst);
-//                 });
-//             }
-
-//             idx += 1;
-//             total_reads += 1;
-//             previous_read_id = read_id.clone();
-//         }
-
-//         records_to_process.push(paf_line);
-//     }
-
-//     if !records_to_process.is_empty() {
-//         batch.push((idx, std::mem::take(&mut records_to_process)));
-//     }
-//     if !batch.is_empty() {
-//         let to_proc = std::mem::take(&mut batch);
-//         let send = send_arc.clone();
-//         let pend = pending.clone();
-//         pend.fetch_add(1, Ordering::SeqCst);
-//         rayon::spawn_fifo(move || {
-//             let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 200);
-//             for (_, records) in to_proc {
-//                 let mut ru = PAFReadUnit { data: records };
-//                 let mut au = parse_paf_read_unit(&mut ru);
-//                 au.rescue(mapq);
-//                 for r in au.Primary {
-//                     let s = r.to_string();
-//                     outbuf.extend_from_slice(s.as_bytes());
-//                     outbuf.push(b'\n');
-//                 }
-//             }
-//             let _ = send.send(outbuf);
-//             pend.fetch_sub(1, Ordering::SeqCst);
-//         });
-//     }
-
-//     loop {
-//         if pending.load(Ordering::SeqCst) == 0 { break; }
-//         std::thread::sleep(Duration::from_millis(50));
-//     }
-
-//     drop(send_arc);
-//     let _ = writer_handle.join();
-
-//     log::info!("Processed reads: {}, unmapped: {}", total_reads, total_unmapped);
-// }
-
 pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-    use std::sync::{Arc, atomic::{AtomicUsize, AtomicU64, Ordering}};
-    use std::time::Duration;
     use std::io::BufRead;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
 
     let rdr = common_reader(&input_paf);
     let (wtx, wrx) = crossbeam_channel::bounded::<Vec<u8>>(100_000);
     let out_path = output.clone();
-    
+
     let writer_handle = std::thread::spawn(move || {
         let wtr = common_writer(&out_path);
         let mut writer = std::io::BufWriter::new(wtr);
@@ -611,22 +393,25 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
         let _ = writer.flush();
     });
 
-    
-    let chunksize: usize = 10_000; 
+    let chunksize: usize = 10_000;
     let mut batch: Vec<Vec<String>> = Vec::with_capacity(chunksize);
     let mut records_to_process: Vec<String> = Vec::with_capacity(128);
-    
+
     let mut previous_read_id = String::new();
-    
+
     let total_reads = Arc::new(AtomicU64::new(0));
     let total_unmapped = Arc::new(AtomicU64::new(0));
     let pending = Arc::new(AtomicUsize::new(0));
     let send_arc = Arc::new(wtx);
 
     for line_res in rdr.lines() {
-        let line = match line_res { Ok(l) => l, Err(_) => continue };
-        if line.is_empty() { continue; }
-
+        let line = match line_res {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.is_empty() {
+            continue;
+        }
 
         let tab_pos = line.find('\t');
         let read_id = match tab_pos {
@@ -640,7 +425,7 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
 
         if read_id != previous_read_id {
             batch.push(std::mem::take(&mut records_to_process));
-            records_to_process = Vec::with_capacity(128); 
+            records_to_process = Vec::with_capacity(128);
 
             if batch.len() >= chunksize {
                 let to_proc = std::mem::take(&mut batch);
@@ -653,28 +438,30 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
 
                 rayon::spawn_fifo(move || {
                     let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 300);
-                    
+
                     for raw_lines in to_proc {
                         let mut parsed_records: Vec<PAFLine> = Vec::with_capacity(raw_lines.len());
                         let mut local_unmapped = 0;
-                        
+
                         for raw_line in raw_lines {
-                             if let Some(p) = parse_paf_line_from_str(&raw_line) {
-                                 if p.target == "*" {
-                                     local_unmapped += 1;
-                                 } else {
-                                     parsed_records.push(p);
-                                 }
-                             }
-                        }
-                        
-                        t_reads.fetch_add(1, Ordering::Relaxed);
-                        if local_unmapped > 0 && parsed_records.is_empty() {
-                             t_unmapped.fetch_add(1, Ordering::Relaxed);
-                             continue; 
+                            if let Some(p) = parse_paf_line_from_str(&raw_line) {
+                                if p.target == "*" {
+                                    local_unmapped += 1;
+                                } else {
+                                    parsed_records.push(p);
+                                }
+                            }
                         }
 
-                        let mut ru = PAFReadUnit { data: parsed_records };
+                        t_reads.fetch_add(1, Ordering::Relaxed);
+                        if local_unmapped > 0 && parsed_records.is_empty() {
+                            t_unmapped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+
+                        let mut ru = PAFReadUnit {
+                            data: parsed_records,
+                        };
                         if !ru.data.is_empty() {
                             let mut au = parse_paf_read_unit(&mut ru);
                             au.rescue(mapq);
@@ -690,7 +477,7 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
                 });
             }
 
-            previous_read_id = read_id.to_string(); 
+            previous_read_id = read_id.to_string();
         }
 
         records_to_process.push(line);
@@ -710,28 +497,30 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
 
         rayon::spawn_fifo(move || {
             let mut outbuf: Vec<u8> = Vec::with_capacity(to_proc.len() * 300);
-            
+
             for raw_lines in to_proc {
                 let mut parsed_records: Vec<PAFLine> = Vec::with_capacity(raw_lines.len());
                 let mut local_unmapped = 0;
-                
+
                 for raw_line in raw_lines {
-                     if let Some(p) = parse_paf_line_from_str(&raw_line) {
-                         if p.target == "*" {
-                             local_unmapped += 1;
-                         } else {
-                             parsed_records.push(p);
-                         }
-                     }
-                }
-                
-                t_reads.fetch_add(1, Ordering::Relaxed);
-                if local_unmapped > 0 && parsed_records.is_empty() {
-                     t_unmapped.fetch_add(1, Ordering::Relaxed);
-                     continue; 
+                    if let Some(p) = parse_paf_line_from_str(&raw_line) {
+                        if p.target == "*" {
+                            local_unmapped += 1;
+                        } else {
+                            parsed_records.push(p);
+                        }
+                    }
                 }
 
-                let mut ru = PAFReadUnit { data: parsed_records };
+                t_reads.fetch_add(1, Ordering::Relaxed);
+                if local_unmapped > 0 && parsed_records.is_empty() {
+                    t_unmapped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+
+                let mut ru = PAFReadUnit {
+                    data: parsed_records,
+                };
                 if !ru.data.is_empty() {
                     let mut au = parse_paf_read_unit(&mut ru);
                     au.rescue(mapq);
@@ -746,177 +535,23 @@ pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
             pend.fetch_sub(1, Ordering::SeqCst);
         });
     }
-    
+
     loop {
-        if pending.load(Ordering::SeqCst) == 0 { break; }
+        if pending.load(Ordering::SeqCst) == 0 {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 
     drop(send_arc);
     let _ = writer_handle.join();
 
-    log::info!("Processed reads: {}, unmapped: {}", total_reads.load(Ordering::Relaxed), total_unmapped.load(Ordering::Relaxed));
+    log::info!(
+        "Processed reads: {}, unmapped: {}",
+        total_reads.load(Ordering::Relaxed),
+        total_unmapped.load(Ordering::Relaxed)
+    );
 }
-// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-//     let paf = PAFTable::new(input_paf);
-//     let parse_result = paf.parse();
-//     let rdr = match parse_result {
-//         Ok(v) => v,
-//         Err(_) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
-//     };
-
-//     let w = common_writer(output);
-//     let mut writer = BufWriter::new(w);
-
-//     let batch_size = 10_000usize;
-//     let mut cur_batch: Vec<PAFReadUnit> = Vec::with_capacity(batch_size);
-
-//     let mut total_reads: u64 = 0;
-//     let mut total_unmapped: u64 = 0;
-//     let mut old_read_id = String::new();
-//     let mut read_unit = PAFReadUnit::new();
-
-//     let process_batch = |batch: Vec<PAFReadUnit>| -> String {
-//         use rayon::prelude::*;
-//         let mut parts: Vec<(usize, String)> = batch
-//             .into_par_iter()
-//             .enumerate()
-//             .map(|(i, ru)| {
-//                 let mut au = parse_paf_read_unit(&ru);
-//                 au.rescue(mapq);
-//                 if au.Primary.is_empty() {
-//                     return (i, String::new());
-//                 }
-//                 let mut s = String::with_capacity(au.Primary.len() * 100);
-//                 for r in au.Primary {
-//                     s.push_str(&r.to_string());
-//                     s.push('\n');
-//                 }
-//                 (i, s)
-//             })
-//             .collect();
-
-//         parts.sort_by_key(|(i, _)| *i);
-//         let mut out = String::new();
-//         for (_, s) in parts {
-//             if !s.is_empty() {
-//                 out.push_str(&s);
-//             }
-//         }
-//         out
-//     };
-
-//     for line in rdr.lines() {
-//         let line = match line {
-//             Ok(l) => l,
-//             Err(_) => continue,
-//         };
-//         let fields: Vec<String> = line.split('\t').map(|x| x.to_string()).collect();
-//         if fields.len() <= 12 {
-//             continue;
-//         }
-//         let paf_line = PAFLine::new(fields);
-
-//         if paf_line.target == "*" {
-//             total_unmapped += 1;
-//             total_reads += 1;
-//             continue;
-//         }
-
-//         let read_id = paf_line.query.clone();
-//         if old_read_id != read_id {
-//             if old_read_id != "" {
-//                 cur_batch.push(std::mem::take(&mut read_unit));
-//                 read_unit = PAFReadUnit::new();
-//                 if cur_batch.len() >= batch_size {
-//                     let batch_to_process = std::mem::take(&mut cur_batch);
-//                     let out = process_batch(batch_to_process);
-//                     if !out.is_empty() {
-//                         writer.write_all(out.as_bytes()).unwrap();
-//                     }
-//                     cur_batch = Vec::with_capacity(batch_size);
-//                 }
-//             }
-//             total_reads += 1;
-//             read_unit.data.push(paf_line);
-//             old_read_id = read_id;
-//         } else {
-//             read_unit.data.push(paf_line);
-//         }
-//     }
-
-//     if !read_unit.data.is_empty() {
-//         cur_batch.push(read_unit);
-//     }
-//     if !cur_batch.is_empty() {
-//         let out = process_batch(std::mem::take(&mut cur_batch));
-//         if !out.is_empty() {
-//             writer.write_all(out.as_bytes()).unwrap();
-//         }
-//     }
-
-//     writer.flush().unwrap();
-//     log::info!("Processed reads: {}, unmapped: {}", total_reads, total_unmapped);
-// }
-
-
-// pub fn read_paf(input_paf: &String, mapq: u8, output: &String) {
-//     let paf = PAFTable::new(input_paf);
-//     let parse_result = paf.parse();
-//     let rdr = match parse_result {
-//         Ok(v) => v,
-//         Err(error) => panic!("Error: Could not parse input file: {:?}", paf.file_name()),
-//     };
-
-//     let mut total_reads: u64 = 0;
-//     let mut total_alignments: u64 = 0;
-//     let mut total_unmapped: u64 = 0;
-//     let mut old_read_id = String::from("");
-
-//     let wtr = common_writer(output);
-//     let mut writer = BufWriter::new(wtr);
-    
-//     let mut read_unit = PAFReadUnit::new();
-
-//     for line in rdr.lines() {
-//         let fields: Vec<String> = line.unwrap().split('\t').map(|x| x.to_string()).collect();
-        
-//         assert!(fields.len() > 12, "Error: PAF file should have at least 12 columns");
-//         let paf_line: PAFLine = PAFLine::new(fields);
-
-//         if paf_line.target == "*" {
-//             total_unmapped += 1;
-//             total_reads += 1;
-//             continue;
-//         }
-
-//         let read_id = paf_line.query.clone();
-
-//         if old_read_id != paf_line.query {
-//             if old_read_id != "" {
-//                 let mut au = parse_paf_read_unit(&read_unit);
-//                 au.rescue(mapq);
-//                 for r in au.Primary {
-                    
-//                     writer.write(r.to_string().as_bytes()).unwrap();
-//                     writer.write(b"\n").unwrap();
-//                 }
-//             }
-
-//             total_reads += 1;
-//             read_unit.clear();
-//             read_unit.data.push(paf_line);
-//         } else {
-//             read_unit.data.push(paf_line);
-//         }
-
-//         old_read_id = read_id;
-
-//     }
-// }
-
-
-
 
 pub fn contact_scores_from_contacts(
     contacts_path: &str,
@@ -943,7 +578,6 @@ pub fn contact_scores_from_contacts(
         if cols.len() < 2 {
             continue;
         }
-
 
         let mut tids: Vec<i32> = Vec::with_capacity(2);
         for token in &cols {
@@ -998,7 +632,11 @@ pub fn contact_scores_from_contacts(
         let sum = lst.iter().map(|x| x.1).sum::<f32>().max(1e-6);
         for (other, w) in lst {
             let s = w / sum;
-            let key = if tid <= other { (tid, other) } else { (other, tid) };
+            let key = if tid <= other {
+                (tid, other)
+            } else {
+                (other, tid)
+            };
             let e = scores.entry(key).or_insert(0.0);
 
             *e = if *e == 0.0 { s } else { (*e + s) * 0.5 };
@@ -1014,16 +652,13 @@ pub struct ReadUnit {
 
 impl ReadUnit {
     fn new() -> Self {
-        ReadUnit {
-            data: Vec::new(),
-        }
+        ReadUnit { data: Vec::new() }
     }
 
-    fn clear (&mut self) {
+    fn clear(&mut self) {
         self.data.clear();
     }
 }
-
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -1041,7 +676,7 @@ impl AlignmentUnit {
         }
     }
 
-    fn clear (&mut self) {
+    fn clear(&mut self) {
         self.Primary.clear();
         self.Secondary.clear();
     }
@@ -1062,171 +697,36 @@ impl AlignmentUnit {
 
     fn read_id(&self) -> String {
         String::from_utf8(self.Primary[0].qname().to_vec())
-                                .unwrap().to_string()
+            .unwrap()
+            .to_string()
     }
-
-//     fn rescue(&mut self, mapq: u8) {
-        
-//         let mut high_mapq: HashMap<u64, u32> = HashMap::new();
-//         let mut high_high_mapq: HashMap<u64, u32> = HashMap::new();
-//         for r in &self.Primary {
-//             let target: u64 = r.tid().try_into().unwrap();
-//             if r.mapq() >= mapq {
-//                 let count = high_mapq.entry(target).or_insert(0);
-//                 *count += 1;
-//             } 
-
-//             if r.mapq() > 1 {
-//                 let count = high_high_mapq.entry(target).or_insert(0);
-//                 *count += 1;
-//             }
-//         }
-        
-
-//         if high_mapq.len() == 0 {
-//             return;
-//         }
-      
-//         for (mut p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
-//             if p.mapq() >= mapq {
-//                 continue;
-//             }
-
-//             let mut res: HashSet<u64> = HashSet::new();
-//             let mut res_record_idx: HashMap<u64, usize> = HashMap::new();
-//             let target: u64 = p.tid().try_into().unwrap();
-//             if high_mapq.contains_key(&target) {
-//                 res_record_idx.insert(target, 0);
-//                 res.insert(target);
-
-
-//             }
-            
-//             for (j, r) in s.iter().enumerate() {
-//                 let target: u64 = r.tid().try_into().unwrap();
-//                 if high_mapq.contains_key(&target) {
-//                     res_record_idx.insert(target, j);
-//                     res.insert(target);
-//                 }
-//             }
-            
-//             let mut max_target = 0;
-//             if res.len() == 0 {
-//                 continue;
-//             } else if res.len() == 1 {
-//                 let target = res.iter().next().unwrap();
-//                 max_target = *target;
-//             } else {
-//                 // max in res 
-//                 let mut max = 0;
-//                 for target in res {
-//                     let count = high_mapq.get(&target).unwrap();
-//                     if *count > max {
-//                         max = *count;
-//                         max_target = target;
-//                     }
-//                 }
-            
-//             }
-//             let record_idx = res_record_idx.get(&max_target).unwrap();
-            
-//             if record_idx == &0 {
-//                 p.set_tid(max_target.try_into().unwrap());
-//                 p.set_mapq(1);
-//             } else {
-//                 let flag = p.flags();
-//                 let r = &s[*record_idx - 1];
-//                 let mut new_record = Record::from(r.clone());
-//                 p = &mut new_record;
-//                 p.set_mapq(1);
-//                 p.set_flags(flag);
-//             } 
-            
-//         }
-    
-    
-//     }
- 
-
 }
 
 fn parse_read_unit(read_unit: &ReadUnit) -> AlignmentUnit {
     let mut idx: u64 = 0;
     let mut au = AlignmentUnit::new();
     for r in &read_unit.data {
-        let read_id = String::from_utf8(r.qname().to_vec())
-                                .unwrap().to_string();
-        
+        let read_id = String::from_utf8(r.qname().to_vec()).unwrap().to_string();
 
         if !r.is_secondary() {
             au.add_primary(r.clone());
             idx += 1;
         } else {
             if idx == 0 {
-                log::warn!("Secondary alignment `{:?}` could not found primary, \
+                log::warn!(
+                    "Secondary alignment `{:?}` could not found primary, \
                             skipped.\
-                            The input bam should be sorted by read name.", read_id);
+                            The input bam should be sorted by read name.",
+                    read_id
+                );
                 continue;
             }
             let idx2 = idx - 1;
             au.add_secondary(r.clone(), idx2 as usize);
         }
-        
     }
     au
 }
-
-
-// pub fn read_bam(input_bam: &String, mapq: u8, output: &String) {
-//     let mut bam = Reader::from_path(input_bam).unwrap();
-//     let _ = bam.set_threads(8);
-//     let bam_header = Header::from_template(bam.header());
-//     let bam_header = HeaderView::from_header(&bam_header);
-
-//     let mut total_reads: u64 = 0;
-//     let total_alignments: u64 = 0;
-//     let mut total_unmapped: u64 = 0;
-//     let mut old_read_id = String::from("");
-
-//     let mut read_unit = ReadUnit::new();
-
-//     let header = Header::from_template(&bam_header);
-//     let mut writer = Writer::from_path(output, &header, bam::Format::Bam).unwrap();
-
-//     for r in bam.records() {
-//         let record = r.unwrap();
-//         let read_id = String::from_utf8(record.qname().to_vec())
-//                                 .unwrap().to_string();
-
-//         if record.is_unmapped() {
-//             total_unmapped += 1;
-//             total_reads += 1;
-//             continue;
-//         }
-
-//         if old_read_id != read_id {
-//             if old_read_id != "" {
-//                 let mut au = parse_read_unit(&read_unit);
-//                 au.rescue(mapq);
-//                 for r in au.Primary {
-//                     writer.write(&r).unwrap();
-//                 }
-//             }
-
-
-//             total_reads += 1;
-//             read_unit.clear();
-//             read_unit.data.push(record);
-//         } else {
-//             read_unit.data.push(record);
-//         }
-      
-//         old_read_id = read_id;
-    
-
-//     }
-
-// }
 
 #[derive(Clone, Default)]
 pub struct ContactGraph {
@@ -1234,15 +734,21 @@ pub struct ContactGraph {
 }
 impl ContactGraph {
     pub fn new() -> Self {
-        Self { scores: HashMap::new() }
+        Self {
+            scores: HashMap::new(),
+        }
     }
     pub fn with_scores(scores: HashMap<(i32, i32), f32>) -> Self {
         Self { scores }
     }
     #[inline]
     pub fn score(&self, a: i32, b: i32) -> f32 {
-        if a < 0 || b < 0 { return 0.0; }
-        *self.scores.get(&(a, b))
+        if a < 0 || b < 0 {
+            return 0.0;
+        }
+        *self
+            .scores
+            .get(&(a, b))
             .or_else(|| self.scores.get(&(b, a)))
             .unwrap_or(&0.0)
     }
@@ -1260,55 +766,83 @@ impl PairAlignmentUnit {
         let mut p = PairAlignmentUnit::default();
         for r in &ru.data {
             if r.is_secondary() {
-                if r.is_first_in_template() { p.left_sec.push(r.clone()); }
-                else if r.is_last_in_template() { p.right_sec.push(r.clone()); }
-                else { p.left_sec.push(r.clone()); }
+                if r.is_first_in_template() {
+                    p.left_sec.push(r.clone());
+                } else if r.is_last_in_template() {
+                    p.right_sec.push(r.clone());
+                } else {
+                    p.left_sec.push(r.clone());
+                }
             } else {
-                if r.is_first_in_template() { p.left_prim.push(r.clone()); }
-                else if r.is_last_in_template() { p.right_prim.push(r.clone()); }
-                else { p.left_prim.push(r.clone()); }
+                if r.is_first_in_template() {
+                    p.left_prim.push(r.clone());
+                } else if r.is_last_in_template() {
+                    p.right_prim.push(r.clone());
+                } else {
+                    p.left_prim.push(r.clone());
+                }
             }
         }
         p
     }
     fn has_both_mates(&self) -> bool {
-        (!self.left_prim.is_empty() || !self.left_sec.is_empty()) &&
-        (!self.right_prim.is_empty() || !self.right_sec.is_empty())
+        (!self.left_prim.is_empty() || !self.left_sec.is_empty())
+            && (!self.right_prim.is_empty() || !self.right_sec.is_empty())
     }
-    
+
     fn best_pair_with_contacts(
-        &self, graph: &ContactGraph, alpha: f32, beta: f32, k: usize,
+        &self,
+        graph: &ContactGraph,
+        alpha: f32,
+        beta: f32,
+        k: usize,
     ) -> Option<(Record, Record)> {
-        let mut left: Vec<Record> = self.left_prim.iter().cloned()
-            .chain(self.left_sec.iter().cloned()).collect();
-       
-        left.sort_by(|a,b| get_score(b).cmp(&get_score(a)));
-        if left.len() > k { left.truncate(k); }
+        let mut left: Vec<Record> = self
+            .left_prim
+            .iter()
+            .cloned()
+            .chain(self.left_sec.iter().cloned())
+            .collect();
 
-        let mut right: Vec<Record> = self.right_prim.iter().cloned()
-            .chain(self.right_sec.iter().cloned()).collect();
-        right.sort_by(|a,b| get_score(b).cmp(&get_score(a)));
-        if right.len() > k { right.truncate(k); }
+        left.sort_by(|a, b| get_score(b).cmp(&get_score(a)));
+        if left.len() > k {
+            left.truncate(k);
+        }
 
-        if left.is_empty() || right.is_empty() { return None; }
+        let mut right: Vec<Record> = self
+            .right_prim
+            .iter()
+            .cloned()
+            .chain(self.right_sec.iter().cloned())
+            .collect();
+        right.sort_by(|a, b| get_score(b).cmp(&get_score(a)));
+        if right.len() > k {
+            right.truncate(k);
+        }
 
+        if left.is_empty() || right.is_empty() {
+            return None;
+        }
 
         let max_score_left = get_score(&left[0]);
         let max_score_right = get_score(&right[0]);
 
         let mut best = None;
         let mut best_score = f32::NEG_INFINITY;
-        
-        for l in &left {
 
-            if (get_score(l) as f32) < (max_score_left as f32 * 0.95) { continue; }
+        for l in &left {
+            if (get_score(l) as f32) < (max_score_left as f32 * 0.95) {
+                continue;
+            }
 
             let tl = l.tid();
             for r in &right {
-                if (get_score(r) as f32) < (max_score_right as f32 * 0.95) { continue; }
+                if (get_score(r) as f32) < (max_score_right as f32 * 0.95) {
+                    continue;
+                }
 
                 let tr = r.tid();
-               
+
                 let s = beta * graph.score(tl, tr) + alpha * (l.mapq() as f32 + r.mapq() as f32);
                 if s > best_score {
                     best_score = s;
@@ -1323,16 +857,18 @@ impl PairAlignmentUnit {
 impl AlignmentUnit {
     fn rescue(&mut self, mapq: u8) {
         let mut high_mapq: HashMap<u64, u32> = HashMap::new();
-        
+
         for r in &self.Primary {
             let target: u64 = r.tid().try_into().unwrap();
 
-            if r.mapq() >= mapq && !r.is_secondary() { 
-                *high_mapq.entry(target).or_insert(0) += 1; 
+            if r.mapq() >= mapq && !r.is_secondary() {
+                *high_mapq.entry(target).or_insert(0) += 1;
             }
         }
-        
-        if high_mapq.is_empty() { return; }
+
+        if high_mapq.is_empty() {
+            return;
+        }
 
         let mut best_anchor_target = 0;
         let mut max_count = 0;
@@ -1344,18 +880,17 @@ impl AlignmentUnit {
         }
 
         for (p, s) in self.Primary.iter_mut().zip(self.Secondary.iter()) {
-      
-            if p.mapq() >= mapq { continue; }
+            if p.mapq() >= mapq {
+                continue;
+            }
 
             let p_score = get_score(p);
             let p_tid: u64 = p.tid().try_into().unwrap();
-
 
             let mut best_candidate_idx: Option<usize> = None;
             let mut best_candidate_score = 0;
 
             if p_tid == best_anchor_target {
-
                 best_candidate_idx = Some(0);
                 best_candidate_score = p_score;
             } else {
@@ -1374,14 +909,14 @@ impl AlignmentUnit {
             }
             if let Some(idx) = best_candidate_idx {
                 if idx == 0 {
-                    p.set_mapq(std::cmp::min(mapq, 10)); 
+                    p.set_mapq(std::cmp::min(mapq, 10));
                 } else {
                     let r = &s[idx - 1];
-                    let flag = p.flags(); 
+                    let flag = p.flags();
                     let mut new_record = Record::from(r.clone());
-                    
+
                     new_record.set_mapq(std::cmp::min(mapq, 10));
-                    new_record.set_flags(flag); 
+                    new_record.set_flags(flag);
                     *p = new_record;
                 }
             }
@@ -1408,14 +943,12 @@ pub fn read_bam(
     output: &String,
     workers: usize,
     contacts: Option<String>,
-    
 ) {
     let mut bam = Reader::from_path(input_bam).unwrap();
     let _ = bam.set_threads(std::cmp::max(1, workers));
     let in_header = Header::from_template(bam.header());
     let hv = HeaderView::from_header(&in_header);
     let out_header = Header::from_template(&hv);
-
 
     let (unit_tx, unit_rx): (Sender<ReadUnit>, Receiver<ReadUnit>) = bounded(1024);
     let (rec_tx, rec_rx): (Sender<Vec<Record>>, Receiver<Vec<Record>>) = bounded(1024);
@@ -1431,7 +964,7 @@ pub fn read_bam(
     });
     let graph = if let Some(path) = contacts {
         log::info!("Loading contacts prior from {}", path);
-        let scores = contact_scores_from_contacts(&path, &hv, 64); 
+        let scores = contact_scores_from_contacts(&path, &hv, 64);
         ContactGraph::with_scores(scores)
     } else {
         ContactGraph::new()
@@ -1449,19 +982,23 @@ pub fn read_bam(
         let graph = graph.clone();
         let h = thread::spawn(move || {
             while let Ok(ru) = unit_rx.recv() {
-           
                 let pair = PairAlignmentUnit::from_read_unit(&ru);
                 let out_records: Vec<Record> = if pair.has_both_mates() {
-                    if let Some((mut l, mut r)) = pair.best_pair_with_contacts(&graph, alpha, beta, topk) {
-                   
+                    if let Some((mut l, mut r)) =
+                        pair.best_pair_with_contacts(&graph, alpha, beta, topk)
+                    {
                         l.set_mtid(r.tid());
                         l.set_mpos(r.pos());
                         l.set_insert_size(0);
                         r.set_mtid(l.tid());
                         r.set_mpos(l.pos());
                         r.set_insert_size(0);
-                        if l.mapq() < mapq { l.set_mapq(mapq.max(1)); }
-                        if r.mapq() < mapq { r.set_mapq(mapq.max(1)); }
+                        if l.mapq() < mapq {
+                            l.set_mapq(mapq.max(1));
+                        }
+                        if r.mapq() < mapq {
+                            r.set_mapq(mapq.max(1));
+                        }
                         vec![l, r]
                     } else {
                         let mut au = parse_read_unit(&ru);
@@ -1474,7 +1011,6 @@ pub fn read_bam(
                     au.Primary
                 };
 
-         
                 if !out_records.is_empty() {
                     let _ = rec_tx.send(out_records);
                 }
@@ -1482,14 +1018,16 @@ pub fn read_bam(
         });
         handles.push(h);
     }
-    drop(rec_tx); 
+    drop(rec_tx);
 
     let mut old_read_id = String::new();
     let mut ru = ReadUnit::new();
 
     for r in bam.records() {
         let record = r.unwrap();
-        if record.is_unmapped() { continue; }
+        if record.is_unmapped() {
+            continue;
+        }
         let read_id = String::from_utf8(record.qname().to_vec()).unwrap();
 
         if old_read_id != read_id {
@@ -1506,11 +1044,12 @@ pub fn read_bam(
     if !ru.data.is_empty() {
         unit_tx.send(ru).unwrap();
     }
-    drop(unit_tx); 
+    drop(unit_tx);
 
-    for h in handles { let _ = h.join(); }
+    for h in handles {
+        let _ = h.join();
+    }
 
     // drop(rec_rx);
     let _ = writer_handle.join();
-
 }

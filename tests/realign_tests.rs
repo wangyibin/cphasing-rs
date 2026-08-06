@@ -1,6 +1,5 @@
-use cphasing::realign::*;
 use cphasing::core::BaseTable;
-
+use cphasing::realign::*;
 
 #[cfg(test)]
 mod tests {
@@ -20,5 +19,4 @@ mod tests {
         let output = String::from("test/test.secondary.realign.paf.gz");
         read_paf(&paf, 1, &output);
     }
-
 }

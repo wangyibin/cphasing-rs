@@ -3,19 +3,18 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as AnyResult;
-use std::borrow::Cow;
-use std::collections::{ HashMap, HashSet };
-use std::error::Error;
-use std::path::Path;
-use std::io::{ Read, Write, BufReader, BufRead, BufWriter };
-use serde::{ Serialize, Deserialize };
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
-use crate::alleles::{ AlleleTable2, AlleleHeader };
-use crate::core::{ common_reader, common_writer };
-use crate::core::{ BaseTable, ContigPair, ContigPair2 };
+use crate::alleles::{AlleleHeader, AlleleTable2};
+use crate::core::{BaseTable, ContigPair, ContigPair2};
+use crate::core::{common_reader, common_writer};
 use crate::count_re::CountRE;
-
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContactRecord {
@@ -73,25 +72,21 @@ impl BaseTable for Contacts {
 
         (*file_prefix).to_string()
     }
-    
 }
-
 
 impl Contacts {
     pub fn parse(&mut self) {
+        let input = common_reader(&self.file);
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .comment(Some(b'#'))
+            .has_headers(false)
+            .from_reader(input);
 
-       let input = common_reader(&self.file);
-         let mut rdr = csv::ReaderBuilder::new()
-                .delimiter(b'\t')
-                .comment(Some(b'#'))
-                .has_headers(false)
-                .from_reader(input);
-    
-          for result in rdr.deserialize() {
-                let record: ContactRecord = result.unwrap();
-                self.records.push(record);
-          }
-       
+        for result in rdr.deserialize() {
+            let record: ContactRecord = result.unwrap();
+            self.records.push(record);
+        }
     }
 
     pub fn from_clm(clm: &String) -> Self {
@@ -100,7 +95,7 @@ impl Contacts {
         let mut records: Vec<ContactRecord> = Vec::new();
         for (i, record) in reader.lines().enumerate() {
             if i % 4 != 0 {
-                continue
+                continue;
             }
             let record = record.unwrap();
             let mut record_iter = record.split("\t");
@@ -128,28 +123,34 @@ impl Contacts {
         contacts
     }
 
-    pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
-                    normalization_method: &String) -> HashMap<ContigPair, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+    pub fn to_data(
+        &self,
+        unique_min: &HashMap<String, f64>,
+        normalization_method: &String,
+    ) -> HashMap<ContigPair, f64> {
+        //, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
         // let total_re_count = re_count.values().sum::<u32>();
         // let total_length = lengths.values().sum::<u32>();
         // let re_density = total_re_count as f64 / total_length as f64;
         // let longest_re = re_count.values().max().unwrap();
         // let longest_re_square = (longest_re * longest_re) as f64;
-        let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
-            ).map(|record| {
+        let mut data: HashMap<ContigPair, f64> = self
+            .records
+            .par_iter()
+            .map(|record| {
                 let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
                 let count = record.count;
 
                 (contig_pair, count)
-            }).collect();
-        
-        
+            })
+            .collect();
+
         // get contig1 == contig2 data
-        let cis_data = data.par_iter().filter(|(contig_pair, _)| {
-            contig_pair.Contig1 == contig_pair.Contig2
-        }).map(|(contig_pair, count)| {
-            (contig_pair.Contig1.clone(), *count)
-        }).collect::<HashMap<String, f64>>();
+        let cis_data = data
+            .par_iter()
+            .filter(|(contig_pair, _)| contig_pair.Contig1 == contig_pair.Contig2)
+            .map(|(contig_pair, count)| (contig_pair.Contig1.clone(), *count))
+            .collect::<HashMap<String, f64>>();
 
         let normalization_method = normalization_method.as_str();
         data.par_iter_mut().for_each(|(contig_pair, count)| {
@@ -160,12 +161,9 @@ impl Contacts {
             if contig_pair.Contig1 == contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
-                    "cis" => {
-                        
-                        match count1 * count2 {
-                            0.0 => 0.0,
-                            _ => *count / ((count1 * count2).sqrt())
-                        }
+                    "cis" => match count1 * count2 {
+                        0.0 => 0.0,
+                        _ => *count / ((count1 * count2).sqrt()),
                     },
                     _ => {
                         let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
@@ -173,13 +171,12 @@ impl Contacts {
                     }
                 };
             } else {
-                
-                let m1_log = match normalization_method   {
+                let m1_log = match normalization_method {
                     "none" => 0.0,
                     "cis" => 0.0,
                     _ => {
                         let m1 = unique_min.get(&contig_pair.Contig1).unwrap_or(&0.0);
-                       
+
                         -(m1 + 1.0).log2()
                     }
                 };
@@ -192,38 +189,32 @@ impl Contacts {
                     }
                 };
 
-  
                 ratio = match count1 * count2 {
                     0.0 => 0.0,
                     _ => {
                         if normalization_method == "none" {
-                            *count  
-                        } 
-                        else if normalization_method == "cis" {
+                            *count
+                        } else if normalization_method == "cis" {
                             *count / ((count1 * count2).sqrt())
-                        }
-                        else if normalization_method == "cis_unique" {
+                        } else if normalization_method == "cis_unique" {
                             match m1_log * m2_log {
                                 0.0 => 0.0,
-                                _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log)
+                                _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
                             }
-                        }
-                        else {
+                        } else {
                             *count
                         }
-                    }
-                    // _ => *count / ((count1) * (count2)).sqrt(),
-                    // _ => *count,
-                    //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
-                    // _ => match m1_log * m2_log {
-                    //     0.0 => 0.0,
-                    //     _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
+                    } // _ => *count / ((count1) * (count2)).sqrt(),
+                      // _ => *count,
+                      //     // _ => *count / ((count1 / (m1_log.powf(2.0))) * (count2 / (m2_log.powf(2.0)))).sqrt(),
+                      // _ => match m1_log * m2_log {
+                      //     0.0 => 0.0,
+                      //     _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
 
-                    // }
-                
+                      // }
                 };
             }
-            
+
             // replace NaN with 0.0
             if ratio.is_nan() {
                 ratio = 0.0;
@@ -232,63 +223,23 @@ impl Contacts {
             if ratio < 0.0 {
                 ratio = 0.0;
             }
-            
+
             *count = ratio;
-        
         });
 
-        // let mut data: HashMap<ContigPair, f64> = self.records.par_iter(
-        //     ).map(|record| {
-               
-        //         let contig_pair = ContigPair::new(record.chrom1.clone(), record.chrom2.clone());
-        //         if !re_count.contains_key(&record.chrom1) || !re_count.contains_key(&record.chrom2) {
-        //             (contig_pair, record.count as f64)
-
-        //         } else {
-        //             let contig1_length = lengths.get(&record.chrom1).unwrap();
-        //             let contig2_length = lengths.get(&record.chrom2).unwrap();
-        //             let re_count1 = re_count.get(&record.chrom1).unwrap_or(&0);
-        //             let re_count2 = re_count.get(&record.chrom2).unwrap_or(&0);
-
-        //             // let r1 = *re_count1 as f64 / ((*contig1_length as f64) * re_density);
-        //             // let r2 = *re_count2 as f64 / ((*contig2_length as f64) * re_density);
-        //             let count = record.count as f64;
-        //             // let ratio = count * 10000 / ((*contig1_length as f64 / 10000.0) * (*contig2_length as f64 / 10000.0));
-        //             // best in 20231118
-        //             let ratio = match re_count1 * re_count2 {
-        //                 0 => 0.0,
-        //                 // _ => count / ((contig1_length * contig2_length) as f64).log(10.0) 
-        //                 _ =>  count / (re_count1 * re_count2) as f64,
-        //             };
-
-        //             (contig_pair, ratio)
-        //         }
-        //     }).collect();
-        
-        // min-max normalization
-        // let max = data.values().max_by(|x, y| x.partial_cmp(y).unwrap()).unwrap();
-        // let min = data.values().min_by(|x, y| x.partial_cmp(y).unwrap()).unwrap();
-        // let range = max - min;
-        
-        // let new_data: HashMap<ContigPair, f64> = data.par_iter().map(|(contig_pair, value)| {
-        //     let new_value = (*value - min) / range;
-        //     (contig_pair.clone(), new_value)
-        // }).collect();
-
-        // new_data  
-        data 
-
+        data
     }
-
 
     pub fn write(&self, output: &String) {
         let mut wtr = common_writer(output);
         for record in &self.records {
-            wtr.write_all(format!("{}\t{}\t{}\n", record.chrom1, record.chrom2, record.count).as_bytes()).unwrap();
+            wtr.write_all(
+                format!("{}\t{}\t{}\n", record.chrom1, record.chrom2, record.count).as_bytes(),
+            )
+            .unwrap();
         }
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContactMatrix {
@@ -316,12 +267,7 @@ impl BaseTable for ContactMatrix {
 
         (*file_prefix).to_string()
     }
-    
 }
-
-
-
-
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Contacts2 {
@@ -349,9 +295,7 @@ impl BaseTable for Contacts2 {
 
         (*file_prefix).to_string()
     }
-    
 }
-
 
 impl Contacts2 {
     fn aggregate_contacts(&self) -> HashMap<ContigPair2<'_>, f64> {
@@ -365,19 +309,17 @@ impl Contacts2 {
     }
 
     pub fn parse(&mut self) {
+        let input = common_reader(&self.file);
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .comment(Some(b'#'))
+            .has_headers(false)
+            .from_reader(input);
 
-       let input = common_reader(&self.file);
-         let mut rdr = csv::ReaderBuilder::new()
-                .delimiter(b'\t')
-                .comment(Some(b'#'))
-                .has_headers(false)
-                .from_reader(input);
-    
-          for result in rdr.deserialize() {
-                let record: ContactRecord = result.unwrap();
-                self.records.push(record);
-          }
-       
+        for result in rdr.deserialize() {
+            let record: ContactRecord = result.unwrap();
+            self.records.push(record);
+        }
     }
 
     pub fn from_clm(clm: &String) -> Self {
@@ -386,7 +328,7 @@ impl Contacts2 {
         let mut records: Vec<ContactRecord> = Vec::new();
         for (i, record) in reader.lines().enumerate() {
             if i % 4 != 0 {
-                continue
+                continue;
             }
             let record = record.unwrap();
             let mut record_iter = record.split("\t");
@@ -414,62 +356,60 @@ impl Contacts2 {
         contacts
     }
 
-    pub fn to_data(&self, unique_min: &HashMap<String, f64>, 
-                    normalization_method: &String,
-                    re_count: &Option<CountRE>,
-                    lengths: Option<&HashMap<String, u64>>
-                ) -> HashMap<ContigPair2<'_>, f64> {//, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
+    pub fn to_data(
+        &self,
+        unique_min: &HashMap<String, f64>,
+        normalization_method: &String,
+        re_count: &Option<CountRE>,
+        lengths: Option<&HashMap<String, u64>>,
+    ) -> HashMap<ContigPair2<'_>, f64> {
+        //, re_count: HashMap<String, u32>, lengths: HashMap<String, u32>) -> HashMap<ContigPair, f64> {
 
         let _re_count = if let Some(v) = re_count {
-          
             let mut re_count = v.clone();
             re_count.parse();
             let _re_count = re_count.to_data();
-         
-            _re_count.into_iter()
+
+            _re_count
+                .into_iter()
                 .map(|(key, value)| (key, value as f64))
                 .collect::<HashMap<_, _>>()
         } else {
-           HashMap::new()
+            HashMap::new()
         };
 
+        let re_count: HashMap<&String, f64> =
+            _re_count.iter().map(|(key, value)| (key, *value)).collect();
 
-        let re_count: HashMap<&String, f64> = _re_count.iter()
-            .map(|(key, value)| (key, *value))
-            .collect();
-        // let total_re_count = re_count.values().sum::<u32>();
-        // let total_length = lengths.values().sum::<u32>();
-        // let re_density = total_re_count as f64 / total_length as f64;
-        // let longest_re = re_count.values().max().unwrap();
-        // let longest_re_square = (longest_re * longest_re) as f64;
-        
         let mut data = self.aggregate_contacts();
-    
-    
+
         let normalization_method = match (re_count.len() == 0) {
             true => {
-                log::info!("No RE counts provided, switching normalization method to '{}'", normalization_method);
+                log::info!(
+                    "No RE counts provided, switching normalization method to '{}'",
+                    normalization_method
+                );
                 normalization_method.clone()
-
-            },
+            }
             false => {
                 log::info!("RE counts provided, using normalization method: {}", "re");
                 "re".to_string()
             }
-
         };
         log::info!("Using normalization method: {}", normalization_method);
-        
 
         // get contig1 == contig2 data
-        let cis_data = data.par_iter().filter(|(contig_pair, _)| {
-            *contig_pair.Contig1 == *contig_pair.Contig2
-        }).map(|(contig_pair, count)| {
-            (contig_pair.Contig1, *count)
-        }).collect::<HashMap<&String, f64>>();
+        let cis_data = data
+            .par_iter()
+            .filter(|(contig_pair, _)| *contig_pair.Contig1 == *contig_pair.Contig2)
+            .map(|(contig_pair, count)| (contig_pair.Contig1, *count))
+            .collect::<HashMap<&String, f64>>();
 
         let mut total_contacts: HashMap<&String, f64> = HashMap::new();
-        if normalization_method == "vc" || normalization_method == "tweight" || normalization_method == "hybrid" {
+        if normalization_method == "vc"
+            || normalization_method == "tweight"
+            || normalization_method == "hybrid"
+        {
             for (pair, count) in data.iter() {
                 if *pair.Contig1 != *pair.Contig2 {
                     *total_contacts.entry(pair.Contig1).or_insert(0.0) += count;
@@ -527,107 +467,100 @@ impl Contacts2 {
             let count1 = cis_data.get(&contig_pair.Contig1).unwrap_or(&0.0);
             let count2 = cis_data.get(&contig_pair.Contig2).unwrap_or(&0.0);
             let (len1, len2) = if let Some(lens) = lengths {
-                (*lens.get(contig_pair.Contig1).unwrap_or(&0),
-                 *lens.get(contig_pair.Contig2).unwrap_or(&0))
+                (
+                    *lens.get(contig_pair.Contig1).unwrap_or(&0),
+                    *lens.get(contig_pair.Contig2).unwrap_or(&0),
+                )
             } else {
                 (0, 0)
             };
             if *contig_pair.Contig1 == *contig_pair.Contig2 {
                 ratio = match normalization_method {
                     "none" => *count as f64,
-                    "cis" => {
-                        
-                        match count1 * count2 {
-                            0.0 => 0.0,
-                            _ => *count / ((count1 * count2).sqrt())
-                        }
+                    "cis" => match count1 * count2 {
+                        0.0 => 0.0,
+                        _ => *count / ((count1 * count2).sqrt()),
                     },
                     "re" => {
                         let re1 = re_count.get(&contig_pair.Contig1).unwrap_or(&1.0);
                         let re2 = re_count.get(&contig_pair.Contig2).unwrap_or(&1.0);
                         match re1 * re2 {
                             0.0 => 0.0,
-                            _ => *count / ((re1 * re2).sqrt())
+                            _ => *count / ((re1 * re2).sqrt()),
                         }
                     }
-                    _ => { 0.0
+                    _ => {
+                        0.0
                         // let m1 = unique_min.get(&contig_pair.Contig1.to_string()).unwrap_or(&0.0);
                         // -(m1 + 1.0).log2()
                     }
                 };
             } else {
-                
-                let m1_log = match normalization_method   {
+                let m1_log = match normalization_method {
                     // "none" => 0.0,
                     // "cis" => 0.0,
-                    _ => { 0.0
+                    _ => {
+                        0.0
                         // let m1 = unique_min.get(&contig_pair.Contig1.to_string()).unwrap_or(&0.0);
-                       
+
                         // -(m1 + 1.0).log2()
                     }
                 };
                 let m2_log = match normalization_method {
                     // "none" => 0.0,
                     // "cis" => 0.0,
-                    _ => { 0.0
+                    _ => {
+                        0.0
                         // let m2 = unique_min.get(&contig_pair.Contig2.to_string()).unwrap_or(&0.0);
                         // -(m2 + 1.0).log2()
                     }
                 };
 
-                
                 ratio = match count1 * count2 {
                     -1.0 => 0.0,
                     _ => {
                         if normalization_method == "none" {
-                            *count  
-                        } 
-                        else if normalization_method == "cis" {
+                            *count
+                        } else if normalization_method == "cis" {
                             *count / (((count1 + 1.0) * (count2 + 1.0)).sqrt())
-                        }
-                        else if normalization_method == "re" {
+                        } else if normalization_method == "re" {
                             let re1 = re_count.get(&contig_pair.Contig1).unwrap_or(&1.0);
-                            
+
                             let re2 = re_count.get(&contig_pair.Contig2).unwrap_or(&1.0);
                             match re1 * re2 {
                                 0.0 => 0.0,
-                                _ => *count / ((re1 * re2).sqrt())
+                                _ => *count / ((re1 * re2).sqrt()),
                             }
-                        }
-                        else if normalization_method == "vc" {
+                        } else if normalization_method == "vc" {
                             let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&0.0); // Use 1.0 to avoid division by zero
                             let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&0.0);
-                            
+
                             *count / ((total1 + 1.0) * (total2 + 1.0))
-                            
-                            
-                        }
-                        else if normalization_method == "vc_sqrt" {
+                        } else if normalization_method == "vc_sqrt" {
                             let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&0.0);
                             let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&0.0);
-                           
+
                             if *total1 > 0.0 && *total2 > 0.0 {
                                 *count / ((total1 * total2).sqrt())
                             } else {
                                 0.0
                             }
-                        }
-                        else if normalization_method == "hybrid" {
+                        } else if normalization_method == "hybrid" {
                             let w_cis = 0.5;
                             let w_total = 0.5;
                             let pseudo_count = 1e-9; // Use a very small pseudo_count for scaled data
-    
+
                             // Get the SCALED bias values
                             let s_cis1 = scaled_cis.get(&contig_pair.Contig1).unwrap_or(&0.0);
                             let s_cis2 = scaled_cis.get(&contig_pair.Contig2).unwrap_or(&0.0);
-    
+
                             let s_total1 = scaled_total.get(&contig_pair.Contig1).unwrap_or(&0.0);
                             let s_total2 = scaled_total.get(&contig_pair.Contig2).unwrap_or(&0.0);
-    
+
                             // Calculate the hybrid bias score using SCALED values
                             let bias1 = w_cis * s_cis1 + w_total * s_total1 + pseudo_count;
                             let bias2 = w_cis * s_cis2 + w_total * s_total2 + pseudo_count;
-                            
+
                             // The denominator is now a product of small, scaled numbers.
                             // The raw count needs to be divided by this.
                             if bias1 > 0.0 && bias2 > 0.0 {
@@ -635,56 +568,47 @@ impl Contacts2 {
                             } else {
                                 0.0
                             }
-                        }
-                        else if normalization_method == "tweight" {
+                        } else if normalization_method == "tweight" {
                             let total1 = total_contacts.get(&contig_pair.Contig1).unwrap_or(&1.0);
                             let total2 = total_contacts.get(&contig_pair.Contig2).unwrap_or(&1.0);
                             let t_sum1 = t_row_sums.get(&contig_pair.Contig1).unwrap_or(&1.0);
                             let t_sum2 = t_row_sums.get(&contig_pair.Contig2).unwrap_or(&1.0);
-        
+
                             let bias1 = total1 * t_sum1;
                             let bias2 = total2 * t_sum2;
-        
+
                             if bias1 > 0.0 && bias2 > 0.0 {
                                 *count / (bias1 * bias2)
                             } else {
                                 0.0
                             }
-                        }
-                        else if normalization_method == "cis_unique" {
+                        } else if normalization_method == "cis_unique" {
                             match m1_log * m2_log {
                                 0.0 => 0.0,
-                                _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log)
+                                _ => *count / ((count1 * count2).sqrt()) * (m1_log * m2_log),
                             }
-                        }
-                        else if normalization_method == "cis_density" {
+                        } else if normalization_method == "cis_density" {
                             if len1 > 0 && len2 > 0 {
                                 let l1 = len1 as f64;
                                 let l2 = len2 as f64;
-                                let cap = 50000.0; 
+                                let cap = 50000.0;
                                 let eff_l1 = if l1 > cap { cap } else { l1 };
                                 let eff_l2 = if l2 > cap { cap } else { l2 };
 
-                                let d1 = (count1 + 1.0) / (eff_l1 + 1000.0); 
+                                let d1 = (count1 + 1.0) / (eff_l1 + 1000.0);
                                 let d2 = (count2 + 1.0) / (eff_l2 + 1000.0);
-                                
-                                
+
                                 *count / (d1 * d2).sqrt()
                             } else {
                                 *count / (((count1 + 1.0) * (count2 + 1.0)).sqrt())
                             }
-                        }
-
-                        else {
+                        } else {
                             *count
                         }
-
-
                     }
-                
                 };
             }
-            
+
             if ratio.is_nan() {
                 ratio = 0.0;
             }
@@ -692,14 +616,11 @@ impl Contacts2 {
             if ratio < 0.0 {
                 ratio = 0.0;
             }
-            
+
             *count = ratio;
-        
         });
 
-
-        data 
-
+        data
     }
 
     pub fn to_evidence_data(
@@ -725,7 +646,7 @@ impl Contacts2 {
         let mut contigs: HashSet<String> = HashSet::new();
         for record in &self.records {
             if record.chrom1 == record.chrom2 {
-                continue
+                continue;
             }
             contigs.insert(record.chrom1.clone());
             contigs.insert(record.chrom2.clone());
@@ -740,8 +661,14 @@ impl Contacts2 {
             if record.chrom1 == record.chrom2 {
                 continue;
             }
-            contig1_to_contig2.entry(record.chrom1.clone()).or_insert_with(HashSet::new).insert(record.chrom2.clone());
-            contig1_to_contig2.entry(record.chrom2.clone()).or_insert_with(HashSet::new).insert(record.chrom1.clone());
+            contig1_to_contig2
+                .entry(record.chrom1.clone())
+                .or_insert_with(HashSet::new)
+                .insert(record.chrom2.clone());
+            contig1_to_contig2
+                .entry(record.chrom2.clone())
+                .or_insert_with(HashSet::new)
+                .insert(record.chrom1.clone());
         }
 
         contig1_to_contig2
@@ -750,8 +677,10 @@ impl Contacts2 {
     pub fn write(&self, output: &String) {
         let mut wtr = common_writer(output);
         for record in &self.records {
-            wtr.write_all(format!("{}\t{}\t{}\n", record.chrom1, record.chrom2, record.count).as_bytes()).unwrap();
+            wtr.write_all(
+                format!("{}\t{}\t{}\n", record.chrom1, record.chrom2, record.count).as_bytes(),
+            )
+            .unwrap();
         }
     }
 }
-

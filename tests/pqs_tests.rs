@@ -1,5 +1,5 @@
-use cphasing::pqs;
 use cphasing::core::BaseTable;
+use cphasing::pqs;
 
 #[cfg(test)]
 mod tests {
@@ -21,7 +21,7 @@ mod tests {
     //     let threads = 10;
     //     let p = pqs::PQS::new(&input_pq_dir);
 
-    //     let _ = p.to_clm(min_contacts, min_quality, &output, output_split_contacts, 
+    //     let _ = p.to_clm(min_contacts, min_quality, &output, output_split_contacts,
     //                         output_depth, binsize, threads);
     // }
 
@@ -31,9 +31,9 @@ mod tests {
     //     let output = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/output.mnd.txt");
     //     // let input_pq_dir = String::from("/data3/wangyb/0.CPhasing/pqs/82-114.merge.pairs.pqs/");
     //     // let output = String::from("/data3/wangyb/0.CPhasing/pqs/82-114.merge.pairs.pqs/output.clm.gz");
-        
+
     //     let min_quality: u8 = 0;
-        
+
     //     let p = pqs::PQS::new(&input_pq_dir);
 
     //     let _ = p.to_mnd(min_quality, &output);
@@ -57,17 +57,18 @@ mod tests {
     //     let input_pq_dir = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/");
     //     let bed = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.break.contigs.bed");
     //     let output = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/output.break.contigs.pqs");
-        
+
     //     let mut p = pqs::PQS::new(&input_pq_dir);
     //     let _ = p.break_contigs(&bed, &output);
     // }
-
 
     #[test]
     fn test_dup_contig() {
         let input_pq_dir = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/");
         let bed = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.dup.contigs");
-        let output = String::from("/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/output.dup.contigs.pqs");
+        let output = String::from(
+            "/data3/wangyb/0.CPhasing/pqs/ploidy-2.2.pairs.pqs/output.dup.contigs.pqs",
+        );
         let seed = 1234;
         let mut p = pqs::PQS::new(&input_pq_dir);
         let _ = p.dup(&bed, seed, &output);

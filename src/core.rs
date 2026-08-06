@@ -6,35 +6,33 @@ use bio::io::fastq;
 use flate2::read;
 use flate2::write::GzEncoder;
 use gzp::deflate::{Gzip, Mgzip};
-use gzp::{ZBuilder, Compression};
-use gzp::{par::compress::{ParCompress, ParCompressBuilder}};
-use gzp::{par::decompress::ParDecompressBuilder};
+use gzp::par::compress::{ParCompress, ParCompressBuilder};
+use gzp::par::decompress::ParDecompressBuilder;
+use gzp::{Compression, ZBuilder};
 // use rust_htslib::bam::{
-//     self, 
-//     record::Aux, record::Cigar, 
+//     self,
+//     record::Aux, record::Cigar,
 //     record::CigarStringView,
 //     Header, HeaderView,
 //     Read, Reader, Record,
-//     Writer, 
+//     Writer,
 // };
-use std::env;
-use std::io::prelude::*;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::io::Cursor;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Read as StdRead, Write};
+use std::env;
 use std::error::Error;
-use std::result::Result;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::Cursor;
+use std::io::prelude::*;
+use std::io::{self, BufRead, BufReader, BufWriter, Read as StdRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
+use std::result::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use serde::{ Deserialize, Serialize };
-use rayon::prelude::*;
-
-
 
 const BUFFER_SIZE: usize = 256 * 1024;
 type DynResult<T> = anyResult<T, Box<dyn Error + 'static>>;
@@ -87,12 +85,12 @@ impl ChromSize {
     pub fn parse(&self) -> anyResult<csv::Reader<Box<dyn BufRead + Send>>> {
         let input = common_reader(&self.file);
         let rdr = csv::ReaderBuilder::new()
-                            .flexible(true)
-                            .has_headers(false)
-                            .comment(Some(b'#'))
-                            .delimiter(b'\t')
-                            .from_reader(input);
-        
+            .flexible(true)
+            .has_headers(false)
+            .comment(Some(b'#'))
+            .delimiter(b'\t')
+            .from_reader(input);
+
         Ok(rdr)
     }
 
@@ -112,22 +110,21 @@ impl ChromSize {
             db.insert(record.chrom, record.size);
         }
 
-        Ok(db) 
+        Ok(db)
     }
 
     pub fn to_vec(&self) -> Result<Vec<ChromSizeRecord>, Box<dyn Error>> {
         let chromsizes = self.data().unwrap();
         let mut vec: Vec<ChromSizeRecord> = chromsizes
-                                            .iter()
-                                            .map(|(k, v)| ChromSizeRecord { 
-                                                                chrom: k.to_string(), 
-                                                                size: *v })
-                                            .collect();
+            .iter()
+            .map(|(k, v)| ChromSizeRecord {
+                chrom: k.to_string(),
+                size: *v,
+            })
+            .collect();
         vec.sort_unstable_by_key(|x| x.chrom.clone());
         Ok(vec)
     }
-
-   
 }
 
 struct PrependThenReader<R: StdRead> {
@@ -152,13 +149,17 @@ pub struct ContigPair {
 
 impl ContigPair {
     pub fn new(contig1: String, contig2: String) -> ContigPair {
-
-        ContigPair { Contig1: contig1, Contig2: contig2 }
+        ContigPair {
+            Contig1: contig1,
+            Contig2: contig2,
+        }
     }
 
     pub fn from_vec(vec: Vec<&String>) -> ContigPair {
-        ContigPair { Contig1: (*vec[0].clone()).to_string(), 
-                    Contig2: (*vec[1].clone()).to_string()}
+        ContigPair {
+            Contig1: (*vec[0].clone()).to_string(),
+            Contig2: (*vec[1].clone()).to_string(),
+        }
     }
 
     pub fn swap(&mut self) {
@@ -170,8 +171,6 @@ impl ContigPair {
             self.swap();
         }
     }
-
-
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -182,12 +181,14 @@ pub struct ContigPair2<'a> {
 
 impl ContigPair2<'_> {
     pub fn new<'a>(contig1: &'a String, contig2: &'a String) -> ContigPair2<'a> {
-
-        ContigPair2 { Contig1: contig1, Contig2: contig2 }
+        ContigPair2 {
+            Contig1: contig1,
+            Contig2: contig2,
+        }
     }
 
     // pub fn from_vec(vec: Vec<&String>) -> ContigPair2 {
-    //     ContigPair2 { Contig1: &(*vec[0]).to_string(), 
+    //     ContigPair2 { Contig1: &(*vec[0]).to_string(),
     //                 Contig2: &(*vec[1]).to_string()}
     // }
 
@@ -200,8 +201,6 @@ impl ContigPair2<'_> {
             self.swap();
         }
     }
-
-
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -212,8 +211,10 @@ pub struct ContigPair3<'a> {
 
 impl ContigPair3<'_> {
     pub fn new<'a>(contig1: &'a str, contig2: &'a str) -> ContigPair3<'a> {
-
-        ContigPair3 { Contig1: contig1, Contig2: contig2 }
+        ContigPair3 {
+            Contig1: contig1,
+            Contig2: contig2,
+        }
     }
 
     pub fn swap(&mut self) {
@@ -227,7 +228,6 @@ impl ContigPair3<'_> {
     }
 }
 
-
 pub fn is_gzip_file(file_path: &str) -> io::Result<bool> {
     let mut file = File::open(file_path)?;
     let mut magic_number = [0u8; 2];
@@ -237,63 +237,85 @@ pub fn is_gzip_file(file_path: &str) -> io::Result<bool> {
 }
 
 fn valid_gzip_header(buf: &[u8], off: usize) -> bool {
-    if off + 10 > buf.len() { return false; }
-    if buf[off] != 0x1F || buf[off + 1] != 0x8B || buf[off + 2] != 0x08 { return false; }
+    if off + 10 > buf.len() {
+        return false;
+    }
+    if buf[off] != 0x1F || buf[off + 1] != 0x8B || buf[off + 2] != 0x08 {
+        return false;
+    }
     let flg = buf[off + 3];
 
-    if (flg & 0xE0) != 0 { return false; }
+    if (flg & 0xE0) != 0 {
+        return false;
+    }
 
     let mut p = off + 10;
 
-
     if (flg & 0x04) != 0 {
-        if p + 2 > buf.len() { return false; }
+        if p + 2 > buf.len() {
+            return false;
+        }
         let xlen = u16::from_le_bytes([buf[p], buf[p + 1]]) as usize;
         p += 2;
-        if p + xlen > buf.len() { return false; }
+        if p + xlen > buf.len() {
+            return false;
+        }
         p += xlen;
     }
 
     if (flg & 0x08) != 0 {
-        while p < buf.len() && buf[p] != 0 { p += 1; }
-        if p >= buf.len() { return false; }
+        while p < buf.len() && buf[p] != 0 {
+            p += 1;
+        }
+        if p >= buf.len() {
+            return false;
+        }
         p += 1;
     }
 
     if (flg & 0x10) != 0 {
-        while p < buf.len() && buf[p] != 0 { p += 1; }
-        if p >= buf.len() { return false; }
+        while p < buf.len() && buf[p] != 0 {
+            p += 1;
+        }
+        if p >= buf.len() {
+            return false;
+        }
         p += 1;
     }
 
     if (flg & 0x02) != 0 {
-        if p + 2 > buf.len() { return false; }
+        if p + 2 > buf.len() {
+            return false;
+        }
         p += 2;
     }
     true
 }
 
 pub fn is_mgzip_file(file_path: &str) -> io::Result<bool> {
-    if file_path == "-" { return Ok(false); }
+    if file_path == "-" {
+        return Ok(false);
+    }
     let path = std::path::Path::new(file_path);
     let mut f = File::open(path)?;
 
     let mut buf = vec![0u8; 8 * 1024 * 1024];
     let n = f.read(&mut buf)?;
-    if n < 20 { return Ok(false); }
+    if n < 20 {
+        return Ok(false);
+    }
     buf.truncate(n);
 
-
-    if !valid_gzip_header(&buf, 0) { return Ok(false); }
-
+    if !valid_gzip_header(&buf, 0) {
+        return Ok(false);
+    }
 
     let mut i = 1;
     while i + 10 <= buf.len() {
         if buf[i] == 0x1F && buf[i + 1] == 0x8B && buf[i + 2] == 0x08 {
-           
             if i >= 8 {
                 let trailer = &buf[i - 8..i];
-               
+
                 let isize = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
                 if isize != 0 && valid_gzip_header(&buf, i) {
                     return Ok(true);
@@ -329,7 +351,6 @@ pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 
     Ok(fp)
 }
 
-
 pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
     log::info!("Load `{}`", &file);
     let suffix = Path::new(file).extension();
@@ -340,9 +361,10 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
         .parse::<usize>()
         .unwrap_or(8);
 
-    if suffix == Some(OsStr::new("gz")) && 
-     ( is_gzip_file(&file_path.to_string_lossy()).unwrap_or(false) | 
-        is_mgzip_file(&file_path.to_string_lossy()).unwrap_or(false) ) {
+    if suffix == Some(OsStr::new("gz"))
+        && (is_gzip_file(&file_path.to_string_lossy()).unwrap_or(false)
+            | is_mgzip_file(&file_path.to_string_lossy()).unwrap_or(false))
+    {
         let fp = match File::open(&file_path) {
             Err(error) => panic!("No such of file `{}`: {}", file_path.display(), error),
             Ok(fp) => fp,
@@ -350,43 +372,65 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
 
         let try_mgzip = is_mgzip_file(&file_path.to_string_lossy()).unwrap_or(false);
         if try_mgzip {
-            log::info!("`{}` detected multi-member (try Mgzip)…", file_path.display());
+            log::info!(
+                "`{}` detected multi-member (try Mgzip)…",
+                file_path.display()
+            );
             let mgz = ParDecompressBuilder::<Mgzip>::new()
-                .num_threads(threads).expect("set num_threads failed")
-                .from_reader(BufReader::with_capacity(BUFFER_SIZE, File::open(&file_path).expect("No such of file")));
+                .num_threads(threads)
+                .expect("set num_threads failed")
+                .from_reader(BufReader::with_capacity(
+                    BUFFER_SIZE,
+                    File::open(&file_path).expect("No such of file"),
+                ));
             const PROBE: usize = 64 * 1024;
             let mut mgz_probe = mgz;
             let mut head = Vec::with_capacity(PROBE);
             match (&mut mgz_probe).take(PROBE as u64).read_to_end(&mut head) {
                 Ok(_) => {
-                   
-                    let reader = PrependThenReader { head: Cursor::new(head), tail: mgz_probe };
+                    let reader = PrependThenReader {
+                        head: Cursor::new(head),
+                        tail: mgz_probe,
+                    };
                     return Box::new(BufReader::with_capacity(BUFFER_SIZE, reader));
                 }
                 Err(e) => {
-                    log::warn!("Mgzip probe failed on `{}`: {}. Fallback to plain gzip.", file_path.display(), e);
+                    log::warn!(
+                        "Mgzip probe failed on `{}`: {}. Fallback to plain gzip.",
+                        file_path.display(),
+                        e
+                    );
                 }
             }
         }
 
-        log::info!("`{}` treated as gzip (flate2 MultiGzDecoder)", file_path.display());
-        return Box::new(BufReader::with_capacity(BUFFER_SIZE, read::MultiGzDecoder::new(fp)));
-        
-    } else if suffix == Some(OsStr::new("mgz")) && is_mgzip_file(&file_path.to_string_lossy()).unwrap_or(false)  {
+        log::info!(
+            "`{}` treated as gzip (flate2 MultiGzDecoder)",
+            file_path.display()
+        );
+        return Box::new(BufReader::with_capacity(
+            BUFFER_SIZE,
+            read::MultiGzDecoder::new(fp),
+        ));
+    } else if suffix == Some(OsStr::new("mgz"))
+        && is_mgzip_file(&file_path.to_string_lossy()).unwrap_or(false)
+    {
         log::info!("`{}` is detected as mgzip file", file_path.display());
         Box::new(BufReader::with_capacity(
             BUFFER_SIZE,
             ParDecompressBuilder::<Mgzip>::new()
-                .num_threads(threads).expect("set num_threads failed")
-                .from_reader(BufReader::with_capacity(BUFFER_SIZE, File::open(&file_path).expect("No such of file"))),
+                .num_threads(threads)
+                .expect("set num_threads failed")
+                .from_reader(BufReader::with_capacity(
+                    BUFFER_SIZE,
+                    File::open(&file_path).expect("No such of file"),
+                )),
         ))
-
     } else {
-
-        parse_input(Some(file_path.clone())).expect(format!("No such of file, {}", file_path.display()).as_str())
+        parse_input(Some(file_path.clone()))
+            .expect(format!("No such of file, {}", file_path.display()).as_str())
     }
 }
-
 
 pub fn parse_output(path: Option<PathBuf>) -> anyResult<Box<dyn Write + Send + 'static>> {
     let op: Box<dyn Write + Send + 'static> = match path {
@@ -397,7 +441,7 @@ pub fn parse_output(path: Option<PathBuf>) -> anyResult<Box<dyn Write + Send + '
                 Box::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(path)?))
             }
         }
-        None => Box::new(BufWriter::with_capacity(BUFFER_SIZE, io::stdout()))
+        None => Box::new(BufWriter::with_capacity(BUFFER_SIZE, io::stdout())),
     };
     Ok(op)
 }
@@ -413,14 +457,16 @@ pub fn common_writer(file: &str) -> Box<dyn Write + Send + 'static> {
         .unwrap_or(8);
     if suffix == Some(OsStr::new("gz")) {
         let writer = ParCompressBuilder::<Mgzip>::new()
-            .num_threads(threads).expect("REASON")
+            .num_threads(threads)
+            .expect("REASON")
             // .compression_level(Compression::new(6))
             .from_writer(buffered);
 
         Box::new(writer)
     } else if suffix == Some(OsStr::new("mgz")) {
         let writer = ParCompressBuilder::<Mgzip>::new()
-            .num_threads(threads).expect("REASON")
+            .num_threads(threads)
+            .expect("REASON")
             // .compression_level(Compression::new(6))
             .from_writer(buffered);
 
@@ -428,7 +474,6 @@ pub fn common_writer(file: &str) -> Box<dyn Write + Send + 'static> {
     } else {
         buffered
     }
-
 }
 
 pub fn which(program: &str) -> Option<PathBuf> {
@@ -449,27 +494,29 @@ pub fn check_program(program: &str) {
     }
 }
 
-
 // split contig size by binsize
-pub fn binify(contigsizes: &HashMap<String, u64>, binsize: u32) -> anyResult<HashMap<String, Vec<u32>>> {
-    
-    let bins_db: HashMap<String, Vec<u32>> = contigsizes.par_iter().map(|(contig, size)| {
-        let n_bins: u32 = (size / binsize as u64).try_into().unwrap();
-        let mut bins = Vec::new();
-        for i in 0..(n_bins + 1) {
-            bins.push(i * binsize);
-        }
+pub fn binify(
+    contigsizes: &HashMap<String, u64>,
+    binsize: u32,
+) -> anyResult<HashMap<String, Vec<u32>>> {
+    let bins_db: HashMap<String, Vec<u32>> = contigsizes
+        .par_iter()
+        .map(|(contig, size)| {
+            let n_bins: u32 = (size / binsize as u64).try_into().unwrap();
+            let mut bins = Vec::new();
+            for i in 0..(n_bins + 1) {
+                bins.push(i * binsize);
+            }
 
+            if let Some(last) = bins.last_mut() {
+                *last = *size as u32;
+            }
 
-        if let Some(last) = bins.last_mut() {
-            *last = *size as u32;
-        }
-
-        (contig.to_string(), bins)
-    }).collect();
+            (contig.to_string(), bins)
+        })
+        .collect();
 
     Ok(bins_db)
-
 }
 
 pub struct Prof {
@@ -492,5 +539,7 @@ impl Prof {
             out_bytes: AtomicU64::new(0),
         }
     }
-    pub fn add(ns: &AtomicU64, dur: u128) { ns.fetch_add(dur as u64, Ordering::Relaxed); }
+    pub fn add(ns: &AtomicU64, dur: u128) {
+        ns.fetch_add(dur as u64, Ordering::Relaxed);
+    }
 }
