@@ -3,6 +3,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use hashbrown::HashMap;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt::Write as FmtWrite;
@@ -548,20 +549,19 @@ impl ContactContractionTable {
             first_unit: mapping.first_unit.clone(),
         }
     }
-
-    fn map_half(&self, label: &str) -> Option<(u32, u32)> {
-        let (segment, suffix) = label.rsplit_once('_')?;
-        let index = match suffix {
-            "0" => 0,
-            "1" => 1,
-            _ => return None,
-        };
-        let mapping = self.segments.get(segment)?;
-        Some((mapping.unit, mapping.halves[index]))
-    }
 }
 
 type ContractedContactKey = (u32, u32);
+
+fn parse_half_label(label: &str) -> Option<(&str, usize)> {
+    let (segment, suffix) = label.rsplit_once('_')?;
+    let index = match suffix {
+        "0" => 0,
+        "1" => 1,
+        _ => return None,
+    };
+    Some((segment, index))
+}
 
 fn contract_contact_chunk(
     mapping: &ContactContractionTable,
@@ -569,6 +569,11 @@ fn contract_contact_chunk(
     chunk: Vec<u8>,
 ) -> Result<HashMap<ContractedContactKey, f64>> {
     let mut counts = HashMap::<ContractedContactKey, f64>::new();
+    // split.contacts is ordered by segment pair.  Cache both segment lookups
+    // within each chunk: the left segment commonly spans thousands of rows,
+    // and the right segment commonly spans all four half combinations.
+    let mut cached1: Option<(&str, Option<ContractedHalfMapping>)> = None;
+    let mut cached2: Option<(&str, Option<ContractedHalfMapping>)> = None;
     for (offset, raw_line) in chunk.split(|value| *value == b'\n').enumerate() {
         let line_number = start_line + offset;
         let raw_line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
@@ -587,10 +592,30 @@ fn contract_contact_chunk(
         let raw_count = fields
             .next()
             .with_context(|| format!("missing contacts count on line {}", line_number))?;
-        let (Some(mapped1), Some(mapped2)) = (mapping.map_half(raw1), mapping.map_half(raw2))
+        let (Some((segment1, half1)), Some((segment2, half2))) =
+            (parse_half_label(raw1), parse_half_label(raw2))
         else {
             continue;
         };
+        let mapping1 = if cached1.is_some_and(|(segment, _)| segment == segment1) {
+            cached1.unwrap().1
+        } else {
+            let value = mapping.segments.get(segment1).copied();
+            cached1 = Some((segment1, value));
+            value
+        };
+        let mapping2 = if cached2.is_some_and(|(segment, _)| segment == segment2) {
+            cached2.unwrap().1
+        } else {
+            let value = mapping.segments.get(segment2).copied();
+            cached2 = Some((segment2, value));
+            value
+        };
+        let (Some(mapping1), Some(mapping2)) = (mapping1, mapping2) else {
+            continue;
+        };
+        let mapped1 = (mapping1.unit, mapping1.halves[half1]);
+        let mapped2 = (mapping2.unit, mapping2.halves[half2]);
         if mapped1.0 == mapped2.0 {
             continue;
         }
@@ -905,6 +930,7 @@ fn process_clm_chunks(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn parse_sort_buffer(value: &str) -> Option<u64> {
     let (digits, multiplier) = match value.as_bytes().last().copied() {
         Some(b'K') | Some(b'k') => (&value[..value.len() - 1], 1024u64),
@@ -915,6 +941,7 @@ fn parse_sort_buffer(value: &str) -> Option<u64> {
     digits.parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
+#[allow(dead_code)]
 fn divided_sort_buffer(value: &str, divisor: usize) -> String {
     parse_sort_buffer(value)
         .map(|bytes| (bytes / divisor.max(1) as u64).max(1024 * 1024).to_string())
@@ -929,6 +956,22 @@ fn parse_clm_endpoint_token(token: &str) -> Result<(&str, char)> {
     } else {
         bail!("CLM endpoint `{token}` has no orientation")
     }
+}
+
+fn adjusted_clm_distances(distances: &[u64], shift: u64) -> Result<Cow<'_, [u64]>> {
+    if shift == 0 && distances.iter().all(|distance| *distance >= 2) {
+        return Ok(Cow::Borrowed(distances));
+    }
+    distances
+        .iter()
+        .map(|distance| {
+            distance
+                .checked_add(shift)
+                .map(|value| value.max(2))
+                .context("contracted CLM distance exceeds u64")
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Cow::Owned)
 }
 
 fn stream_clm_records(
@@ -1024,20 +1067,12 @@ fn remap_clm_to_clmb(mapping: &MappingTable, input: &str, output: &str) -> Resul
                 .2
                 .checked_add(mapped2.2)
                 .context("contracted CLM shift exceeds u64")?;
-            let adjusted = distances
-                .iter()
-                .map(|distance| {
-                    distance
-                        .checked_add(shift)
-                        .map(|value| value.max(2))
-                        .context("contracted CLM distance exceeds u64")
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let adjusted = adjusted_clm_distances(distances, shift)?;
             let endpoint1 =
                 encode_endpoint(unit_ids[mapped1.0], if mapped1.1 == '+' { 0 } else { 1 })?;
             let endpoint2 =
                 encode_endpoint(unit_ids[mapped2.0], if mapped2.1 == '+' { 0 } else { 1 })?;
-            writer.write_record(endpoint1, endpoint2, &adjusted)
+            writer.write_record(endpoint1, endpoint2, adjusted.as_ref())
         },
     )?;
     writer.finish()
@@ -1111,22 +1146,14 @@ fn remap_clm_by_cluster_to_clmb(
                 .2
                 .checked_add(mapped2.2)
                 .context("contracted CLM shift exceeds u64")?;
-            let adjusted = distances
-                .iter()
-                .map(|distance| {
-                    distance
-                        .checked_add(shift)
-                        .map(|value| value.max(2))
-                        .context("contracted CLM distance exceeds u64")
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let adjusted = adjusted_clm_distances(distances, shift)?;
             let endpoint1 =
                 encode_endpoint(unit_ids[mapped1.0], if mapped1.1 == '+' { 0 } else { 1 })?;
             let endpoint2 =
                 encode_endpoint(unit_ids[mapped2.0], if mapped2.1 == '+' { 0 } else { 1 })?;
             for group in groups1 {
                 if groups2.binary_search(group).is_ok() {
-                    writers[*group].write_record(endpoint1, endpoint2, &adjusted)?;
+                    writers[*group].write_record(endpoint1, endpoint2, adjusted.as_ref())?;
                 }
             }
             Ok(())
@@ -1138,6 +1165,7 @@ fn remap_clm_by_cluster_to_clmb(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn remap_clm_by_cluster(
     mapping: &MappingTable,
     cluster_path: &str,
@@ -1426,6 +1454,20 @@ pub fn contract_gfa_scaffolding_inputs(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn borrows_unchanged_clm_distances() {
+        let unchanged = [2, 10, 100];
+        assert!(matches!(
+            adjusted_clm_distances(&unchanged, 0).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(adjusted_clm_distances(&[1, 2], 0).unwrap().as_ref(), [2, 2]);
+        assert_eq!(
+            adjusted_clm_distances(&[2, 10], 5).unwrap().as_ref(),
+            [7, 15]
+        );
+    }
 
     #[test]
     fn aggregates_normalized_gfa_end_contacts() {

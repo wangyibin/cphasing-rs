@@ -25,6 +25,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+mod hierarchical_scan;
+use hierarchical_scan::sparse_hierarchical_end_candidates;
+
 #[derive(Debug, Clone)]
 pub struct ContactMatrix<'a> {
     num_contigs: usize,
@@ -1068,6 +1071,705 @@ pub fn run_lkh_optimizer_dual_node(
     log::info!("Dual-Node optimization finished.");
 
     final_tour
+}
+
+#[derive(Debug, Clone)]
+struct EndPathDisjointSet {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl EndPathDisjointSet {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            size: vec![1; n],
+        }
+    }
+
+    fn find(&mut self, node: usize) -> usize {
+        if self.parent[node] != node {
+            self.parent[node] = self.find(self.parent[node]);
+        }
+        self.parent[node]
+    }
+
+    fn union(&mut self, left: usize, right: usize) {
+        let left = self.find(left);
+        let right = self.find(right);
+        if left == right {
+            return;
+        }
+        let (large, small) = if self.size[left] >= self.size[right] {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        self.parent[small] = large;
+        self.size[large] += self.size[small];
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EndPathCandidate {
+    left: usize,
+    right: usize,
+    score: f64,
+    confidence: f64,
+}
+
+/// Construct a deterministic oriented path directly from half-contig contact
+/// evidence. Reciprocal-best endpoint links are accepted first, then the
+/// remaining supported links join path components without endpoint reuse or
+/// cycles. Unlike the dual-node TSP, absent edges never receive an arbitrary
+/// finite cost.
+pub fn run_greedy_end_initializer(
+    tour: &Tour,
+    contigsizes: &IndexMap<usize, usize>,
+    split_contacts: &crate::splitcontacts::SplitContacts,
+    contig2idx: &HashMap<String, usize>,
+) -> Tour {
+    let n = tour.contigs.len();
+    if n <= 1 {
+        return tour.clone();
+    }
+
+    let mut candidates = Vec::new();
+    let mut endpoint_rows = vec![Vec::<(usize, f64)>::new(); 2 * n];
+    for (pair, counts) in &split_contacts.data {
+        let (Some(&left_id), Some(&right_id)) =
+            (contig2idx.get(&pair.Contig1), contig2idx.get(&pair.Contig2))
+        else {
+            continue;
+        };
+        if left_id == right_id {
+            continue;
+        }
+        let left_length = *contigsizes.get(&left_id).unwrap_or(&1) as f64;
+        let right_length = *contigsizes.get(&right_id).unwrap_or(&1) as f64;
+        let denominator = (left_length * right_length).sqrt().max(1.0);
+        for left_end in 0..2 {
+            for right_end in 0..2 {
+                let count = counts[left_end * 2 + right_end];
+                if count <= 0.0 {
+                    continue;
+                }
+                let left = 2 * left_id + left_end;
+                let right = 2 * right_id + right_end;
+                let score = count / denominator;
+                endpoint_rows[left].push((right, score));
+                endpoint_rows[right].push((left, score));
+                candidates.push(EndPathCandidate {
+                    left,
+                    right,
+                    score,
+                    confidence: 0.0,
+                });
+            }
+        }
+    }
+
+    for row in &mut endpoint_rows {
+        row.sort_unstable_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+    }
+    for candidate in &mut candidates {
+        let alternative = |endpoint: usize, partner: usize| {
+            endpoint_rows[endpoint]
+                .iter()
+                .find(|(neighbor, _)| *neighbor != partner)
+                .map_or(0.0, |(_, score)| *score)
+        };
+        let competitor = alternative(candidate.left, candidate.right)
+            .max(alternative(candidate.right, candidate.left));
+        candidate.confidence = if competitor > 0.0 {
+            candidate.score / competitor
+        } else {
+            f64::INFINITY
+        };
+    }
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .confidence
+            .total_cmp(&left.confidence)
+            .then_with(|| right.score.total_cmp(&left.score))
+            .then_with(|| (left.left, left.right).cmp(&(right.left, right.right)))
+    });
+
+    let mut components = EndPathDisjointSet::new(n);
+    let mut used_endpoint = vec![false; 2 * n];
+    let mut external_neighbor = vec![usize::MAX; 2 * n];
+    let mut accepted = 0usize;
+    let mut accept_candidate = |candidate: EndPathCandidate,
+                                components: &mut EndPathDisjointSet,
+                                used_endpoint: &mut [bool],
+                                external_neighbor: &mut [usize]| {
+        if used_endpoint[candidate.left] || used_endpoint[candidate.right] {
+            return false;
+        }
+        let left_contig = candidate.left / 2;
+        let right_contig = candidate.right / 2;
+        if components.find(left_contig) == components.find(right_contig) {
+            return false;
+        }
+        used_endpoint[candidate.left] = true;
+        used_endpoint[candidate.right] = true;
+        external_neighbor[candidate.left] = candidate.right;
+        external_neighbor[candidate.right] = candidate.left;
+        components.union(left_contig, right_contig);
+        true
+    };
+
+    // First lock only endpoint links stronger than every alternative at both
+    // ends. These are the direct analogue of HapHiC confidence > 1 links.
+    for &candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.confidence > 1.0)
+    {
+        if accept_candidate(
+            candidate,
+            &mut components,
+            &mut used_endpoint,
+            &mut external_neighbor,
+        ) {
+            accepted += 1;
+        }
+    }
+    // Join the remaining path components using real supported edges only.
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| right.confidence.total_cmp(&left.confidence))
+            .then_with(|| (left.left, left.right).cmp(&(right.left, right.right)))
+    });
+    for candidate in candidates {
+        if accepted + 1 == n {
+            break;
+        }
+        if accept_candidate(
+            candidate,
+            &mut components,
+            &mut used_endpoint,
+            &mut external_neighbor,
+        ) {
+            accepted += 1;
+        }
+    }
+
+    log::info!(
+        "Greedy end initializer accepted {} supported joins for {} contigs",
+        accepted,
+        n
+    );
+    decode_end_path_tour(n, &used_endpoint, &external_neighbor)
+}
+
+fn decode_end_path_tour(n: usize, used_endpoint: &[bool], external_neighbor: &[usize]) -> Tour {
+    // Decode each alternating end--sister-end path. Components without a
+    // supported bridge remain separate and are appended deterministically.
+    let mut visited_contig = vec![false; n];
+    let mut paths = Vec::<Vec<(usize, bool)>>::new();
+    for start in 0..2 * n {
+        let contig = start / 2;
+        if visited_contig[contig] || used_endpoint[start] {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut current = start;
+        loop {
+            let contig = current / 2;
+            if visited_contig[contig] {
+                break;
+            }
+            visited_contig[contig] = true;
+            path.push((contig, current % 2 == 0));
+            let opposite = current ^ 1;
+            let next = external_neighbor[opposite];
+            if next == usize::MAX {
+                break;
+            }
+            current = next;
+        }
+        paths.push(path);
+    }
+    for contig in 0..n {
+        if !visited_contig[contig] {
+            paths.push(vec![(contig, true)]);
+        }
+    }
+    paths.sort_unstable_by(|left, right| {
+        right
+            .len()
+            .cmp(&left.len())
+            .then_with(|| left[0].0.cmp(&right[0].0))
+    });
+
+    let mut contigs = Vec::with_capacity(n);
+    let mut signs = Vec::with_capacity(n);
+    for path in paths {
+        for (contig, sign) in path {
+            contigs.push(contig);
+            signs.push(sign);
+        }
+    }
+    Tour { contigs, signs }
+}
+
+#[derive(Debug, Clone)]
+struct EndBeamState {
+    components: EndPathDisjointSet,
+    used_endpoint: Vec<bool>,
+    external_neighbor: Vec<usize>,
+    accepted: usize,
+    score: f64,
+}
+
+impl EndBeamState {
+    fn new(n: usize) -> Self {
+        Self {
+            components: EndPathDisjointSet::new(n),
+            used_endpoint: vec![false; 2 * n],
+            external_neighbor: vec![usize::MAX; 2 * n],
+            accepted: 0,
+            score: 0.0,
+        }
+    }
+
+    fn accept(&mut self, candidate: EndPathCandidate) -> bool {
+        if self.used_endpoint[candidate.left] || self.used_endpoint[candidate.right] {
+            return false;
+        }
+        let left_contig = candidate.left / 2;
+        let right_contig = candidate.right / 2;
+        if self.components.find(left_contig) == self.components.find(right_contig) {
+            return false;
+        }
+        self.used_endpoint[candidate.left] = true;
+        self.used_endpoint[candidate.right] = true;
+        self.external_neighbor[candidate.left] = candidate.right;
+        self.external_neighbor[candidate.right] = candidate.left;
+        self.components.union(left_contig, right_contig);
+        self.accepted += 1;
+        self.score += candidate.score;
+        true
+    }
+}
+
+/// Search a signed endpoint path forest over each endpoint's direct Top2
+/// candidates. A bounded beam can skip a locally strongest edge when two
+/// compatible alternatives produce a better global degree<=2 acyclic path.
+/// Remaining components are joined only with observed endpoint contacts.
+pub fn run_beam_end_initializer(
+    tour: &Tour,
+    split_contacts: &crate::splitcontacts::SplitContacts,
+    contig2idx: &HashMap<String, usize>,
+    beam_width: usize,
+) -> Tour {
+    let n = tour.contigs.len();
+    if n <= 1 {
+        return tour.clone();
+    }
+
+    let mut endpoint_totals = vec![0.0; 2 * n];
+    for (pair, counts) in &split_contacts.data {
+        let (Some(&left_id), Some(&right_id)) =
+            (contig2idx.get(&pair.Contig1), contig2idx.get(&pair.Contig2))
+        else {
+            continue;
+        };
+        if counts.len() < 4 || left_id == right_id {
+            continue;
+        }
+        for left_end in 0..2 {
+            for right_end in 0..2 {
+                let count = counts[left_end * 2 + right_end].max(0.0);
+                endpoint_totals[2 * left_id + left_end] += count;
+                endpoint_totals[2 * right_id + right_end] += count;
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let mut endpoint_rows = vec![Vec::<(usize, f64)>::new(); 2 * n];
+    for (pair, counts) in &split_contacts.data {
+        let (Some(&left_id), Some(&right_id)) =
+            (contig2idx.get(&pair.Contig1), contig2idx.get(&pair.Contig2))
+        else {
+            continue;
+        };
+        if counts.len() < 4 || left_id == right_id {
+            continue;
+        }
+        for left_end in 0..2 {
+            for right_end in 0..2 {
+                let count = counts[left_end * 2 + right_end].max(0.0);
+                let left = 2 * left_id + left_end;
+                let right = 2 * right_id + right_end;
+                let denominator = (endpoint_totals[left] * endpoint_totals[right]).sqrt();
+                if count <= 0.0 || denominator <= 0.0 {
+                    continue;
+                }
+                let score = count / denominator;
+                endpoint_rows[left].push((right, score));
+                endpoint_rows[right].push((left, score));
+                candidates.push(EndPathCandidate {
+                    left,
+                    right,
+                    score,
+                    confidence: 0.0,
+                });
+            }
+        }
+    }
+    for row in &mut endpoint_rows {
+        row.sort_unstable_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+    }
+    for candidate in &mut candidates {
+        let alternative = |endpoint: usize, partner: usize| {
+            endpoint_rows[endpoint]
+                .iter()
+                .find(|(neighbor, _)| *neighbor != partner)
+                .map_or(0.0, |(_, score)| *score)
+        };
+        let competitor = alternative(candidate.left, candidate.right)
+            .max(alternative(candidate.right, candidate.left));
+        candidate.confidence = if competitor > 0.0 {
+            candidate.score / competitor
+        } else {
+            f64::INFINITY
+        };
+    }
+    candidates.sort_unstable_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| right.confidence.total_cmp(&left.confidence))
+            .then_with(|| (left.left, left.right).cmp(&(right.left, right.right)))
+    });
+    let is_top_two = |endpoint: usize, partner: usize| {
+        endpoint_rows[endpoint]
+            .iter()
+            .take(2)
+            .any(|(neighbor, _)| *neighbor == partner)
+    };
+    let beam_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            is_top_two(candidate.left, candidate.right)
+                || is_top_two(candidate.right, candidate.left)
+        })
+        .collect::<Vec<_>>();
+    let mut prefix_scores = vec![0.0; beam_candidates.len() + 1];
+    for (index, candidate) in beam_candidates.iter().enumerate() {
+        prefix_scores[index + 1] = prefix_scores[index] + candidate.score;
+    }
+
+    let beam_width = beam_width.max(1);
+    let mut beam = vec![EndBeamState::new(n)];
+    for (index, &candidate) in beam_candidates.iter().enumerate() {
+        let mut next = Vec::with_capacity(beam.len() * 2);
+        for state in beam {
+            let mut included = state.clone();
+            if included.accept(candidate) {
+                next.push(included);
+            }
+            next.push(state);
+        }
+        let future_start = index + 1;
+        next.sort_unstable_by(|left, right| {
+            let optimistic = |state: &EndBeamState| {
+                let needed = n.saturating_sub(1 + state.accepted);
+                let future_end = (future_start + needed).min(beam_candidates.len());
+                state.score + prefix_scores[future_end] - prefix_scores[future_start]
+            };
+            optimistic(right)
+                .total_cmp(&optimistic(left))
+                .then_with(|| right.accepted.cmp(&left.accepted))
+                .then_with(|| right.score.total_cmp(&left.score))
+                .then_with(|| left.external_neighbor.cmp(&right.external_neighbor))
+        });
+        next.truncate(beam_width);
+        beam = next;
+    }
+
+    // Complete every surviving forest greedily with all observed edges, then
+    // choose the most complete, highest-scoring deterministic path forest.
+    for state in &mut beam {
+        for &candidate in &candidates {
+            if state.accepted + 1 == n {
+                break;
+            }
+            state.accept(candidate);
+        }
+    }
+    beam.sort_unstable_by(|left, right| {
+        right
+            .accepted
+            .cmp(&left.accepted)
+            .then_with(|| right.score.total_cmp(&left.score))
+            .then_with(|| left.external_neighbor.cmp(&right.external_neighbor))
+    });
+    let best = beam
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| EndBeamState::new(n));
+    log::info!(
+        "Beam end initializer accepted {} joins for {} contigs from {} Top2 candidates (beam width {})",
+        best.accepted,
+        n,
+        beam_candidates.len(),
+        beam_width
+    );
+    decode_end_path_tour(n, &best.used_endpoint, &best.external_neighbor)
+}
+
+fn oriented_half_nodes(
+    path: &[(usize, bool)],
+    contigsizes: &IndexMap<usize, usize>,
+) -> [(Vec<usize>, f64); 2] {
+    let mut nodes = Vec::with_capacity(path.len() * 2);
+    let mut half_lengths = Vec::with_capacity(path.len() * 2);
+    for &(contig, forward) in path {
+        let half_length = *contigsizes.get(&contig).unwrap_or(&1) as f64 * 0.5;
+        if forward {
+            nodes.extend([2 * contig, 2 * contig + 1]);
+        } else {
+            nodes.extend([2 * contig + 1, 2 * contig]);
+        }
+        half_lengths.extend([half_length, half_length]);
+    }
+    let target = half_lengths.iter().sum::<f64>() * 0.5;
+    let mut cumulative = 0.0;
+    let mut best_split = 1usize;
+    let mut best_difference = f64::INFINITY;
+    for split in 1..nodes.len() {
+        cumulative += half_lengths[split - 1];
+        let difference = (cumulative - target).abs();
+        if difference < best_difference {
+            best_difference = difference;
+            best_split = split;
+        }
+    }
+    let left_length = half_lengths[..best_split].iter().sum::<f64>();
+    let right_length = half_lengths[best_split..].iter().sum::<f64>();
+    [
+        (nodes[..best_split].to_vec(), left_length),
+        (nodes[best_split..].to_vec(), right_length),
+    ]
+}
+
+/// Hierarchical half-contig path construction. After every merge, each path is
+/// split back into physical left/right halves and its four possible joins are
+/// rescored from the original endpoint contacts. This preserves the useful
+/// evidence aggregation of fastsort without invoking its Python code or a GA.
+pub fn run_hierarchical_end_initializer(
+    tour: &Tour,
+    contigsizes: &IndexMap<usize, usize>,
+    split_contacts: &crate::splitcontacts::SplitContacts,
+    contig2idx: &HashMap<String, usize>,
+) -> Tour {
+    let n = tour.contigs.len();
+    if n <= 1 {
+        return tour.clone();
+    }
+    // Half-contig contacts are sparse in practice. Keeping one sparse row per
+    // physical half avoids allocating a (2n) x (2n) f64 matrix, which would
+    // require roughly 80 GiB for 50,000 contigs.
+    let mut contact_maps = vec![HashMap::<usize, f64>::new(); 2 * n];
+    for (pair, counts) in &split_contacts.data {
+        let (Some(&left_id), Some(&right_id)) =
+            (contig2idx.get(&pair.Contig1), contig2idx.get(&pair.Contig2))
+        else {
+            continue;
+        };
+        for left_end in 0..2 {
+            for right_end in 0..2 {
+                let left = 2 * left_id + left_end;
+                let right = 2 * right_id + right_end;
+                let count = counts[left_end * 2 + right_end];
+                if count != 0.0 {
+                    *contact_maps[left].entry(right).or_insert(0.0) += count;
+                    *contact_maps[right].entry(left).or_insert(0.0) += count;
+                }
+            }
+        }
+    }
+    let contacts = contact_maps
+        .into_iter()
+        .map(|row| {
+            let mut row = row
+                .into_iter()
+                .filter(|(_, count)| *count != 0.0)
+                .collect::<Vec<_>>();
+            row.sort_unstable_by_key(|(neighbor, _)| *neighbor);
+            row
+        })
+        .collect::<Vec<_>>();
+
+    let mut paths = (0..n)
+        .map(|contig| vec![(contig, true)])
+        .collect::<Vec<_>>();
+    let mut confident_merges = 0usize;
+    while paths.len() > 1 {
+        let halves = paths
+            .iter()
+            .map(|path| oriented_half_nodes(path, contigsizes))
+            .collect::<Vec<_>>();
+        let side_count = paths.len() * 2;
+        let candidates = sparse_hierarchical_end_candidates(&halves, &contacts);
+        let mut ranked = vec![Vec::<(usize, f64)>::new(); side_count];
+        for &(left_path, left_side, right_path, right_side, score) in &candidates {
+            let left_endpoint = 2 * left_path + left_side;
+            let right_endpoint = 2 * right_path + right_side;
+            ranked[left_endpoint].push((right_endpoint, score));
+            ranked[right_endpoint].push((left_endpoint, score));
+        }
+        for row in &mut ranked {
+            row.sort_unstable_by(|left, right| right.1.total_cmp(&left.1));
+        }
+
+        let mut best = None::<(bool, f64, f64, usize, usize, usize, usize)>;
+        let mut confident_candidates = Vec::new();
+        for &(left_path, left_side, right_path, right_side, score) in &candidates {
+            let left_endpoint = 2 * left_path + left_side;
+            let right_endpoint = 2 * right_path + right_side;
+            let alternative = |endpoint: usize, partner: usize| {
+                ranked[endpoint]
+                    .iter()
+                    .find(|(other, _)| *other != partner)
+                    .map_or(0.0, |(_, value)| *value)
+            };
+            let competitor = alternative(left_endpoint, right_endpoint)
+                .max(alternative(right_endpoint, left_endpoint));
+            let confidence = if competitor > 0.0 {
+                score / competitor
+            } else {
+                f64::INFINITY
+            };
+            let confident = confidence > 1.0;
+            let candidate = (
+                confident, confidence, score, left_path, left_side, right_path, right_side,
+            );
+            if confident {
+                confident_candidates.push(candidate);
+            }
+            if best.is_none_or(|current| {
+                candidate.0 > current.0
+                    || (candidate.0 == current.0
+                        && (candidate.1.total_cmp(&current.1).is_gt()
+                            || (candidate.1.total_cmp(&current.1).is_eq()
+                                && candidate.2.total_cmp(&current.2).is_gt())))
+            }) {
+                best = Some(candidate);
+            }
+        }
+
+        // Recomputing all aggregate path-half scores after every individual
+        // join is useful for small groups, but cubic in the contig count. For
+        // fragmented groups, accept a deterministic maximal set of disjoint
+        // reciprocal-best joins per round. Every accepted edge satisfies the
+        // same confidence criterion as the single-merge path, while reducing
+        // the number of full rescoring rounds from O(n) toward O(log n).
+        if n > 512 && paths.len() > 512 && confident_candidates.len() > 1 {
+            confident_candidates.sort_unstable_by(|left, right| {
+                right
+                    .1
+                    .total_cmp(&left.1)
+                    .then_with(|| right.2.total_cmp(&left.2))
+                    .then_with(|| left.3.cmp(&right.3))
+                    .then_with(|| left.5.cmp(&right.5))
+            });
+            let mut consumed = vec![false; paths.len()];
+            let mut selected = Vec::new();
+            for candidate in confident_candidates {
+                let left_path = candidate.3;
+                let right_path = candidate.5;
+                if !consumed[left_path] && !consumed[right_path] {
+                    consumed[left_path] = true;
+                    consumed[right_path] = true;
+                    selected.push(candidate);
+                }
+            }
+            if !selected.is_empty() {
+                let merge_count = selected.len();
+                let mut next_paths = Vec::with_capacity(paths.len() - merge_count);
+                for (_, _, _, left_path, left_side, right_path, right_side) in selected {
+                    let mut left = paths[left_path].clone();
+                    let mut right = paths[right_path].clone();
+                    if left_side == 0 {
+                        left.reverse();
+                        for (_, sign) in &mut left {
+                            *sign = !*sign;
+                        }
+                    }
+                    if right_side == 1 {
+                        right.reverse();
+                        for (_, sign) in &mut right {
+                            *sign = !*sign;
+                        }
+                    }
+                    left.append(&mut right);
+                    next_paths.push(left);
+                }
+                for (path_index, path) in paths.into_iter().enumerate() {
+                    if !consumed[path_index] {
+                        next_paths.push(path);
+                    }
+                }
+                confident_merges += merge_count;
+                paths = next_paths;
+                continue;
+            }
+        }
+
+        let Some((confident, _, _, left_path, left_side, right_path, right_side)) = best else {
+            paths.sort_unstable_by(|left, right| right.len().cmp(&left.len()));
+            let mut right = paths.pop().unwrap();
+            paths[0].append(&mut right);
+            continue;
+        };
+        if confident {
+            confident_merges += 1;
+        }
+        let mut right = paths.remove(right_path);
+        let mut left = paths.remove(left_path);
+        if left_side == 0 {
+            left.reverse();
+            for (_, sign) in &mut left {
+                *sign = !*sign;
+            }
+        }
+        if right_side == 1 {
+            right.reverse();
+            for (_, sign) in &mut right {
+                *sign = !*sign;
+            }
+        }
+        left.append(&mut right);
+        paths.push(left);
+    }
+
+    let path = paths.pop().unwrap();
+    log::info!(
+        "Hierarchical end initializer completed {} merges ({} reciprocal-confidence)",
+        n - 1,
+        confident_merges
+    );
+    Tour {
+        contigs: path.iter().map(|(contig, _)| *contig).collect(),
+        signs: path.iter().map(|(_, sign)| *sign).collect(),
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables, unused_assignments)]
 use cphasing::aligner::read_bam;
-use cphasing::alleles::AllelesFasta;
+use cphasing::alleles::{AllelesFasta, AllelesOptions};
 use cphasing::bam::*;
 use cphasing::cli::cli;
 use cphasing::clm::{CLMB_DEFAULT_BLOCK_SIZE, Clm, convert_clm, merge_clm};
@@ -165,6 +165,13 @@ fn main() {
             let kmer_size = sub_matches.get_one::<usize>("K").expect("error");
             let window_size = sub_matches.get_one::<usize>("W").expect("error");
             let minimum_similarity = sub_matches.get_one::<f64>("M").expect("error");
+            let max_occurrence = sub_matches
+                .get_one::<usize>("MAX_OCCURRENCE")
+                .expect("error");
+            let min_chain = sub_matches.get_one::<usize>("MIN_CHAIN").expect("error");
+            let diff_threshold = sub_matches.get_one::<f64>("DIFF_THRESHOLD").expect("error");
+            let trim_length = sub_matches.get_one::<usize>("TRIM_LENGTH").expect("error");
+            let split_regions = sub_matches.get_one::<String>("SPLIT_REGIONS");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
@@ -174,29 +181,60 @@ fn main() {
                 .unwrap();
 
             let mut alleles = AllelesFasta::new(&fasta);
-            alleles.run(*kmer_size, *window_size, *minimum_similarity, output);
+            alleles.set_split_regions(split_regions.cloned());
+            alleles
+                .run_with_options(
+                    AllelesOptions {
+                        k: *kmer_size,
+                        w: *window_size,
+                        trim_length: *trim_length,
+                        min_similarity: *minimum_similarity,
+                        max_occurrence: *max_occurrence,
+                        min_chain: *min_chain,
+                        diff_threshold: *diff_threshold,
+                    },
+                    output,
+                )
+                .unwrap();
         }
 
         Some(("kprune", sub_matches)) => {
             use rayon::prelude::*;
-            
-            let alleletable = sub_matches.get_one::<String>("ALLELETABLE").expect("required");
+
+            let alleletable = sub_matches
+                .get_one::<String>("ALLELETABLE")
+                .expect("required");
             let contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");
-            
-            let prunetable = sub_matches.get_one::<String>("PRUNETABLE").expect("required");
-            let count_re_opt: Option<String> = sub_matches
-                .get_one::<String>("COUNTRE")
-                .and_then(|s| if s == "none" || s == "-" { None } else { Some(s.to_string()) });
+
+            let prunetable = sub_matches
+                .get_one::<String>("PRUNETABLE")
+                .expect("required");
+            let count_re_opt: Option<String> =
+                sub_matches.get_one::<String>("COUNTRE").and_then(|s| {
+                    if s == "none" || s == "-" {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                });
             let method = sub_matches.get_one::<String>("METHOD").expect("error");
-            let normalization_method = sub_matches.get_one::<String>("NORMALIZATION_METHOD").expect("error");
+            let normalization_method = sub_matches
+                .get_one::<String>("NORMALIZATION_METHOD")
+                .expect("error");
             let whitelist = sub_matches.get_one::<String>("WHITELIST").expect("error");
-            let partial_whitelist = sub_matches.get_one::<bool>("PARTIAL_WHITELIST").expect("error");
-            let first_cluster = sub_matches.get_one::<String>("FIRST_CLUSTER").expect("error");
+            let partial_whitelist = sub_matches
+                .get_one::<bool>("PARTIAL_WHITELIST")
+                .expect("error");
+            let first_cluster = sub_matches
+                .get_one::<String>("FIRST_CLUSTER")
+                .expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            assert!(method == "fast" || method == "precise" || method == "greedy", 
-                     "method must be in ['fast', 'precise', 'greedy']");
-     
+            assert!(
+                method == "fast" || method == "precise" || method == "greedy",
+                "method must be in ['fast', 'precise', 'greedy']"
+            );
+
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
@@ -213,25 +251,22 @@ fn main() {
                 }
             }
 
-
             let mut first_cluster_hashmap: HashMap<String, HashSet<String>> = HashMap::new();
             if first_cluster != "none" {
                 let reader = common_reader(&first_cluster);
                 let reader = BufReader::new(reader);
-              
+
                 let pairs: Vec<(String, HashSet<String>)> = reader
                     .lines()
                     .par_bridge()
                     .filter_map(|r| r.ok())
                     .map(|line| {
-                       
                         let mut parts = line.splitn(3, '\t');
-                        
+
                         let group = parts.next().unwrap_or("").to_string();
                         let _count = parts.next().unwrap_or("");
                         let contig_field = parts.next().unwrap_or("");
 
-                       
                         let mut set = HashSet::new();
                         if whitehash.is_empty() {
                             for s in contig_field.split_ascii_whitespace() {
@@ -240,7 +275,6 @@ fn main() {
                                 }
                             }
                         } else {
-   
                             for s in contig_field.split_ascii_whitespace() {
                                 if !s.is_empty() && whitehash.contains(s) {
                                     set.insert(s.to_string());
@@ -249,12 +283,10 @@ fn main() {
                         }
                         (group, set)
                     })
-                    .filter(|(_, set)| !set.is_empty()) 
+                    .filter(|(_, set)| !set.is_empty())
                     .collect();
 
-      
                 first_cluster_hashmap = pairs.into_iter().collect();
-
             }
 
             if first_cluster != "none" {
@@ -264,20 +296,33 @@ fn main() {
                     .into_par_iter()
                     .map(|(k, v)| {
                         let tmp_output = format!("{}.kprune.tmp", k);
-                   
+
                         let mut tmp_writer = common_writer(&tmp_output);
 
                         log::info!("Pruning cluster `{}`", k);
 
                         let mut kpruner = KPruner::new(
-                            &alleletable, &contacts, &prunetable, &count_re_opt,
-                            normalization_method);
+                            &alleletable,
+                            &contacts,
+                            &prunetable,
+                            &count_re_opt,
+                            normalization_method,
+                        );
 
                         let white_refs: HashSet<&String> = v.iter().collect();
 
-
-                        kpruner.prune(&method.as_str(), &white_refs, &mut tmp_writer, *partial_whitelist);
-                        (k, tmp_output, kpruner.allelic_counts, kpruner.cross_allelic_counts)
+                        kpruner.prune(
+                            &method.as_str(),
+                            &white_refs,
+                            &mut tmp_writer,
+                            *partial_whitelist,
+                        );
+                        (
+                            k,
+                            tmp_output,
+                            kpruner.allelic_counts,
+                            kpruner.cross_allelic_counts,
+                        )
                     })
                     .collect();
 
@@ -308,12 +353,25 @@ fn main() {
                     whitehash2.insert(x);
                 }
 
-                let mut kpruner = KPruner::new(&alleletable, &contacts, &prunetable, &count_re_opt, normalization_method);
-                kpruner.prune(&method.as_str(), &whitehash2, &mut writer, *partial_whitelist);
+                let mut kpruner = KPruner::new(
+                    &alleletable,
+                    &contacts,
+                    &prunetable,
+                    &count_re_opt,
+                    normalization_method,
+                );
+                kpruner.prune(
+                    &method.as_str(),
+                    &whitehash2,
+                    &mut writer,
+                    *partial_whitelist,
+                );
             }
-            
-            log::info!("Allelic and cross-allelic information written into `{}`", prunetable);
 
+            log::info!(
+                "Allelic and cross-allelic information written into `{}`",
+                prunetable
+            );
         }
         Some(("prune", sub_matches)) => {
             use rayon::prelude::*;
@@ -2057,12 +2115,16 @@ fn main() {
             let ngen = sub_matches.get_one::<usize>("NGEN").expect("error");
             let npop = sub_matches.get_one::<usize>("NPOP").expect("error");
             let resume = sub_matches.get_one::<bool>("RESUME").expect("error");
+            let initializer = sub_matches.get_one::<String>("INITIALIZER").expect("error");
+            let split_contacts_path = sub_matches.get_one::<String>("SPLIT_CONTACTS");
             let seed = sub_matches.get_one::<u64>("SEED").expect("error");
             let skip_ga = sub_matches.get_one::<bool>("SKIPGA").expect("error");
             let log_distance = sub_matches.get_one::<bool>("LOGDIST").expect("error");
-            let no_backbone = sub_matches
-                .get_one::<bool>("NO_BACKBONE")
+            let length_tiered = sub_matches.get_one::<bool>("LENGTH_TIERED").expect("error");
+            let endpoint_multiscale = sub_matches
+                .get_one::<bool>("ENDPOINT_MULTISCALE")
                 .expect("error");
+            let no_backbone = sub_matches.get_one::<bool>("NO_BACKBONE").expect("error");
 
             let _output = Path::new(&count_re).file_stem().unwrap().to_str().unwrap();
             let output = Path::new(_output).with_extension("tour");
@@ -2140,7 +2202,11 @@ fn main() {
                 tour.contigs.shuffle(&mut rng);
             }
 
-            let objective = if *log_distance {
+            let objective = if *endpoint_multiscale {
+                OrderObjective::EndpointMultiscale
+            } else if *length_tiered {
+                OrderObjective::LengthTiered
+            } else if *log_distance {
                 OrderObjective::LogDistance
             } else {
                 OrderObjective::ReciprocalDistance
@@ -2149,11 +2215,130 @@ fn main() {
                 .iter()
                 .map(|name| contigsizes[name] as u64)
                 .collect();
+            let construction_objective = if *endpoint_multiscale {
+                OrderObjective::ReciprocalDistance
+            } else {
+                objective
+            };
             let allhic = AllhicProblem::from_clmb(clmb, &initial_contigs, &lengths)
-                .map(|problem| problem.with_objective(objective))
+                .map(|problem| problem.with_objective(construction_objective))
                 .unwrap_or_else(|error| panic!("invalid CLMB optimize input: {error}"));
-            let problem = allhic.ordering;
+            let mut problem = allhic.ordering;
             let orientation_problem = allhic.orientation;
+            if !*resume && initializer == "seriation" {
+                let initialized = problem
+                    .seriation_seed(&tour.contigs)
+                    .unwrap_or_else(|error| panic!("seriation initialization failed: {error}"));
+                log::info!(
+                    "Seriation initializer: {} candidates, {} accepted adjacent swaps, fitness {:.6} -> {:.6} (best raw spectral {:.6})",
+                    initialized.candidates,
+                    initialized.accepted_swaps,
+                    initialized.fallback_score,
+                    initialized.final_score,
+                    initialized.spectral_score,
+                );
+                tour.contigs = initialized.order;
+            } else if !*resume && initializer == "end-tsp" {
+                let split_contacts_path = split_contacts_path.unwrap_or_else(|| {
+                    panic!("--initializer end-tsp requires --split-contacts PATH")
+                });
+                let whitelist = initial_contigs.iter().cloned().collect::<HashSet<_>>();
+                let split_contacts =
+                    SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
+                        .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
+                let empty_contacts = vec![HashMap::new(); contigsizes_idx.len()];
+                let empty_matrix = ContactMatrix::new(&contigsizes_idx, empty_contacts);
+                let before = problem.evaluate(&tour.contigs);
+                tour = run_lkh_optimizer_dual_node(
+                    &tour,
+                    contigsizes_idx.clone(),
+                    &empty_matrix,
+                    &split_contacts,
+                    &contig2idx,
+                    10,
+                    *seed,
+                );
+                log::info!(
+                    "End-TSP initializer: {} contact pairs, ordering fitness {:.6} -> {:.6}",
+                    split_contacts.data.len(),
+                    before,
+                    problem.evaluate(&tour.contigs),
+                );
+            } else if !*resume && initializer == "end-greedy" {
+                let split_contacts_path = split_contacts_path.unwrap_or_else(|| {
+                    panic!("--initializer end-greedy requires --split-contacts PATH")
+                });
+                let whitelist = initial_contigs.iter().cloned().collect::<HashSet<_>>();
+                let split_contacts =
+                    SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
+                        .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
+                let before = problem.evaluate(&tour.contigs);
+                tour = run_greedy_end_initializer(
+                    &tour,
+                    &contigsizes_idx,
+                    &split_contacts,
+                    &contig2idx,
+                );
+                log::info!(
+                    "Greedy end initializer: {} contact pairs, ordering fitness {:.6} -> {:.6}",
+                    split_contacts.data.len(),
+                    before,
+                    problem.evaluate(&tour.contigs),
+                );
+            } else if !*resume && initializer == "end-hierarchical" {
+                let split_contacts_path = split_contacts_path.unwrap_or_else(|| {
+                    panic!("--initializer end-hierarchical requires --split-contacts PATH")
+                });
+                let whitelist = initial_contigs.iter().cloned().collect::<HashSet<_>>();
+                let split_contacts =
+                    SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
+                        .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
+                let before = problem.evaluate(&tour.contigs);
+                tour = run_hierarchical_end_initializer(
+                    &tour,
+                    &contigsizes_idx,
+                    &split_contacts,
+                    &contig2idx,
+                );
+                log::info!(
+                    "Hierarchical end initializer: {} contact pairs, ordering fitness {:.6} -> {:.6}",
+                    split_contacts.data.len(),
+                    before,
+                    problem.evaluate(&tour.contigs),
+                );
+            } else if !*resume && initializer == "end-beam" {
+                let split_contacts_path = split_contacts_path.unwrap_or_else(|| {
+                    panic!("--initializer end-beam requires --split-contacts PATH")
+                });
+                let whitelist = initial_contigs.iter().cloned().collect::<HashSet<_>>();
+                let split_contacts =
+                    SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
+                        .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
+                let before = problem.evaluate(&tour.contigs);
+                tour = run_beam_end_initializer(&tour, &split_contacts, &contig2idx, 64);
+                log::info!(
+                    "Beam end initializer: {} contact pairs, ordering fitness {:.6} -> {:.6}",
+                    split_contacts.data.len(),
+                    before,
+                    problem.evaluate(&tour.contigs),
+                );
+            }
+            if *endpoint_multiscale {
+                let split_contacts_path = split_contacts_path.unwrap_or_else(|| {
+                    panic!("--endpoint-multiscale requires --split-contacts PATH")
+                });
+                let whitelist = initial_contigs.iter().cloned().collect::<HashSet<_>>();
+                let split_contacts =
+                    SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
+                        .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
+                problem = problem
+                    .with_endpoint_multiscale(&split_contacts, &contig2idx, &tour)
+                    .unwrap_or_else(|error| panic!("endpoint objective setup failed: {error}"));
+                log::info!(
+                    "Endpoint multi-scale seed fitness: {:.6}",
+                    problem.evaluate(&tour.contigs)
+                );
+            }
             let mut tour = if *skip_ga {
                 tour
             } else {
@@ -2204,17 +2389,31 @@ fn main() {
             //     10,
             //     *seed,
             // );
-            let result = if *resume {
-                orientation_problem.refine(&mut tour)
+            if initializer == "end-greedy" {
+                tour.signs.fill(true);
+            }
+            if *endpoint_multiscale {
+                log::info!(
+                    "Endpoint multi-scale objective retains the signed initializer orientation (fitness {:.6})",
+                    orientation_problem.evaluate(&tour)
+                );
             } else {
-                orientation_problem.optimize(&mut tour)
-            };
-            log::info!(
-                "ALLHiC orientation fitness: {:.6} -> {:.6} ({} phases)",
-                result.initial_score,
-                result.final_score,
-                result.phases
-            );
+                let result = if *resume
+                    || initializer == "end-tsp"
+                    || initializer == "end-hierarchical"
+                    || initializer == "end-beam"
+                {
+                    orientation_problem.refine(&mut tour)
+                } else {
+                    orientation_problem.optimize(&mut tour)
+                };
+                log::info!(
+                    "ALLHiC orientation fitness: {:.6} -> {:.6} ({} phases)",
+                    result.initial_score,
+                    result.final_score,
+                    result.phases
+                );
+            }
 
             let mut writer = common_writer(output.to_str().unwrap());
 

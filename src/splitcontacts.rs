@@ -3,12 +3,15 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables, unused_assignments)]
 use anyhow::Result as AnyResult;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::error::Error;
+use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
@@ -394,7 +397,13 @@ pub fn split_contacts_by_clusters(
         HashMap::with_capacity(cluster_map.len());
     for (cluster, _) in &cluster_map {
         let file_name = format!("{}/{}.split.contacts.gz", output_dir, cluster);
-        let writer = common_writer(&file_name);
+        // `common_writer` starts a pool of compression workers for every gzip
+        // stream. This command keeps one output stream open per cluster, so a
+        // large number of clusters can otherwise exhaust the process/thread
+        // limit. Compress inline because contact routing itself is sequential.
+        let file = File::create(&file_name)?;
+        let buffered = BufWriter::new(file);
+        let writer: Box<dyn Write + Send> = Box::new(GzEncoder::new(buffered, Compression::fast()));
         writer_map.insert(cluster, writer);
     }
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{
     Arg, ArgAction, ColorChoice, Command, Subcommand, arg,
     builder::{
-        Styles,
+        ArgPredicate, Styles,
         styling::{AnsiColor, Effects},
     },
     value_parser,
@@ -12,6 +12,7 @@ use clap::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[allow(dead_code)]
 fn non_negative_f64(value: &str) -> Result<f64, String> {
     let parsed = value.parse::<f64>().map_err(|error| error.to_string())?;
     if !parsed.is_finite() || parsed < 0.0 {
@@ -20,6 +21,7 @@ fn non_negative_f64(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+#[allow(dead_code)]
 fn unit_interval_f64(value: &str) -> Result<f64, String> {
     let parsed = non_negative_f64(value)?;
     if parsed > 1.0 {
@@ -28,6 +30,7 @@ fn unit_interval_f64(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+#[allow(dead_code)]
 fn positive_unit_interval_f64(value: &str) -> Result<f64, String> {
     let parsed = unit_interval_f64(value)?;
     if parsed == 0.0 {
@@ -36,6 +39,7 @@ fn positive_unit_interval_f64(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+#[allow(dead_code)]
 fn positive_usize(value: &str) -> Result<usize, String> {
     let parsed = value.parse::<usize>().map_err(|error| error.to_string())?;
     if parsed == 0 {
@@ -232,7 +236,7 @@ pub fn cli() -> Command {
             Command::new("alleles")
                 .alias("allele")
                 .hide(true)
-                .about("Identify the allelic contig pairs by self comparison (unstable and slowly)")
+                .about("Identify allelic contig pairs with parallel partig-style self comparison")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
                     Arg::new("K")
@@ -252,6 +256,38 @@ pub fn cli() -> Command {
                         .short('m')
                         .value_parser(value_parser!(f64))
                         .default_value("0.85"))
+                .arg(
+                    Arg::new("MAX_OCCURRENCE")
+                        .long("max-occurrence")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("100")
+                        .help("ignore minimizers occurring more than this many times"))
+                .arg(
+                    Arg::new("MIN_CHAIN")
+                        .long("min-chain")
+                        .short('n')
+                        .value_parser(value_parser!(usize))
+                        .default_value("5")
+                        .help("minimum number of collinear minimizers"))
+                .arg(
+                    Arg::new("DIFF_THRESHOLD")
+                        .long("diff-threshold")
+                        .short('d')
+                        .value_parser(value_parser!(f64))
+                        .default_value("0.1")
+                        .help("retain matches within this fraction of the best chain"))
+                .arg(
+                    Arg::new("TRIM_LENGTH")
+                        .long("trim-length")
+                        .value_parser(value_parser!(usize))
+                        .default_value("0")
+                        .help("trim this many bases from both ends when contig length is greater than three times this value"))
+                .arg(
+                    Arg::new("SPLIT_REGIONS")
+                        .long("split-regions")
+                        .value_parser(value_parser!(String))
+                        .help("four-column TSV: split name, source contig, 0-based start, end"))
                 .arg(
                     Arg::new("THREADS")
                         .long("threads")
@@ -2544,6 +2580,21 @@ pub fn cli() -> Command {
                         .default_value("false")
                 )
                 .arg(
+                    Arg::new("INITIALIZER")
+                        .long("initializer")
+                        .value_parser(["random", "seriation", "end-tsp", "end-greedy", "end-hierarchical", "end-beam"])
+                        .default_value_if("SPLIT_CONTACTS", ArgPredicate::IsPresent, "end-hierarchical")
+                        .default_value("random")
+                        .help("de-novo ordering initializer; defaults to end-hierarchical when --split-contacts is provided")
+                )
+                .arg(
+                    Arg::new("SPLIT_CONTACTS")
+                        .long("split-contacts")
+                        .value_parser(value_parser!(String))
+                        .required_if_eq_any([("INITIALIZER", "end-tsp"), ("INITIALIZER", "end-greedy"), ("INITIALIZER", "end-hierarchical"), ("INITIALIZER", "end-beam")])
+                        .help("half-contig contacts used by endpoint initializers")
+                )
+                .arg(
                     Arg::new("SEED")
                         .long("seed")
                         .short('s')
@@ -2569,6 +2620,22 @@ pub fn cli() -> Command {
                         .help("use ALLHiC's links * log(distance) ordering objective")
                         .value_parser(value_parser!(bool))
                         .default_value("false")
+                )
+                .arg(
+                    Arg::new("LENGTH_TIERED")
+                        .long("length-tiered")
+                        .alias("length-tiered-objective")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("LOGDIST")
+                        .help("use the experimental 70/20/10 anchor/interval/fragment ordering objective")
+                )
+                .arg(
+                    Arg::new("ENDPOINT_MULTISCALE")
+                        .long("endpoint-multiscale")
+                        .action(ArgAction::SetTrue)
+                        .requires("SPLIT_CONTACTS")
+                        .conflicts_with_all(["LOGDIST", "LENGTH_TIERED"])
+                        .help("use the experimental signed endpoint multi-scale anchor objective")
                 )
                 .arg(
                     Arg::new("NO_BACKBONE")

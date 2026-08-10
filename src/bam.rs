@@ -934,9 +934,7 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
     let mut current_qname: Vec<u8> = Vec::new();
     let mut group: Vec<Record> = Vec::new();
 
-    let mut process_group = |records: &[Record],
-                             w: &mut dyn std::io::Write,
-                             idx_ref: &mut usize| {
+    let process_group = |records: &[Record], w: &mut dyn std::io::Write, idx_ref: &mut usize| {
         let mut valid: Vec<&Record> = records
             .iter()
             .filter(|r| {
@@ -1216,10 +1214,10 @@ pub fn bam2pqs(
     let mut current_qname: Vec<u8> = Vec::new();
     let mut group: Vec<Record> = Vec::new();
 
-    let mut process_pqs_group = |records: &[Record],
-                                 batch_ref: &mut Vec<Contact>,
-                                 idx_ref: &mut usize,
-                                 chunk_idx_ref: &mut usize| {
+    let process_pqs_group = |records: &[Record],
+                             batch_ref: &mut Vec<Contact>,
+                             idx_ref: &mut usize,
+                             chunk_idx_ref: &mut usize| {
         let mut valid: Vec<&Record> = records
             .iter()
             .filter(|r| {
@@ -1709,7 +1707,7 @@ pub fn phase_reads(
     let mut prev_q: Option<String> = None;
     let mut group_scores: HashMap<String, u32> = HashMap::new();
 
-    let mut emit_read = |qname: &str, scores: &mut HashMap<String, u32>, w: &mut dyn Write| {
+    let emit_read = |qname: &str, scores: &mut HashMap<String, u32>, w: &mut dyn Write| {
         if let Some((best_group, _)) = scores.iter().max_by_key(|entry| entry.1) {
             writeln!(w, "{}\t{}", qname, best_group).unwrap();
         } else {

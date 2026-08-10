@@ -1,13 +1,17 @@
-use cphasing::clm::{encode_endpoint, ClmbWriter};
+use cphasing::clm::{ClmbWriter, encode_endpoint};
+use cphasing::core::ContigPair;
 use cphasing::optimize::{
-    mutate_allhic, optimize_order, AllhicProblem, BackboneConfig, BackbonePlan, OptimizeConfig,
-    OptimizeProblem, OrderObjective, OrientationProblem, OrientedDistanceRecord, UnitGene,
+    AllhicProblem, BackboneConfig, BackbonePlan, OptimizeConfig, OptimizeProblem, OrderObjective,
+    OrientationProblem, OrientedDistanceRecord, UnitGene, mutate_allhic, optimize_order,
 };
-use cphasing::order::Tour;
+use cphasing::order::{Tour, run_beam_end_initializer, run_hierarchical_end_initializer};
+use cphasing::splitcontacts::SplitContacts;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
+use rayon::ThreadPoolBuilder;
+use std::collections::HashSet;
 
 fn problem() -> OptimizeProblem {
     let lengths = IndexMap::from([(0, 100), (1, 200), (2, 300), (3, 400)]);
@@ -50,6 +54,174 @@ fn initial_tour(contig_count: usize) -> Tour<usize> {
 }
 
 #[test]
+fn seriation_seed_improves_a_scrambled_path_and_is_deterministic() {
+    let problem = fragmented_path_problem(24);
+    let fallback = (0..24)
+        .step_by(2)
+        .chain((1..24).step_by(2))
+        .collect::<Vec<_>>();
+
+    let first = problem.seriation_seed(&fallback).unwrap();
+    let second = problem.seriation_seed(&fallback).unwrap();
+
+    assert_eq!(first.order, second.order);
+    assert_eq!(first.final_score.to_bits(), second.final_score.to_bits());
+    assert!(first.final_score < first.fallback_score);
+    assert_eq!(first.order.len(), 24);
+    let mut sorted = first.order.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..24).collect::<Vec<_>>());
+}
+
+fn fragmented_path_problem(contig_count: usize) -> OptimizeProblem {
+    let lengths = (0..contig_count)
+        .map(|id| (id, 100))
+        .collect::<IndexMap<_, _>>();
+    let mut contacts = vec![HashMap::new(); contig_count];
+    for u in 0..contig_count {
+        for v in (u + 1)..contig_count {
+            let links = if v == u + 1 { 10_000 } else { 1 };
+            contacts[u].insert(v, links);
+            contacts[v].insert(u, links);
+        }
+    }
+    OptimizeProblem::from_sparse_contacts(&lengths, &contacts).unwrap()
+}
+
+#[test]
+fn hierarchical_end_initializer_recovers_a_supported_path_without_ga() {
+    let lengths = IndexMap::from([(0, 100), (1, 100), (2, 100)]);
+    let names = HashMap::from([
+        ("a".to_string(), 0),
+        ("b".to_string(), 1),
+        ("c".to_string(), 2),
+    ]);
+    let contacts = SplitContacts {
+        file: "synthetic.split.contacts".to_string(),
+        contigs: HashSet::from(["a".to_string(), "b".to_string(), "c".to_string()]),
+        data: HashMap::from([
+            (
+                ContigPair::new("a".to_string(), "b".to_string()),
+                vec![0.0, 0.0, 100.0, 0.0],
+            ),
+            (
+                ContigPair::new("b".to_string(), "c".to_string()),
+                vec![0.0, 0.0, 100.0, 0.0],
+            ),
+            (
+                ContigPair::new("a".to_string(), "c".to_string()),
+                vec![1.0; 4],
+            ),
+        ]),
+    };
+    let initial = Tour {
+        contigs: vec![2, 0, 1],
+        signs: vec![true; 3],
+    };
+
+    let result = run_hierarchical_end_initializer(&initial, &lengths, &contacts, &names);
+    let adjacencies = result
+        .contigs
+        .windows(2)
+        .map(|pair| (pair[0].min(pair[1]), pair[0].max(pair[1])))
+        .collect::<HashSet<_>>();
+
+    assert_eq!(adjacencies, HashSet::from([(0, 1), (1, 2)]));
+    assert_eq!(result.contigs.len(), result.signs.len());
+}
+
+#[test]
+fn beam_end_initializer_escapes_a_greedy_endpoint_trap() {
+    let names = HashMap::from([
+        ("a".to_string(), 0),
+        ("b".to_string(), 1),
+        ("c".to_string(), 2),
+        ("d".to_string(), 3),
+    ]);
+    let contacts = SplitContacts {
+        file: "synthetic.split.contacts".to_string(),
+        contigs: HashSet::from([
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ]),
+        data: HashMap::from([
+            (
+                ContigPair::new("a".to_string(), "b".to_string()),
+                vec![0.0, 0.0, 10.0, 0.0],
+            ),
+            (
+                ContigPair::new("a".to_string(), "c".to_string()),
+                vec![0.0, 0.0, 6.0, 0.0],
+            ),
+            (
+                ContigPair::new("b".to_string(), "d".to_string()),
+                vec![0.0, 6.0, 0.0, 0.0],
+            ),
+            (
+                ContigPair::new("c".to_string(), "d".to_string()),
+                vec![0.0, 0.0, 1.0, 0.0],
+            ),
+        ]),
+    };
+    let initial = Tour {
+        contigs: vec![0, 1, 2, 3],
+        signs: vec![true; 4],
+    };
+
+    let result = run_beam_end_initializer(&initial, &contacts, &names, 16);
+    let adjacencies = result
+        .contigs
+        .windows(2)
+        .map(|pair| (pair[0].min(pair[1]), pair[0].max(pair[1])))
+        .collect::<HashSet<_>>();
+
+    assert_eq!(adjacencies, HashSet::from([(0, 2), (1, 3), (2, 3)]));
+    assert_eq!(result.contigs.len(), result.signs.len());
+}
+
+fn assert_same_optimization(
+    left: &cphasing::optimize::OptimizeResult,
+    right: &cphasing::optimize::OptimizeResult,
+) {
+    assert_eq!(left.tour.contigs, right.tour.contigs);
+    assert_eq!(left.tour.signs, right.tour.signs);
+    assert_eq!(left.initial_score.to_bits(), right.initial_score.to_bits());
+    assert_eq!(left.final_score.to_bits(), right.final_score.to_bits());
+    assert_eq!(left.generations, right.generations);
+    assert_eq!(left.reports.len(), right.reports.len());
+    for (left_report, right_report) in left.reports.iter().zip(&right.reports) {
+        assert_eq!(left_report.phase, right_report.phase);
+        assert_eq!(left_report.generation, right_report.generation);
+        assert_eq!(
+            left_report.best_score.to_bits(),
+            right_report.best_score.to_bits()
+        );
+    }
+
+    match (&left.backbone, &right.backbone) {
+        (Some(left_backbone), Some(right_backbone)) => {
+            assert_eq!(left_backbone.used, right_backbone.used);
+            assert_eq!(left_backbone.contig_count, right_backbone.contig_count);
+            assert_eq!(left_backbone.unit_count, right_backbone.unit_count);
+            assert_eq!(left_backbone.block_count, right_backbone.block_count);
+            assert_eq!(left_backbone.accepted_edges, right_backbone.accepted_edges);
+            assert_eq!(
+                left_backbone.seed_score.map(f64::to_bits),
+                right_backbone.seed_score.map(f64::to_bits)
+            );
+            assert_eq!(
+                left_backbone.coarse_score.map(f64::to_bits),
+                right_backbone.coarse_score.map(f64::to_bits)
+            );
+        }
+        (None, None) => {}
+        _ => panic!("backbone reports differ"),
+    }
+}
+
+#[test]
 fn score_matches_allhic_dense_reference() {
     let problem = problem().with_objective(OrderObjective::LogDistance);
     let expected =
@@ -62,6 +234,93 @@ fn default_score_matches_allhic_reciprocal_reference() {
     let problem = problem();
     let expected = -5.0 / 200.0 - 7.0 / 450.0 - 11.0 / 550.0 - 13.0 / 300.0;
     assert!((problem.evaluate(&[2, 0, 3, 1]) - expected).abs() < 1e-10);
+}
+
+#[test]
+fn length_tiered_objective_prioritizes_the_large_contig_order() {
+    let lengths = IndexMap::from([
+        (0, 400),
+        (1, 300),
+        (2, 200),
+        (3, 100),
+        (4, 10),
+        (5, 10),
+        (6, 10),
+        (7, 10),
+    ]);
+    let mut contacts = vec![HashMap::new(); lengths.len()];
+    for (u, v, links) in [
+        (0, 1, 1_000),
+        (1, 2, 1_000),
+        (2, 3, 1_000),
+        (3, 4, 200),
+        (4, 5, 100),
+        (5, 6, 100),
+        (6, 7, 100),
+    ] {
+        contacts[u].insert(v, links);
+        contacts[v].insert(u, links);
+    }
+    let problem = OptimizeProblem::from_sparse_contacts(&lengths, &contacts)
+        .unwrap()
+        .with_objective(OrderObjective::LengthTiered);
+    let good = [0, 1, 2, 3, 4, 5, 6, 7];
+    let bad_anchor_order = [0, 2, 1, 3, 4, 5, 6, 7];
+    let reordered_fragments = [0, 1, 2, 3, 7, 6, 5, 4];
+
+    let good_tiers = problem.evaluate_length_tiers(&good);
+    let bad_tiers = problem.evaluate_length_tiers(&bad_anchor_order);
+    let fragment_tiers = problem.evaluate_length_tiers(&reordered_fragments);
+
+    assert!(good_tiers[0] < bad_tiers[0]);
+    assert_eq!(good_tiers[0].to_bits(), fragment_tiers[0].to_bits());
+    assert!(problem.evaluate(&good) < problem.evaluate(&bad_anchor_order));
+}
+
+#[test]
+fn endpoint_multiscale_objective_rewards_the_signed_anchor_path() {
+    let lengths = IndexMap::from([
+        (0, 400),
+        (1, 300),
+        (2, 200),
+        (3, 100),
+        (4, 10),
+        (5, 10),
+        (6, 10),
+        (7, 10),
+    ]);
+    let contacts = vec![HashMap::new(); lengths.len()];
+    let split_contacts = SplitContacts {
+        file: "synthetic.split.contacts".to_string(),
+        contigs: (0..8).map(|id| format!("c{id}")).collect(),
+        data: HashMap::from([
+            (
+                ContigPair::new("c0".to_string(), "c1".to_string()),
+                vec![0.0, 0.0, 100.0, 0.0],
+            ),
+            (
+                ContigPair::new("c1".to_string(), "c2".to_string()),
+                vec![0.0, 0.0, 100.0, 0.0],
+            ),
+            (
+                ContigPair::new("c2".to_string(), "c3".to_string()),
+                vec![0.0, 0.0, 100.0, 0.0],
+            ),
+        ]),
+    };
+    let contig_to_id = (0..8)
+        .map(|id| (format!("c{id}"), id))
+        .collect::<HashMap<_, _>>();
+    let tour = Tour {
+        contigs: (0..8).collect(),
+        signs: vec![true; 8],
+    };
+    let problem = OptimizeProblem::from_sparse_contacts(&lengths, &contacts)
+        .unwrap()
+        .with_endpoint_multiscale(&split_contacts, &contig_to_id, &tour)
+        .unwrap();
+
+    assert!(problem.evaluate(&tour.contigs) < problem.evaluate(&[0, 2, 1, 3, 4, 5, 6, 7]));
 }
 
 #[test]
@@ -165,9 +424,10 @@ fn path_block_decode_is_always_a_complete_permutation() {
         forward.into_iter().rev().collect::<Vec<_>>(),
         "reversing the unit order and every unit must reverse the full tour"
     );
-    assert!(plan
-        .decode(&forward_genes[..plan.unit_count() - 1])
-        .is_err());
+    assert!(
+        plan.decode(&forward_genes[..plan.unit_count() - 1])
+            .is_err()
+    );
 }
 
 #[test]
@@ -242,6 +502,65 @@ fn disabling_backbone_uses_the_unreported_standard_path() {
     assert_eq!(first.tour.signs, second.tour.signs);
     assert_eq!(first.final_score.to_bits(), second.final_score.to_bits());
     assert_eq!(first.generations, second.generations);
+}
+
+#[test]
+fn standard_ga_is_bitwise_identical_across_serial_and_parallel_scoring() {
+    let problem = fragmented_path_problem(128);
+    let initial = initial_tour(problem.contig_count());
+    let config = OptimizeConfig {
+        population_size: 12,
+        stale_generations: 4,
+        max_generations: 8,
+        mutation_probability: 1.0,
+        seed: 42,
+        phases: 1,
+        report_interval: 2,
+        backbone: BackboneConfig {
+            enabled: false,
+            ..BackboneConfig::default()
+        },
+    };
+    let serial_pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let parallel_pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+
+    let serial = serial_pool
+        .install(|| optimize_order(&initial, &problem, &config))
+        .unwrap();
+    let parallel = parallel_pool
+        .install(|| optimize_order(&initial, &problem, &config))
+        .unwrap();
+
+    assert_same_optimization(&serial, &parallel);
+}
+
+#[test]
+fn backbone_ga_is_bitwise_identical_across_serial_and_parallel_scoring() {
+    let problem = fragmented_path_problem(128);
+    let initial = initial_tour(problem.contig_count());
+    let config = OptimizeConfig {
+        population_size: 12,
+        stale_generations: 4,
+        max_generations: 8,
+        mutation_probability: 1.0,
+        seed: 42,
+        phases: 2,
+        report_interval: 2,
+        backbone: BackboneConfig::default(),
+    };
+    let serial_pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let parallel_pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+
+    let serial = serial_pool
+        .install(|| optimize_order(&initial, &problem, &config))
+        .unwrap();
+    let parallel = parallel_pool
+        .install(|| optimize_order(&initial, &problem, &config))
+        .unwrap();
+
+    assert!(serial.backbone.as_ref().unwrap().used);
+    assert!(parallel.backbone.as_ref().unwrap().used);
+    assert_same_optimization(&serial, &parallel);
 }
 
 #[test]
