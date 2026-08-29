@@ -70,7 +70,14 @@ fn all_pair_candidates(
                         continue;
                     }
                     let score = count / (left_length * right_length).max(1.0);
-                    candidates.push((left_path, left_side, right_path, right_side, score));
+                    candidates.push(HierarchicalEndCandidate {
+                        left_path,
+                        left_side,
+                        right_path,
+                        right_side,
+                        normalized_score: score,
+                        raw_support: count,
+                    });
                 }
             }
         }
@@ -124,11 +131,18 @@ fn sparse_scan_matches_all_pair_reference() {
         let reference = all_pair_candidates(&halves, &rows);
         assert_eq!(sparse.len(), reference.len());
         for (observed, expected) in sparse.iter().zip(&reference) {
-            assert_eq!(observed.0, expected.0);
-            assert_eq!(observed.1, expected.1);
-            assert_eq!(observed.2, expected.2);
-            assert_eq!(observed.3, expected.3);
-            assert_eq!(observed.4.to_bits(), expected.4.to_bits());
+            assert_eq!(observed.left_path, expected.left_path);
+            assert_eq!(observed.left_side, expected.left_side);
+            assert_eq!(observed.right_path, expected.right_path);
+            assert_eq!(observed.right_side, expected.right_side);
+            assert_eq!(
+                observed.normalized_score.to_bits(),
+                expected.normalized_score.to_bits()
+            );
+            assert_eq!(
+                observed.raw_support.to_bits(),
+                expected.raw_support.to_bits()
+            );
         }
     }
 }
@@ -150,6 +164,26 @@ fn sparse_scan_handles_fifty_thousand_paths() {
     let candidates = sparse_hierarchical_end_candidates(&halves, &rows);
 
     assert_eq!(candidates.len(), n - 1);
-    assert_eq!(candidates.first(), Some(&(0, 1, 1, 0, 1.0)));
-    assert_eq!(candidates.last(), Some(&(n - 2, 1, n - 1, 0, 1.0)));
+    assert_eq!(
+        candidates.first(),
+        Some(&HierarchicalEndCandidate {
+            left_path: 0,
+            left_side: 1,
+            right_path: 1,
+            right_side: 0,
+            normalized_score: 1.0,
+            raw_support: 1.0,
+        })
+    );
+    assert_eq!(
+        candidates.last(),
+        Some(&HierarchicalEndCandidate {
+            left_path: n - 2,
+            left_side: 1,
+            right_path: n - 1,
+            right_side: 0,
+            normalized_score: 1.0,
+            raw_support: 1.0,
+        })
+    );
 }

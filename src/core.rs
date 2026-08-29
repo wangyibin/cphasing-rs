@@ -29,12 +29,13 @@ use std::io::Cursor;
 use std::io::prelude::*;
 use std::io::{self, BufRead, BufReader, BufWriter, Read as StdRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, exit};
+use std::process::{Child, ChildStdout, Command, Stdio, exit};
 use std::result::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 const BUFFER_SIZE: usize = 256 * 1024;
+const RAPIDGZIP_AUTO_MIN_SIZE: u64 = 64 * 1024 * 1024;
 type DynResult<T> = anyResult<T, Box<dyn Error + 'static>>;
 
 pub trait BaseTable {
@@ -137,6 +138,39 @@ impl<R: StdRead> StdRead for PrependThenReader<R> {
             self.head.read(buf)
         } else {
             self.tail.read(buf)
+        }
+    }
+}
+
+struct ChildProcessReader {
+    child: Option<Child>,
+    stdout: ChildStdout,
+    program: String,
+}
+
+impl StdRead for ChildProcessReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let bytes_read = self.stdout.read(buf)?;
+        if bytes_read == 0 {
+            if let Some(mut child) = self.child.take() {
+                let status = child.wait()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "{} exited unsuccessfully: {status}",
+                        self.program
+                    )));
+                }
+            }
+        }
+        Ok(bytes_read)
+    }
+}
+
+impl Drop for ChildProcessReader {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -336,6 +370,82 @@ pub fn is_mgzip_file(file_path: &str) -> io::Result<bool> {
     Ok(false)
 }
 
+fn rapidgzip_executable() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("CPHASING_RAPIDGZIP") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    which("rapidgzip")
+}
+
+fn select_rapidgzip(file_path: &Path, threads: usize) -> Option<PathBuf> {
+    let backend = env::var("CPHASING_GZIP_BACKEND")
+        .unwrap_or_else(|_| "auto".to_string())
+        .to_ascii_lowercase();
+    let use_rapidgzip = match backend.as_str() {
+        "auto" => {
+            let minimum_size = env::var("CPHASING_RAPIDGZIP_MIN_SIZE")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(RAPIDGZIP_AUTO_MIN_SIZE);
+            threads > 1
+                && std::fs::metadata(file_path)
+                    .map(|metadata| metadata.is_file() && metadata.len() >= minimum_size)
+                    .unwrap_or(false)
+        }
+        "rapidgzip" => true,
+        "flate2" => false,
+        invalid => {
+            log::warn!(
+                "Unknown CPHASING_GZIP_BACKEND `{invalid}`; expected auto, rapidgzip, or flate2. Falling back to flate2."
+            );
+            false
+        }
+    };
+    if !use_rapidgzip {
+        return None;
+    }
+    let executable = rapidgzip_executable();
+    if executable.is_none() && backend == "rapidgzip" {
+        log::warn!(
+            "CPHASING_GZIP_BACKEND=rapidgzip was requested, but rapidgzip was not found; falling back to flate2."
+        );
+    }
+    executable
+}
+
+fn rapidgzip_reader(
+    executable: &Path,
+    file_path: &Path,
+    threads: usize,
+) -> io::Result<Box<dyn BufRead + Send + 'static>> {
+    let mut child = Command::new(executable)
+        .arg("-d")
+        .arg(format!("-P{}", threads.max(1)))
+        .arg("--verify")
+        .arg("-q")
+        .arg("-c")
+        .arg(file_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("rapidgzip stdout pipe was not created"))?;
+    Ok(Box::new(BufReader::with_capacity(
+        BUFFER_SIZE,
+        ChildProcessReader {
+            child: Some(child),
+            stdout,
+            program: executable.display().to_string(),
+        },
+    )))
+}
+
 // {parse_input, parse_output, common_reader, common_writer} learn from https://github.com/mrvollger/rustybam/blob/main/src/myio.rs
 pub fn parse_input(path: Option<PathBuf>) -> DynResult<Box<dyn BufRead + Send + 'static>> {
     let fp: Box<dyn BufRead + Send + 'static> = match path {
@@ -401,6 +511,21 @@ pub fn common_reader(file: &str) -> Box<dyn BufRead + Send + 'static> {
                         e
                     );
                 }
+            }
+        }
+
+        if let Some(executable) = select_rapidgzip(&file_path, threads) {
+            log::info!(
+                "`{}` treated as ordinary gzip using rapidgzip with {} decoder threads",
+                file_path.display(),
+                threads.max(1)
+            );
+            match rapidgzip_reader(&executable, &file_path, threads) {
+                Ok(reader) => return reader,
+                Err(error) => log::warn!(
+                    "Failed to start rapidgzip for `{}`: {error}. Falling back to flate2.",
+                    file_path.display()
+                ),
             }
         }
 
@@ -492,6 +617,36 @@ pub fn check_program(program: &str) {
         eprintln!("Error: {} is not installed", program);
         exit(1);
     }
+}
+
+pub fn coverage_integrals_at(
+    events: &[(u32, i32)],
+    query_positions: &[usize],
+    chrom_len: usize,
+) -> Vec<i64> {
+    let mut values = Vec::with_capacity(query_positions.len());
+    let mut event_index = 0usize;
+    let mut previous_position = 0usize;
+    let mut coverage = 0i64;
+    let mut integral = 0i64;
+
+    for &query_position in query_positions {
+        let query_position = query_position.min(chrom_len);
+        while event_index < events.len() {
+            let event_position = events[event_index].0 as usize;
+            if event_position > query_position || event_position >= chrom_len {
+                break;
+            }
+            integral += coverage * (event_position - previous_position) as i64;
+            previous_position = event_position;
+            while event_index < events.len() && events[event_index].0 as usize == event_position {
+                coverage += events[event_index].1 as i64;
+                event_index += 1;
+            }
+        }
+        values.push(integral + coverage * (query_position - previous_position) as i64);
+    }
+    values
 }
 
 // split contig size by binsize

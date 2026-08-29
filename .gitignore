@@ -14,5 +14,8 @@ Cargo.lock
 *.egg-info
 
 docs/superpowers
-examples
+examples/*
+!examples/orientation_audit.rs
 docs
+benchmark_*
+examples

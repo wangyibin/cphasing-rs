@@ -997,6 +997,81 @@ pub struct ClmbReader {
     finished: bool,
 }
 
+pub(crate) struct EncodedClmbBlock {
+    raw_length: u32,
+    record_count: u32,
+    distance_count: u32,
+    block_flags: u32,
+    compressed: Vec<u8>,
+}
+
+impl EncodedClmbBlock {
+    pub(crate) fn decode(self, contig_count: usize) -> anyResult<Vec<ClmbRecord>> {
+        let distance_width = if self.block_flags & CLMB_BLOCK_FLAG_U64_DISTANCES != 0 {
+            8usize
+        } else {
+            4usize
+        };
+        let mut decoder = GzDecoder::new(self.compressed.as_slice());
+        let mut raw = Vec::with_capacity(self.raw_length as usize);
+        decoder.read_to_end(&mut raw)?;
+        if raw.len() != self.raw_length as usize {
+            bail!(
+                "CLMB block length mismatch: expected {}, decoded {}",
+                self.raw_length,
+                raw.len()
+            );
+        }
+        let mut records = Vec::with_capacity(self.record_count as usize);
+        let mut offset = 0usize;
+        let mut observed_distances = 0u32;
+        for _ in 0..self.record_count {
+            if raw.len().saturating_sub(offset) < 12 {
+                bail!("truncated CLMB record header");
+            }
+            let endpoint1 = take_u32(&raw, &mut offset)?;
+            let endpoint2 = take_u32(&raw, &mut offset)?;
+            if endpoint1 >> 1 >= contig_count as u32 || endpoint2 >> 1 >= contig_count as u32 {
+                bail!("CLMB endpoint outside dictionary");
+            }
+            let count = take_u32(&raw, &mut offset)?;
+            let required = (count as usize)
+                .checked_mul(distance_width)
+                .context("CLMB distance array is too large")?;
+            if raw.len().saturating_sub(offset) < required {
+                bail!("truncated CLMB distance array");
+            }
+            let mut distances = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                if distance_width == 8 {
+                    distances.push(take_u64(&raw, &mut offset)?);
+                } else {
+                    distances.push(take_u32(&raw, &mut offset)? as u64);
+                }
+            }
+            observed_distances = observed_distances
+                .checked_add(count)
+                .context("too many distances in CLMB block")?;
+            records.push(ClmbRecord {
+                endpoint1,
+                endpoint2,
+                distances,
+            });
+        }
+        if offset != raw.len() {
+            bail!("trailing bytes in CLMB block");
+        }
+        if observed_distances != self.distance_count {
+            bail!(
+                "CLMB block distance count mismatch: declared {}, decoded {}",
+                self.distance_count,
+                observed_distances
+            );
+        }
+        Ok(records)
+    }
+}
+
 impl ClmbReader {
     pub fn open(path: impl AsRef<Path>) -> anyResult<Self> {
         let path = path.as_ref().to_path_buf();
@@ -1053,7 +1128,7 @@ impl ClmbReader {
         })
     }
 
-    pub fn next_block(&mut self) -> anyResult<Option<Vec<ClmbRecord>>> {
+    pub(crate) fn next_encoded_block(&mut self) -> anyResult<Option<EncodedClmbBlock>> {
         if self.finished {
             return Ok(None);
         }
@@ -1072,79 +1147,29 @@ impl ClmbReader {
                 self.path.display()
             );
         }
-        let distance_width = if block_flags & CLMB_BLOCK_FLAG_U64_DISTANCES != 0 {
-            8usize
-        } else {
-            4usize
-        };
         let mut compressed = vec![0u8; compressed_length as usize];
         self.reader.read_exact(&mut compressed)?;
-        let mut decoder = GzDecoder::new(compressed.as_slice());
-        let mut raw = Vec::with_capacity(raw_length as usize);
-        decoder.read_to_end(&mut raw)?;
-        if raw.len() != raw_length as usize {
-            bail!(
-                "CLMB block length mismatch in `{}`: expected {}, decoded {}",
-                self.path.display(),
-                raw_length,
-                raw.len()
-            );
-        }
-        let mut records = Vec::with_capacity(record_count as usize);
-        let mut offset = 0usize;
-        let mut observed_distances = 0u32;
-        for _ in 0..record_count {
-            if raw.len().saturating_sub(offset) < 12 {
-                bail!("truncated CLMB record header in `{}`", self.path.display());
-            }
-            let endpoint1 = take_u32(&raw, &mut offset)?;
-            let endpoint2 = take_u32(&raw, &mut offset)?;
-            if endpoint1 >> 1 >= self.header.contigs.len() as u32
-                || endpoint2 >> 1 >= self.header.contigs.len() as u32
-            {
-                bail!(
-                    "CLMB endpoint outside dictionary in `{}`",
-                    self.path.display()
-                );
-            }
-            let count = take_u32(&raw, &mut offset)?;
-            let required = (count as usize)
-                .checked_mul(distance_width)
-                .context("CLMB distance array is too large")?;
-            if raw.len().saturating_sub(offset) < required {
-                bail!("truncated CLMB distance array in `{}`", self.path.display());
-            }
-            let mut distances = Vec::with_capacity(count as usize);
-            for _ in 0..count {
-                if distance_width == 8 {
-                    distances.push(take_u64(&raw, &mut offset)?);
-                } else {
-                    distances.push(take_u32(&raw, &mut offset)? as u64);
-                }
-            }
-            observed_distances = observed_distances
-                .checked_add(count)
-                .context("too many distances in CLMB block")?;
-            records.push(ClmbRecord {
-                endpoint1,
-                endpoint2,
-                distances,
-            });
-        }
-        if offset != raw.len() {
-            bail!("trailing bytes in CLMB block in `{}`", self.path.display());
-        }
-        if observed_distances != distance_count {
-            bail!(
-                "CLMB block distance count mismatch in `{}`: declared {}, decoded {}",
-                self.path.display(),
-                distance_count,
-                observed_distances
-            );
-        }
         self.observed_records += record_count as u64;
-        self.observed_distances += observed_distances as u64;
-        Ok(Some(records))
+        self.observed_distances += distance_count as u64;
+        Ok(Some(EncodedClmbBlock {
+            raw_length,
+            record_count,
+            distance_count,
+            block_flags,
+            compressed,
+        }))
+    }
+
+    pub fn next_block(&mut self) -> anyResult<Option<Vec<ClmbRecord>>> {
+        let contig_count = self.header.contigs.len();
+        let block = self.next_encoded_block()?;
+        block
+            .map(|block| {
+                block.decode(contig_count).with_context(|| {
+                    format!("failed to decode CLMB block in `{}`", self.path.display())
+                })
+            })
+            .transpose()
     }
 
     fn validate_totals(&self) -> anyResult<()> {

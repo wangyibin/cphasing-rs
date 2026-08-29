@@ -1,6 +1,6 @@
 #![allow(unused)]
 #![allow(dead_code)]
-use anyhow::Result as anyResult;
+use anyhow::{Context, Result as anyResult, bail};
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use log::LevelFilter;
@@ -17,7 +17,7 @@ use std::fs::{File, OpenOptions};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -36,6 +36,333 @@ struct Contact {
     c2: u32,
     p1: u64,
     p2: u64,
+}
+
+const CN_INFO_FILE: &str = "cn.info";
+const CN_DISTRIBUTION_SEED: u64 = 42;
+
+fn load_cn_info(pqs_path: &str) -> anyResult<HashMap<String, usize>> {
+    let path = Path::new(pqs_path).join(CN_INFO_FILE);
+    if !path.is_file() {
+        log::info!(
+            "No optional copy-number file `{}` was found; all contigs use CN=1.",
+            path.display()
+        );
+        return Ok(HashMap::new());
+    }
+
+    let reader = common_reader(path.to_string_lossy().as_ref());
+    let mut copy_numbers = HashMap::new();
+    for (line_index, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read `{}`", path.display()))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 2 {
+            bail!(
+                "invalid {} record at line {}: expected '<contig> <CN>', got {:?}",
+                path.display(),
+                line_index + 1,
+                line
+            );
+        }
+        let copy_number = fields[1].parse::<usize>().with_context(|| {
+            format!(
+                "invalid copy number {:?} for contig {:?} at {}:{}",
+                fields[1],
+                fields[0],
+                path.display(),
+                line_index + 1
+            )
+        })?;
+        if copy_number == 0 {
+            bail!(
+                "copy number for contig {:?} at {}:{} must be at least 1",
+                fields[0],
+                path.display(),
+                line_index + 1
+            );
+        }
+        if copy_numbers
+            .insert(fields[0].to_string(), copy_number)
+            .is_some()
+        {
+            bail!("duplicate contig {:?} in `{}`", fields[0], path.display());
+        }
+    }
+    log::info!(
+        "Loaded copy numbers for {} contigs from `{}`.",
+        copy_numbers.len(),
+        path.display()
+    );
+    Ok(copy_numbers)
+}
+
+pub fn copy_cn_info(source: &Path, output: &Path) -> anyResult<()> {
+    let source = source.join(CN_INFO_FILE);
+    if source.is_file() {
+        std::fs::copy(&source, output.join(CN_INFO_FILE)).with_context(|| {
+            format!(
+                "failed to copy optional PQS sidecar {} to {}",
+                source.display(),
+                output.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_remapped_cn_info(
+    source_pqs: &Path,
+    contig_mapping: &BTreeMap<String, HashSet<String>>,
+    output_pqs: &Path,
+) -> anyResult<()> {
+    let source_path = source_pqs.to_string_lossy();
+    let copy_numbers = load_cn_info(source_path.as_ref())?;
+    let mut remapped = BTreeMap::<String, usize>::new();
+    for (source, copy_number) in copy_numbers {
+        let Some(contigs) = contig_mapping.get(&source) else {
+            log::warn!(
+                "Dropping copy number for source contig {source:?}: it has no chr2ctg BED mapping"
+            );
+            continue;
+        };
+        for contig in contigs {
+            if let Some(previous) = remapped.insert(contig.clone(), copy_number) {
+                if previous != copy_number {
+                    bail!(
+                        "conflicting copy numbers for chr2ctg target {contig:?}: {previous} and {copy_number}"
+                    );
+                }
+            }
+        }
+    }
+
+    let path = output_pqs.join(CN_INFO_FILE);
+    if remapped.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let mut writer = common_writer(path.to_string_lossy().as_ref());
+    for (contig, copy_number) in remapped {
+        writeln!(writer, "{contig}\t{copy_number}")?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn merge_cn_info(inputs: &[&String], output: &Path) -> anyResult<()> {
+    let mut merged = BTreeMap::<String, usize>::new();
+    for input in inputs {
+        for (contig, copy_number) in load_cn_info(input)? {
+            if let Some(previous) = merged.insert(contig.clone(), copy_number) {
+                if previous != copy_number {
+                    bail!(
+                        "conflicting copy numbers for contig {contig:?}: {previous} and {copy_number}"
+                    );
+                }
+            }
+        }
+    }
+    if !merged.is_empty() {
+        let mut writer = common_writer(output.join(CN_INFO_FILE).to_string_lossy().as_ref());
+        for (contig, copy_number) in merged {
+            writeln!(writer, "{contig}\t{copy_number}")?;
+        }
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+pub fn write_materialized_cn_info(
+    source_pqs: &Path,
+    collapsed_list: &str,
+    output_pqs: &Path,
+) -> anyResult<()> {
+    let mut materialized = BTreeMap::<String, HashSet<String>>::new();
+    for (line_index, line) in common_reader(collapsed_list).lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read `{collapsed_list}`"))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 2 {
+            bail!(
+                "invalid collapsed-contig record at {}:{}: expected '<source> <duplicate>'",
+                collapsed_list,
+                line_index + 1
+            );
+        }
+        if fields[0] != fields[1] {
+            materialized
+                .entry(fields[0].to_string())
+                .or_default()
+                .insert(fields[1].to_string());
+        }
+    }
+
+    write_materialized_cn_map(source_pqs, &materialized, output_pqs)
+}
+
+pub fn write_materialized_cn_map(
+    source_pqs: &Path,
+    materialized: &BTreeMap<String, HashSet<String>>,
+    output_pqs: &Path,
+) -> anyResult<()> {
+    let source_path = source_pqs.to_string_lossy();
+    let mut copy_numbers = load_cn_info(source_path.as_ref())?;
+
+    for (source, duplicates) in materialized {
+        copy_numbers.insert(source.clone(), 1);
+        for duplicate in duplicates {
+            copy_numbers.insert(duplicate.clone(), 1);
+        }
+    }
+
+    let path = output_pqs.join(CN_INFO_FILE);
+    if copy_numbers.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let mut records = copy_numbers.into_iter().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut writer = common_writer(path.to_string_lossy().as_ref());
+    for (contig, copy_number) in records {
+        writeln!(writer, "{contig}\t{copy_number}")?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn write_broken_cn_info(
+    source_pqs: &Path,
+    fragments: &BTreeMap<String, HashSet<String>>,
+    output_pqs: &Path,
+) -> anyResult<()> {
+    let source_path = source_pqs.to_string_lossy();
+    let mut copy_numbers = load_cn_info(source_path.as_ref())?;
+    for (source, names) in fragments {
+        if let Some(copy_number) = copy_numbers.remove(source) {
+            for name in names {
+                copy_numbers.insert(name.clone(), copy_number);
+            }
+        }
+    }
+
+    let path = output_pqs.join(CN_INFO_FILE);
+    if copy_numbers.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let mut records = copy_numbers.into_iter().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut writer = common_writer(path.to_string_lossy().as_ref());
+    for (contig, copy_number) in records {
+        writeln!(writer, "{contig}\t{copy_number}")?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn update_cn_info(pqs_path: &str, collapsed_list: &str) -> anyResult<()> {
+    let pqs = Path::new(pqs_path);
+    if !pqs.is_dir() || !pqs.join("_contigsizes").is_file() {
+        bail!(
+            "copy-number-only duplication requires a PQS directory with _contigsizes: {}",
+            pqs.display()
+        );
+    }
+
+    let mut copy_numbers = load_cn_info(pqs_path)?;
+    let mut duplicates = BTreeMap::<String, HashSet<String>>::new();
+    for (line_index, line) in common_reader(collapsed_list).lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read `{collapsed_list}`"))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 2 {
+            bail!(
+                "invalid collapsed-contig record at {}:{}: expected '<source> <duplicate>'",
+                collapsed_list,
+                line_index + 1
+            );
+        }
+        if fields[0] != fields[1] {
+            duplicates
+                .entry(fields[0].to_string())
+                .or_default()
+                .insert(fields[1].to_string());
+        }
+    }
+
+    for (source, targets) in duplicates {
+        copy_numbers.insert(source, targets.len() + 1);
+    }
+
+    let path = pqs.join(CN_INFO_FILE);
+    let mut writer = common_writer(path.to_string_lossy().as_ref());
+    let mut records = copy_numbers.into_iter().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.0.cmp(&right.0));
+    for (contig, copy_number) in records {
+        writeln!(writer, "{contig}\t{copy_number}")?;
+    }
+    writer.flush()?;
+    log::info!("Updated copy-number metadata `{}`.", path.display());
+    Ok(())
+}
+
+fn copy_name(source: &str, copy_index: usize) -> String {
+    if copy_index == 1 {
+        source.to_string()
+    } else {
+        format!("{source}_d{copy_index}")
+    }
+}
+
+fn expanded_copy_pairs(
+    c1: u32,
+    c2: u32,
+    copy_indices: &HashMap<u32, Vec<u32>>,
+    scope: u64,
+) -> Vec<(u32, u32)> {
+    let copies1 = copy_indices.get(&c1).map(Vec::as_slice).unwrap_or(&[]);
+    let copies2 = copy_indices.get(&c2).map(Vec::as_slice).unwrap_or(&[]);
+    let mut pairs: Vec<(u32, u32)> = if c1 == c2 {
+        copies1.iter().copied().map(|copy| (copy, copy)).collect()
+    } else {
+        copies1
+            .iter()
+            .flat_map(|&copy1| copies2.iter().map(move |&copy2| (copy1, copy2)))
+            .collect()
+    };
+    let mut hasher = XxHash64::with_seed(CN_DISTRIBUTION_SEED);
+    c1.hash(&mut hasher);
+    c2.hash(&mut hasher);
+    scope.hash(&mut hasher);
+    pairs.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(hasher.finish()));
+    pairs
+}
+
+fn shuffled_distances(mut distances: Vec<u64>, c1: u32, c2: u32, orientation: u8) -> Vec<u64> {
+    // Sorting first makes the seeded shuffle independent of input shard scheduling.
+    distances.sort_unstable();
+    let mut hasher = XxHash64::with_seed(CN_DISTRIBUTION_SEED);
+    c1.hash(&mut hasher);
+    c2.hash(&mut hasher);
+    orientation.hash(&mut hasher);
+    distances.shuffle(&mut rand::rngs::SmallRng::seed_from_u64(hasher.finish()));
+    distances
 }
 
 struct Components {
@@ -309,6 +636,245 @@ fn link_or_copy(source: &Path, destination: &Path) -> anyResult<()> {
             Ok(())
         }
     }
+}
+
+type BreakSegments = HashMap<String, Vec<(usize, usize, String)>>;
+
+#[derive(Clone, Debug)]
+struct EncodedBreakSegment {
+    start: usize,
+    stop: usize,
+    output_code: u32,
+}
+
+struct CategoricalBreakMap {
+    unchanged_codes: Vec<Option<u32>>,
+    break_segments: Vec<Option<Vec<EncodedBreakSegment>>>,
+}
+
+impl CategoricalBreakMap {
+    #[inline]
+    fn remap(&self, code: u32, position: u32) -> Option<(u32, u32)> {
+        let code = code as usize;
+        match self.break_segments.get(code)?.as_ref() {
+            Some(segments) => segments
+                .iter()
+                .find(|segment| {
+                    position as usize >= segment.start && (position as usize) < segment.stop
+                })
+                .map(|segment| {
+                    (
+                        segment.output_code,
+                        (position as usize - segment.start + 1) as u32,
+                    )
+                }),
+            None => self
+                .unchanged_codes
+                .get(code)
+                .copied()
+                .flatten()
+                .map(|output_code| (output_code, position)),
+        }
+    }
+
+    #[inline]
+    fn is_broken(&self, code: u32) -> bool {
+        self.break_segments
+            .get(code as usize)
+            .is_some_and(Option::is_some)
+    }
+}
+
+fn build_categorical_break_map(
+    categorical: &CategoricalChunked,
+    break_segments: &BreakSegments,
+    output_codes: &HashMap<String, u32>,
+) -> PolarsResult<CategoricalBreakMap> {
+    polars_ensure!(
+        categorical.null_count() == 0,
+        ComputeError: "pairs-break does not support null contig identifiers"
+    );
+
+    let physical = categorical.physical();
+    let rev_map = categorical.get_rev_map();
+    let max_id = physical.max().unwrap_or(0) as usize;
+    let mut unchanged_codes = vec![None; max_id + 1];
+    let mut encoded_segments = vec![None; max_id + 1];
+
+    for code in 0..=max_id {
+        let Some(name) = rev_map.get_optional(code as u32) else {
+            continue;
+        };
+        unchanged_codes[code] = output_codes.get(name).copied();
+        if let Some(segments) = break_segments.get(name) {
+            encoded_segments[code] = Some(
+                segments
+                    .iter()
+                    .map(|(start, stop, output_name)| EncodedBreakSegment {
+                        start: *start,
+                        stop: *stop,
+                        output_code: *output_codes
+                            .get(output_name)
+                            .expect("break fragment was not registered"),
+                    })
+                    .collect(),
+            );
+        }
+    }
+
+    Ok(CategoricalBreakMap {
+        unchanged_codes,
+        break_segments: encoded_segments,
+    })
+}
+
+fn remap_pairs_parquet_shard(
+    source: &Path,
+    destination: &Path,
+    break_segments: &BreakSegments,
+) -> anyResult<()> {
+    // A Cursor prevents mmap-backed arrays from retaining one file descriptor
+    // per completed shard. This matters when q0 and q1 together exceed the
+    // process open-file limit.
+    let input = std::fs::read(source)?;
+    let mut df = ParquetReader::new(Cursor::new(input))
+        .set_low_memory(true)
+        .read_parallel(ParallelStrategy::None)
+        .finish()
+        .with_context(|| format!("failed to read `{}`", source.display()))?;
+    let chrom1 = df.column("chrom1")?.categorical()?;
+    let chrom2 = df.column("chrom2")?.categorical()?;
+
+    let mut output_names = Vec::new();
+    for categorical in [chrom1, chrom2] {
+        let physical = categorical.physical();
+        let rev_map = categorical.get_rev_map();
+        let max_id = physical.max().unwrap_or(0);
+        for code in 0..=max_id {
+            if let Some(name) = rev_map.get_optional(code) {
+                output_names.push(name.to_string());
+            }
+        }
+    }
+    for segments in break_segments.values() {
+        output_names.extend(
+            segments
+                .iter()
+                .map(|(_, _, output_name)| output_name.clone()),
+        );
+    }
+    output_names.sort_unstable();
+    output_names.dedup();
+
+    let mut builder = CategoricalChunkedBuilder::new(
+        "contig".into(),
+        output_names.len(),
+        CategoricalOrdering::Physical,
+    );
+    for name in &output_names {
+        builder.append_value(name);
+    }
+    let template = builder.finish();
+    let registered_codes: Vec<u32> = template.physical().into_no_null_iter().collect();
+    let output_codes: HashMap<String, u32> = output_names
+        .iter()
+        .cloned()
+        .zip(registered_codes.iter().copied())
+        .collect();
+    let max_output_code = registered_codes.iter().copied().max().unwrap_or(0) as usize;
+    let mut ranks = vec![usize::MAX; max_output_code + 1];
+    for (rank, code) in registered_codes.iter().copied().enumerate() {
+        ranks[code as usize] = rank;
+    }
+
+    let chrom1_map = build_categorical_break_map(chrom1, break_segments, &output_codes)?;
+    let chrom2_map = build_categorical_break_map(chrom2, break_segments, &output_codes)?;
+    let chrom1_codes = chrom1.physical();
+    let chrom2_codes = chrom2.physical();
+    let pos1 = df.column("pos1")?.u32()?;
+    let pos2 = df.column("pos2")?.u32()?;
+    let original_pos1_dtype = df.column("pos1")?.dtype().clone();
+    let original_pos2_dtype = df.column("pos2")?.dtype().clone();
+
+    let mut output_chrom1 = Vec::with_capacity(df.height());
+    let mut output_chrom2 = Vec::with_capacity(df.height());
+    let mut output_pos1 = Vec::with_capacity(df.height());
+    let mut output_pos2 = Vec::with_capacity(df.height());
+
+    for (((code1, code2), position1), position2) in chrom1_codes
+        .into_no_null_iter()
+        .zip(chrom2_codes.into_no_null_iter())
+        .zip(pos1.into_no_null_iter())
+        .zip(pos2.into_no_null_iter())
+    {
+        let broken1 = chrom1_map.is_broken(code1);
+        let broken2 = chrom2_map.is_broken(code2);
+        let new1 = chrom1_map.remap(code1, position1);
+        let new2 = chrom2_map.remap(code2, position2);
+
+        let (new_code1, new_pos1, new_code2, new_pos2) =
+            if (broken1 || broken2) && new1.is_some() && new2.is_some() {
+                let (candidate_code1, candidate_pos1) = new1.unwrap();
+                let (candidate_code2, candidate_pos2) = new2.unwrap();
+                if ranks[candidate_code1 as usize] <= ranks[candidate_code2 as usize] {
+                    (
+                        candidate_code1,
+                        candidate_pos1,
+                        candidate_code2,
+                        candidate_pos2,
+                    )
+                } else {
+                    (
+                        candidate_code2,
+                        candidate_pos2,
+                        candidate_code1,
+                        candidate_pos1,
+                    )
+                }
+            } else {
+                (
+                    *chrom1_map.unchanged_codes[code1 as usize]
+                        .as_ref()
+                        .expect("input contig was not registered"),
+                    position1,
+                    *chrom2_map.unchanged_codes[code2 as usize]
+                        .as_ref()
+                        .expect("input contig was not registered"),
+                    position2,
+                )
+            };
+
+        output_chrom1.push(new_code1);
+        output_pos1.push(new_pos1);
+        output_chrom2.push(new_code2);
+        output_pos2.push(new_pos2);
+    }
+
+    for (name, codes) in [("chrom1", output_chrom1), ("chrom2", output_chrom2)] {
+        let physical = UInt32Chunked::from_vec(name.into(), codes);
+        let categorical = unsafe {
+            CategoricalChunked::from_cats_and_rev_map_unchecked(
+                physical,
+                template.get_rev_map().clone(),
+                false,
+                CategoricalOrdering::Physical,
+            )
+        };
+        df.replace(name, categorical.into_series())?;
+    }
+    df.replace(
+        "pos1",
+        Series::new("pos1".into(), output_pos1).cast(&original_pos1_dtype)?,
+    )?;
+    df.replace(
+        "pos2",
+        Series::new("pos2".into(), output_pos2).cast(&original_pos2_dtype)?,
+    )?;
+
+    ParquetWriter::new(File::create(destination)?)
+        .finish(&mut df)
+        .with_context(|| format!("failed to write `{}`", destination.display()))?;
+    Ok(())
 }
 
 fn categorical_contains_any(
@@ -1132,6 +1698,7 @@ impl PQS {
         disable_filter: bool,
         max_depth_ratio: f64,
         max_q0_ratio: f64,
+        use_cn: bool,
     ) -> anyResult<()> {
         use hashbrown::HashMap;
         use std::fmt::Write;
@@ -1233,13 +1800,44 @@ impl PQS {
 
         let contigsize_file = format!("{}/_contigsizes", self.file);
         let reader = common_reader(&contigsize_file);
-        let mut contigsizes = HashMap::new();
+        let mut raw_contigsizes = HashMap::new();
         for record in reader.lines() {
             let record = record.unwrap();
             let record = record.split("\t").collect::<Vec<&str>>();
             let contig = record.get(0).unwrap().to_string();
             let size = record.get(1).unwrap().parse::<u64>().unwrap();
-            contigsizes.insert(contig, size);
+            raw_contigsizes.insert(contig, size);
+        }
+
+        let copy_numbers: std::collections::HashMap<String, usize> = if use_cn {
+            load_cn_info(&self.file)?
+        } else {
+            std::collections::HashMap::new()
+        };
+        let mut contigsizes = raw_contigsizes.clone();
+        for (source, &copy_number) in &copy_numbers {
+            let source_length = raw_contigsizes.get(source).copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "contig {:?} from {}/{} is absent from _contigsizes",
+                    source,
+                    self.file,
+                    CN_INFO_FILE
+                )
+            })?;
+            for copy_index in 2..=copy_number {
+                let duplicate = copy_name(source, copy_index);
+                if contigsizes
+                    .insert(duplicate.clone(), source_length)
+                    .is_some()
+                {
+                    bail!(
+                        "generated duplicate contig {:?} from {}/{} conflicts with an existing contig",
+                        duplicate,
+                        self.file,
+                        CN_INFO_FILE
+                    );
+                }
+            }
         }
 
         let mut sorted_names: Vec<_> = contigsizes.keys().cloned().collect();
@@ -1264,6 +1862,22 @@ impl PQS {
                 .iter()
                 .map(|(k, v)| (contig_idx.get(k).unwrap().clone(), (k.clone(), v.clone())))
                 .collect();
+        let copy_indices: std::collections::HashMap<u32, Vec<u32>> = raw_contigsizes
+            .keys()
+            .map(|source| {
+                let source_idx = *contig_idx.get(source).unwrap();
+                let copy_number = copy_numbers.get(source).copied().unwrap_or(1);
+                let copies = (1..=copy_number)
+                    .map(|copy_index| *contig_idx.get(&copy_name(source, copy_index)).unwrap())
+                    .collect();
+                (source_idx, copies)
+            })
+            .collect();
+        let mut raw_source_indices = raw_contigsizes
+            .keys()
+            .map(|source| *contig_idx.get(source).unwrap())
+            .collect::<Vec<_>>();
+        raw_source_indices.sort_unstable();
 
         type FastHasher = std::hash::BuildHasherDefault<XxHash64>;
         let num_shards = 128;
@@ -1306,10 +1920,8 @@ impl PQS {
 
             let c1_col = df.column("chrom1").unwrap().categorical().unwrap();
             let c2_col = df.column("chrom2").unwrap().categorical().unwrap();
-            let binding = df.column("pos1").unwrap().cast(&DataType::UInt64).unwrap();
-            let p1_col = binding.u64().unwrap();
-            let binding = df.column("pos2").unwrap().cast(&DataType::UInt64).unwrap();
-            let p2_col = binding.u64().unwrap();
+            let p1_series = df.column("pos1").unwrap();
+            let p2_series = df.column("pos2").unwrap();
 
             let mapq_col = if has_mapq {
                 Some(df.column("mapq").unwrap().u8().unwrap())
@@ -1346,50 +1958,81 @@ impl PQS {
 
             let seed = 42;
             let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-            phys1_ca
-                .downcast_iter()
-                .zip(phys2_ca.downcast_iter())
-                .zip(p1_col.downcast_iter())
-                .zip(p2_col.downcast_iter())
-                .enumerate()
-                .for_each(|(chunk_idx, (((c1, c2), p1), p2))| {
-                    let mq_chunk = mapq_col
-                        .as_ref()
-                        .map(|mq| mq.downcast_iter().nth(chunk_idx).unwrap());
-                    for i in 0..c1.len() {
-                        if let Some(mq) = mq_chunk {
-                            let m = mq.value(i);
-                            if m == 0 && min_mapq == 0 {
-                                if q0_sample_prob < 1.0 && !rng.gen_bool(q0_sample_prob) {
-                                    continue;
+            macro_rules! load_coordinate_chunks {
+                ($p1_col:expr, $p2_col:expr) => {{
+                    phys1_ca
+                        .downcast_iter()
+                        .zip(phys2_ca.downcast_iter())
+                        .zip($p1_col.downcast_iter())
+                        .zip($p2_col.downcast_iter())
+                        .enumerate()
+                        .for_each(|(chunk_idx, (((c1, c2), p1), p2))| {
+                            let mq_chunk = mapq_col
+                                .as_ref()
+                                .map(|mq| mq.downcast_iter().nth(chunk_idx).unwrap());
+                            for i in 0..c1.len() {
+                                if let Some(mq) = mq_chunk {
+                                    let m = mq.value(i);
+                                    if m == 0 && min_mapq == 0 {
+                                        if q0_sample_prob < 1.0 && !rng.gen_bool(q0_sample_prob) {
+                                            continue;
+                                        }
+                                    } else if m < min_quality {
+                                        continue;
+                                    }
                                 }
-                            } else if m < min_quality {
-                                continue;
+
+                                let idx1 = lookup1[c1.value(i) as usize];
+                                let idx2 = lookup2[c2.value(i) as usize];
+                                if idx1 != u32::MAX && idx2 != u32::MAX {
+                                    let pos1 = p1.value(i) as u64;
+                                    let pos2 = p2.value(i) as u64;
+                                    let (fc1, fp1, fc2, fp2) = if idx1 <= idx2 {
+                                        (idx1, pos1, idx2, pos2)
+                                    } else {
+                                        (idx2, pos2, idx1, pos1)
+                                    };
+
+                                    let contact = Contact {
+                                        c1: fc1,
+                                        c2: fc2,
+                                        p1: fp1,
+                                        p2: fp2,
+                                    };
+                                    let mut s = XxHash64::default();
+                                    (fc1, fc2).hash(&mut s);
+                                    let shard_idx =
+                                        (s.finish() % num_shards as u128 as u64) as usize;
+                                    local_shards[shard_idx].push(contact);
+                                }
                             }
-                        }
+                        });
+                }};
+            }
 
-                        let idx1 = lookup1[c1.value(i) as usize];
-                        let idx2 = lookup2[c2.value(i) as usize];
-                        if idx1 != u32::MAX && idx2 != u32::MAX {
-                            let (fc1, fp1, fc2, fp2) = if idx1 <= idx2 {
-                                (idx1, p1.value(i), idx2, p2.value(i))
-                            } else {
-                                (idx2, p2.value(i), idx1, p1.value(i))
-                            };
-
-                            let contact = Contact {
-                                c1: fc1,
-                                c2: fc2,
-                                p1: fp1,
-                                p2: fp2,
-                            };
-                            let mut s = XxHash64::default();
-                            (fc1, fc2).hash(&mut s);
-                            let shard_idx = (s.finish() % num_shards as u128 as u64) as usize;
-                            local_shards[shard_idx].push(contact);
-                        }
-                    }
-                });
+            match (p1_series.dtype(), p2_series.dtype()) {
+                (DataType::UInt32, DataType::UInt32) => {
+                    load_coordinate_chunks!(p1_series.u32().unwrap(), p2_series.u32().unwrap())
+                }
+                (DataType::UInt32, DataType::UInt64) => {
+                    load_coordinate_chunks!(p1_series.u32().unwrap(), p2_series.u64().unwrap())
+                }
+                (DataType::UInt64, DataType::UInt32) => {
+                    load_coordinate_chunks!(p1_series.u64().unwrap(), p2_series.u32().unwrap())
+                }
+                (DataType::UInt64, DataType::UInt64) => {
+                    load_coordinate_chunks!(p1_series.u64().unwrap(), p2_series.u64().unwrap())
+                }
+                (p1_dtype, p2_dtype) => {
+                    log::error!(
+                        "Unsupported coordinate types in {}: pos1={}, pos2={}; expected UInt32 or UInt64",
+                        file.display(),
+                        p1_dtype,
+                        p2_dtype
+                    );
+                    return;
+                }
+            }
 
             for (idx, local_vec) in local_shards.into_iter().enumerate() {
                 if local_vec.is_empty() {
@@ -1460,34 +2103,46 @@ impl PQS {
             let writer = common_writer(format!("{}.depth", output_prefix).as_str());
             let wtr = Arc::new(Mutex::new(writer));
 
-            depth
-                .par_iter()
-                .enumerate()
-                .for_each(|(contig_idx_val, bins)| {
-                    let &(ref contig, size) =
-                        idx_contig_sizes.get(&(contig_idx_val as u32)).unwrap();
-                    let mut buffer = Vec::with_capacity(bins.len() * 50);
-                    for (bin, cell) in bins.iter().enumerate() {
-                        let count = cell.load(Ordering::Relaxed);
-                        let bin_start = bin * binsize as usize;
-                        let mut bin_end = bin_start + binsize as usize;
+            raw_source_indices.par_iter().for_each(|&source_idx| {
+                let bins = &depth[source_idx as usize];
+                let copies = copy_indices.get(&source_idx).unwrap();
+                let mut buffers = (0..copies.len())
+                    .map(|_| Vec::with_capacity(bins.len() * 50))
+                    .collect::<Vec<_>>();
+                for (bin, cell) in bins.iter().enumerate() {
+                    let count = cell.load(Ordering::Relaxed);
+                    let bin_start = bin * binsize as usize;
+                    let mut bin_end = bin_start + binsize as usize;
 
-                        if bin_end > size as usize {
-                            bin_end = size as usize;
-                        }
-                        if bin_start == bin_end {
-                            continue;
-                        }
-                        buffer.extend_from_slice(
-                            format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count)
-                                .as_bytes(),
+                    let source_size = idx_contig_sizes.get(&source_idx).unwrap().1;
+                    if bin_end > source_size as usize {
+                        bin_end = source_size as usize;
+                    }
+                    if bin_start == bin_end {
+                        continue;
+                    }
+                    let quotient = count as usize / copies.len();
+                    let remainder = count as usize % copies.len();
+                    for (copy_offset, &copy_idx) in copies.iter().enumerate() {
+                        let copy_count = quotient + usize::from(copy_offset < remainder);
+                        let copy_name = &idx_contig_sizes.get(&copy_idx).unwrap().0;
+                        buffers[copy_offset].extend_from_slice(
+                            format!(
+                                "{}\t{}\t{}\t{}\n",
+                                copy_name, bin_start, bin_end, copy_count
+                            )
+                            .as_bytes(),
                         );
                     }
-                    if !buffer.is_empty() {
-                        let mut wtr = wtr.lock().unwrap();
-                        wtr.write_all(&buffer).unwrap();
+                }
+                for buffer in buffers {
+                    if buffer.is_empty() {
+                        continue;
                     }
-                });
+                    let mut wtr = wtr.lock().unwrap();
+                    wtr.write_all(&buffer).unwrap();
+                }
+            });
 
             log::info!(
                 "Successful output depth file `{}`",
@@ -1651,10 +2306,30 @@ impl PQS {
                                 let mut buffer = Vec::with_capacity(4);
                                 for ((s_idx1, s_idx2), count) in contact_hash {
                                     if count >= min_contacts {
-                                        buffer.push(format!(
-                                            "{}_{}\t{}_{}\t{}\n",
-                                            contig1, s_idx1, contig2, s_idx2, count
-                                        ));
+                                        let scope = 0x5350_4c49_5400_0000u64
+                                            ^ ((s_idx1 as u64) << 8)
+                                            ^ s_idx2 as u64;
+                                        let copy_pairs =
+                                            expanded_copy_pairs(c1, c2, &copy_indices, scope);
+                                        let quotient = count as usize / copy_pairs.len();
+                                        let remainder = count as usize % copy_pairs.len();
+                                        for (copy_offset, (copy1, copy2)) in
+                                            copy_pairs.into_iter().enumerate()
+                                        {
+                                            let copy_count =
+                                                quotient + usize::from(copy_offset < remainder);
+                                            if copy_count == 0 {
+                                                continue;
+                                            }
+                                            let copy_name1 =
+                                                &idx_contig_sizes.get(&copy1).unwrap().0;
+                                            let copy_name2 =
+                                                &idx_contig_sizes.get(&copy2).unwrap().0;
+                                            buffer.push(format!(
+                                                "{}_{}\t{}_{}\t{}\n",
+                                                copy_name1, s_idx1, copy_name2, s_idx2, copy_count
+                                            ));
+                                        }
                                     }
                                 }
                                 if !buffer.is_empty() {
@@ -1687,48 +2362,21 @@ impl PQS {
                             continue;
                         }
 
-                        if let Some(batch) = clmb_batch.as_mut() {
-                            for orientation in 0..4 {
-                                let distances = filtered_vec
-                                    .iter()
-                                    .map(|contact| {
-                                        let cp1 = contact.p1;
-                                        let cp2 = contact.p2;
-                                        match orientation {
-                                            0 => length1.saturating_sub(cp1).saturating_add(cp2),
-                                            1 => length1
-                                                .saturating_sub(cp1)
-                                                .saturating_add(length2)
-                                                .saturating_sub(cp2),
-                                            2 => cp1.saturating_add(cp2),
-                                            _ => cp1.saturating_add(length2).saturating_sub(cp2),
-                                        }
-                                    })
-                                    .collect();
-                                batch
-                                    .write_record(
-                                        encode_endpoint(c1, ((orientation >> 1) & 1) as u8)
-                                            .unwrap(),
-                                        encode_endpoint(c2, (orientation & 1) as u8).unwrap(),
-                                        distances,
-                                    )
-                                    .unwrap();
-                            }
-                        } else {
-                            let mut output_buffer = String::with_capacity(count * 50);
-                            let mut itoa_buf = itoa::Buffer::new();
-                            for ori in 0..4 {
-                                let header = match ori {
-                                    0 => format!("{}+ {}+\t{}\t", contig1, contig2, count),
-                                    1 => format!("{}+ {}-\t{}\t", contig1, contig2, count),
-                                    2 => format!("{}- {}+\t{}\t", contig1, contig2, count),
-                                    _ => format!("{}- {}-\t{}\t", contig1, contig2, count),
-                                };
-                                output_buffer.push_str(&header);
-                                for (j, contact) in filtered_vec.iter().enumerate() {
+                        let copy_pairs =
+                            expanded_copy_pairs(c1, c2, &copy_indices, 0x434c_4d00_0000_0000);
+                        let quotient = count / copy_pairs.len();
+                        let remainder = count % copy_pairs.len();
+                        let mut output_buffer = clmb_batch
+                            .is_none()
+                            .then(|| String::with_capacity(count * 50));
+                        let mut itoa_buf = itoa::Buffer::new();
+                        for orientation in 0..4u8 {
+                            let distances = filtered_vec
+                                .iter()
+                                .map(|contact| {
                                     let cp1 = contact.p1;
                                     let cp2 = contact.p2;
-                                    let val = match ori {
+                                    match orientation {
                                         0 => length1.saturating_sub(cp1).saturating_add(cp2),
                                         1 => length1
                                             .saturating_sub(cp1)
@@ -1736,14 +2384,66 @@ impl PQS {
                                             .saturating_sub(cp2),
                                         2 => cp1.saturating_add(cp2),
                                         _ => cp1.saturating_add(length2).saturating_sub(cp2),
-                                    };
-                                    output_buffer.push_str(itoa_buf.format(val));
-                                    if j < count - 1 {
-                                        output_buffer.push(' ');
                                     }
+                                })
+                                .collect();
+                            let distances = shuffled_distances(distances, c1, c2, orientation);
+                            let distance_count = distances.len();
+                            let mut distances = Some(distances);
+                            let mut distance_offset = 0usize;
+                            for (copy_offset, &(copy1, copy2)) in copy_pairs.iter().enumerate() {
+                                let copy_count = quotient + usize::from(copy_offset < remainder);
+                                if copy_count == 0 {
+                                    continue;
                                 }
-                                output_buffer.push('\n');
+                                let copy_start = distance_offset;
+                                let copy_end = copy_start + copy_count;
+                                distance_offset = copy_end;
+                                if let Some(batch) = clmb_batch.as_mut() {
+                                    let copy_distances = if copy_pairs.len() == 1 {
+                                        distances.take().unwrap()
+                                    } else {
+                                        distances.as_ref().unwrap()[copy_start..copy_end].to_vec()
+                                    };
+                                    batch
+                                        .write_record(
+                                            encode_endpoint(copy1, ((orientation >> 1) & 1) as u8)
+                                                .unwrap(),
+                                            encode_endpoint(copy2, (orientation & 1) as u8)
+                                                .unwrap(),
+                                            copy_distances,
+                                        )
+                                        .unwrap();
+                                } else {
+                                    let copy_distances =
+                                        &distances.as_ref().unwrap()[copy_start..copy_end];
+                                    let output_buffer = output_buffer
+                                        .as_mut()
+                                        .expect("text CLM output buffer was not initialized");
+                                    let copy_name1 = &idx_contig_sizes.get(&copy1).unwrap().0;
+                                    let copy_name2 = &idx_contig_sizes.get(&copy2).unwrap().0;
+                                    let sign1 = if orientation & 2 == 0 { '+' } else { '-' };
+                                    let sign2 = if orientation & 1 == 0 { '+' } else { '-' };
+                                    write!(
+                                        output_buffer,
+                                        "{}{} {}{}\t{}\t",
+                                        copy_name1, sign1, copy_name2, sign2, copy_count
+                                    )
+                                    .unwrap();
+                                    for (distance_index, distance) in
+                                        copy_distances.iter().enumerate()
+                                    {
+                                        output_buffer.push_str(itoa_buf.format(*distance));
+                                        if distance_index + 1 < copy_distances.len() {
+                                            output_buffer.push(' ');
+                                        }
+                                    }
+                                    output_buffer.push('\n');
+                                }
                             }
+                            debug_assert_eq!(distance_offset, distance_count);
+                        }
+                        if let Some(output_buffer) = output_buffer {
                             local_clm_buf.extend_from_slice(output_buffer.as_bytes());
                         }
                     }
@@ -1787,7 +2487,7 @@ impl PQS {
         Ok(())
     }
 
-    pub fn to_mnd(&self, min_quality: u8, output: &String) -> anyResult<()> {
+    pub fn to_mnd(&self, min_quality: u8, output: &String, use_cn: bool) -> anyResult<()> {
         enable_string_cache();
         unsafe {
             std::env::set_var("POLARS_MAX_THREADS", format!("{}", 10));
@@ -1806,6 +2506,11 @@ impl PQS {
         } else {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
         };
+        let copy_numbers = if use_cn {
+            Arc::new(load_cn_info(&self.file)?)
+        } else {
+            Arc::new(HashMap::new())
+        };
 
         let results = files
             .into_par_iter()
@@ -1816,7 +2521,54 @@ impl PQS {
                     df = df.clone().filter(col("mapq").gt_eq(min_mapq));
                 }
 
-                let result = df.select(&[
+                let mut df = df.collect().unwrap();
+                if !copy_numbers.is_empty() && df.height() > 0 {
+                    let read_idx = df.column("read_idx").unwrap().str().unwrap();
+                    let chrom1_series = df
+                        .column("chrom1")
+                        .unwrap()
+                        .as_materialized_series()
+                        .cast(&DataType::String)
+                        .unwrap();
+                    let chrom2_series = df
+                        .column("chrom2")
+                        .unwrap()
+                        .as_materialized_series()
+                        .cast(&DataType::String)
+                        .unwrap();
+                    let chrom1 = chrom1_series.str().unwrap();
+                    let chrom2 = chrom2_series.str().unwrap();
+                    let mut output_chrom1 = Vec::with_capacity(df.height());
+                    let mut output_chrom2 = Vec::with_capacity(df.height());
+
+                    for row in 0..df.height() {
+                        let read = read_idx.get(row).unwrap_or("");
+                        let source1 = chrom1.get(row).unwrap();
+                        let source2 = chrom2.get(row).unwrap();
+                        let cn1 = copy_numbers.get(source1).copied().unwrap_or(1);
+                        let cn2 = copy_numbers.get(source2).copied().unwrap_or(1);
+                        let mut hasher = XxHash64::with_seed(CN_DISTRIBUTION_SEED);
+                        read.hash(&mut hasher);
+                        source1.hash(&mut hasher);
+                        source2.hash(&mut hasher);
+                        let choice = hasher.finish() as usize;
+                        let (copy1, copy2) = if source1 == source2 {
+                            let copy = choice % cn1 + 1;
+                            (copy, copy)
+                        } else {
+                            let combination = choice % (cn1 * cn2);
+                            (combination / cn2 + 1, combination % cn2 + 1)
+                        };
+                        output_chrom1.push(copy_name(source1, copy1));
+                        output_chrom2.push(copy_name(source2, copy2));
+                    }
+                    df.replace("chrom1", Series::new("chrom1".into(), output_chrom1))
+                        .unwrap();
+                    df.replace("chrom2", Series::new("chrom2".into(), output_chrom2))
+                        .unwrap();
+                }
+
+                let result = df.lazy().select(&[
                     lit(0i32).alias("strand1"),
                     col("chrom1"),
                     col("pos1"),
@@ -2257,9 +3009,8 @@ impl PQS {
     pub fn to_depth(&self, binsize: u32, min_quality: u8, output: &String) {
         use hashbrown::HashMap;
         polars::enable_string_cache();
-        unsafe {
-            std::env::set_var("POLARS_MAX_THREADS", format!("{}", 2));
-        }
+
+        assert!(binsize > 0, "pairs2depth binsize must be greater than zero");
 
         let min_mapq = min_quality as u32;
         let files = if min_mapq == 0 {
@@ -2279,185 +3030,122 @@ impl PQS {
             contigsizes.insert(contig, size);
         }
 
-        let contig_idx: HashMap<String, u32, BuildHasherDefault<XxHash64>> = contigsizes
-            .keys()
-            .enumerate()
-            .map(|(i, k)| (k.clone(), i as u32))
-            .collect();
-        let idx_contig: HashMap<u32, String, BuildHasherDefault<XxHash64>> = contigsizes
-            .keys()
-            .enumerate()
-            .map(|(i, k)| (i as u32, k.clone()))
-            .collect();
-        let idx_sizes: HashMap<u32, u32, BuildHasherDefault<XxHash64>> = contigsizes
-            .iter()
-            .map(|(k, v)| (contig_idx.get(k).unwrap().clone(), v.clone()))
-            .collect();
+        let mut layouts = Vec::with_capacity(contigsizes.len());
+        let mut layout_by_name: HashMap<String, (usize, usize), BuildHasherDefault<XxHash64>> =
+            HashMap::default();
+        let mut total_bins = 0usize;
+        for (contig, &size) in &contigsizes {
+            let num_bins = (size / binsize + 1) as usize;
+            layout_by_name.insert(contig.clone(), (total_bins, num_bins));
+            layouts.push((contig.clone(), size, total_bins, num_bins));
+            total_bins = total_bins
+                .checked_add(num_bins)
+                .expect("pairs2depth bin array exceeds addressable memory");
+        }
 
-        let (sender, receiver) = bounded::<LazyFrame>(100);
-        let data = Arc::new(Mutex::new(HashMap::new()));
+        let layout_by_name = Arc::new(layout_by_name);
+        let depth = Arc::new(
+            std::iter::repeat_with(|| AtomicU32::new(0))
+                .take(total_bins)
+                .collect::<Vec<_>>(),
+        );
+        let projected_columns = if min_mapq > 1 {
+            vec!["chrom1", "pos1", "chrom2", "pos2", "mapq"]
+        } else {
+            vec!["chrom1", "pos1", "chrom2", "pos2"]
+        }
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
 
-        let consumer_handles: Vec<_> = (0..8)
-            .map(|_| {
-                let receiver = receiver.clone();
-                let data = Arc::clone(&data);
-                let contig_idx = contig_idx.clone();
+        files
+            .par_iter()
+            .try_for_each(|file| -> anyResult<()> {
+                let frame = ParquetReader::new(File::open(file)?)
+                    .with_columns(Some(projected_columns.clone()))
+                    .finish()
+                    .with_context(|| format!("failed to read pairs PQS shard {file:?}"))?;
+                let chrom1 = frame.column("chrom1")?.categorical()?;
+                let chrom2 = frame.column("chrom2")?.categorical()?;
+                let pos1 = frame.column("pos1")?.u32()?;
+                let pos2 = frame.column("pos2")?.u32()?;
+                let mapq = if min_mapq > 1 {
+                    Some(frame.column("mapq")?.u8()?)
+                } else {
+                    None
+                };
 
-                thread::spawn(move || {
-                    while let Ok(df) = receiver.recv() {
-                        let df = df.collect().unwrap();
-                        let mut local_data: HashMap<u32, Vec<u32>> = HashMap::new();
-                        let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
-                        let rev_map1 = cat_col1.get_rev_map();
+                let build_code_layout = |categorical: &CategoricalChunked| {
+                    let physical = categorical.physical();
+                    let rev_map = categorical.get_rev_map();
+                    let max_code = physical.max().unwrap_or(0) as usize;
+                    let mut code_layout = vec![None; max_code + 1];
+                    for code in 0..=max_code {
+                        let Some(name) = rev_map.get_optional(code as u32) else {
+                            continue;
+                        };
+                        code_layout[code] = layout_by_name.get(name).copied();
+                    }
+                    code_layout
+                };
+                let chrom1_layout = build_code_layout(chrom1);
+                let chrom2_layout = build_code_layout(chrom2);
+                let chrom1_codes = chrom1.physical();
+                let chrom2_codes = chrom2.physical();
 
-                        let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
-                        let rev_map2 = cat_col2.get_rev_map();
-
-                        let nrows = df.height();
-
-                        for idx in 0..nrows {
-                            let row = df.get(idx).unwrap();
-                            let chrom1 = match row.get(0) {
-                                Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                                _ => None,
-                            };
-
-                            let chrom2 = match row.get(1) {
-                                Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                                _ => None,
-                            };
-
-                            let pos1 = match row.get(2) {
-                                Some(AnyValue::List(v)) => Some(v),
-                                _ => None,
-                            };
-
-                            let pos2 = match row.get(3) {
-                                Some(AnyValue::List(v)) => Some(v),
-                                _ => None,
-                            };
-
-                            if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) =
-                                (chrom1, chrom2, pos1, pos2)
-                            {
-                                let chrom1 = rev_map1.get(*chrom1);
-                                let chrom2 = rev_map2.get(*chrom2);
-                                let chrom1 = match contig_idx.get(chrom1) {
-                                    Some(v) => v,
-                                    None => continue,
-                                };
-                                let chrom2 = match contig_idx.get(chrom2) {
-                                    Some(v) => v,
-                                    None => continue,
-                                };
-
-                                let mut vec1: Vec<u32> = Vec::new();
-                                for p1 in pos1.u32().unwrap().iter() {
-                                    vec1.push(p1.unwrap());
-                                }
-
-                                let mut vec2: Vec<u32> = Vec::new();
-                                for p2 in pos2.u32().unwrap().iter() {
-                                    vec2.push(p2.unwrap());
-                                }
-
-                                local_data.entry(*chrom1).or_insert(Vec::new()).extend(vec1);
-                                local_data.entry(*chrom2).or_insert(Vec::new()).extend(vec2);
-                            }
-                        }
-
-                        let mut data = data.lock().unwrap();
-                        for (key, value) in local_data {
-                            data.entry(key).or_insert(Vec::new()).extend(value);
+                for row in 0..frame.height() {
+                    if mapq.is_some_and(|values| values.get(row).unwrap_or(0) < min_quality) {
+                        continue;
+                    }
+                    for (code, position, code_layout) in [
+                        (chrom1_codes.get(row), pos1.get(row), &chrom1_layout),
+                        (chrom2_codes.get(row), pos2.get(row), &chrom2_layout),
+                    ] {
+                        let (Some(code), Some(position)) = (code, position) else {
+                            continue;
+                        };
+                        let Some((offset, num_bins)) =
+                            code_layout.get(code as usize).copied().flatten()
+                        else {
+                            continue;
+                        };
+                        let bin = (position / binsize) as usize;
+                        if bin < num_bins {
+                            depth[offset + bin].fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                })
+                }
+                Ok(())
             })
-            .collect();
+            .unwrap_or_else(|error| panic!("pairs2depth failed: {error:#}"));
 
-        // for handle in producer_handles {
+        log::info!("Formatting the depth of each contig");
+        let buffers = layouts
+            .par_iter()
+            .map(|(contig, size, offset, num_bins)| {
+                let mut buffer = Vec::with_capacity(*num_bins * 50);
+                for bin in 0..*num_bins {
+                    let count = depth[offset + bin].load(Ordering::Relaxed);
+                    let bin_start = bin * binsize as usize;
+                    let mut bin_end = bin_start + binsize as usize;
 
-        //     handle.join().unwrap();
-
-        // }
-
-        for file in files.into_iter() {
-            let df = match LazyFrame::scan_parquet(&file, ScanArgsParquet::default()) {
-                Ok(df) => df,
-                Err(e) => {
-                    log::warn!("Empty file: {:?}", file);
-                    continue;
+                    if bin_end > (*size).try_into().unwrap() {
+                        bin_end = *size as usize;
+                    }
+                    if bin_start == bin_end {
+                        continue;
+                    }
+                    buffer.extend_from_slice(
+                        format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes(),
+                    );
                 }
-            };
-
-            let df = if min_mapq > 1 {
-                df.filter(col("mapq").gt_eq(min_mapq))
-            } else {
-                df
-            };
-
-            let result = df
-                .with_column(col("pos1") / binsize.into())
-                .with_column(col("pos2") / binsize.into())
-                .group_by(["chrom1", "chrom2"])
-                .agg(&[col("pos1"), col("pos2")]);
-
-            sender.send(result).unwrap();
-        }
-
-        drop(sender);
-
-        for handle in consumer_handles {
-            handle.join().unwrap();
-        }
-
-        let data = Arc::try_unwrap(data).unwrap().into_inner().unwrap();
-
-        log::info!("Calculating the depth of each contig");
-
-        let mut depth: HashMap<u32, Vec<u32>> = idx_sizes
-            .clone()
-            .into_iter()
-            .map(|(chrom, size)| {
-                let num_bins = (size / binsize as u32 + 1) as usize;
-                (chrom, vec![0; num_bins])
+                buffer
             })
-            .collect();
-
-        data.iter().for_each(|(cp, vec)| {
-            vec.iter().for_each(|pos| {
-                *depth.get_mut(cp).unwrap().get_mut(*pos as usize).unwrap() += 1;
-            });
-        });
-
-        let depth: BTreeMap<_, _> = depth.into_iter().collect();
-        let writer = common_writer(output);
-        let wtr = Arc::new(Mutex::new(writer));
-
-        depth.par_iter().for_each(|(contig, bins)| {
-            let size = idx_sizes.get(contig).unwrap_or(&0);
-            let contig = idx_contig.get(contig).unwrap();
-
-            let mut buffer = Vec::with_capacity(bins.len() * 50);
-            for (bin, count) in bins.iter().enumerate() {
-                let bin_start = bin * binsize as usize;
-                let mut bin_end = bin_start + binsize as usize;
-
-                if bin_end > (*size).try_into().unwrap() {
-                    bin_end = *size as usize;
-                }
-                if bin_start == bin_end {
-                    continue;
-                }
-                buffer.extend_from_slice(
-                    format!("{}\t{}\t{}\t{}\n", contig, bin_start, bin_end, count).as_bytes(),
-                );
-            }
-            {
-                let mut wtr = wtr.lock().unwrap();
-                wtr.write_all(&buffer).unwrap();
-            }
-        });
+            .collect::<Vec<_>>();
+        let mut writer = common_writer(output);
+        for buffer in buffers {
+            writer.write_all(&buffer).unwrap();
+        }
 
         log::info!("Successful output depth file `{}`", output);
     }
@@ -2465,17 +3153,20 @@ impl PQS {
     pub fn break_contigs(&mut self, break_bed: &String, output: &String) {
         // enable_string_cache();
         polars::enable_string_cache();
-        type IvString = Interval<usize, String>;
 
         let bed = Bed4::new(break_bed);
         let interval_hash = bed.to_interval_hash();
-        let breaked_contigs = interval_hash
-            .keys()
-            .map(|x| x.clone())
-            .collect::<Vec<String>>();
-        let breaked_series = Series::new("contig".into(), breaked_contigs);
-
-        let files = collect_parquet_files(format!("{}/q0", self.file).as_str());
+        let break_segments: BreakSegments = interval_hash
+            .iter()
+            .map(|(source, intervals)| {
+                let mut segments = intervals
+                    .iter()
+                    .map(|interval| (interval.start, interval.stop, interval.val.clone()))
+                    .collect::<Vec<_>>();
+                segments.sort_unstable_by_key(|(start, _, _)| *start);
+                (source.clone(), segments)
+            })
+            .collect();
 
         let _ = std::fs::create_dir_all(output);
         let _ = std::fs::create_dir_all(format!("{}/q0", output));
@@ -2489,6 +3180,19 @@ impl PQS {
             format!("{}/_readme", self.file),
             format!("{}/_readme", output),
         );
+        let broken_cn = interval_hash
+            .iter()
+            .map(|(source, intervals)| {
+                (
+                    source.clone(),
+                    intervals
+                        .iter()
+                        .map(|interval| interval.val.clone())
+                        .collect(),
+                )
+            })
+            .collect::<BTreeMap<String, HashSet<String>>>();
+        write_broken_cn_info(Path::new(&self.file), &broken_cn, Path::new(output)).unwrap();
 
         let contigsize_file = format!("{}/_contigsizes", self.file);
         let reader = common_reader(&contigsize_file);
@@ -2527,271 +3231,22 @@ impl PQS {
         let output_q_dir = format!("{}/q0", output);
         let copy_q_dir = format!("{}/q1", output);
 
-        let results = files.chunks(500).for_each(|file_chunk| {
-            file_chunk.into_par_iter().for_each(|file| {
-                let df = LazyFrame::scan_parquet(file.clone(), ScanArgsParquet::default()).unwrap();
-
-                let mut df = df.collect().unwrap();
-
-                let cat_col1 = df.column("chrom1").unwrap().categorical().unwrap();
-                let rev_map1 = cat_col1.get_rev_map();
-
-                let cat_col2 = df.column("chrom2").unwrap().categorical().unwrap();
-                let rev_map2 = cat_col2.get_rev_map();
-
-                let cat_col = df.column("strand1").unwrap().categorical().unwrap();
-                let rev_map3 = cat_col.get_rev_map();
-
-                let cat_col = df.column("strand2").unwrap().categorical().unwrap();
-                let rev_map4 = cat_col.get_rev_map();
-
-                let phys_map1 = cat_col1.physical();
-                let phys_map2 = cat_col2.physical();
-
-                let mask1 = phys_map1
-                    .iter()
-                    .map(|x| {
-                        let chrom = rev_map1.get(x.unwrap());
-                        interval_hash.contains_key(chrom)
-                    })
-                    .collect::<Vec<_>>();
-
-                let mask2 = phys_map2
-                    .iter()
-                    .map(|x| {
-                        let chrom = rev_map2.get(x.unwrap());
-                        interval_hash.contains_key(chrom)
-                    })
-                    .collect::<Vec<_>>();
-
-                let mask_any = mask1
-                    .iter()
-                    .zip(mask2.iter())
-                    .map(|(x, y)| *x || *y)
-                    .collect::<Vec<_>>();
-                // let is_filter = mask.iter().all(|x| !x);
-                if mask_any.iter().all(|x| !x) {
-                    let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-                    let new_file = format!("{}/{}", output_q_dir, file_name);
-                    let mut new_file = File::create(new_file).unwrap();
-                    ParquetWriter::new(&mut new_file).finish(&mut df).unwrap();
-
-                    let mut df = df.lazy().filter(col("mapq").gt_eq(1)).collect().unwrap();
-
-                    let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-                    let new_file = format!("{}/{}", copy_q_dir, file_name);
-                    let mut new_file = File::create(new_file).unwrap();
-                    ParquetWriter::new(&mut new_file).finish(&mut df).unwrap();
-                } else {
-                    let nrows = df.height();
-
-                    let mut data: Vec<bool> = Vec::new();
-
-                    let mut chrom1_vec = Vec::new();
-                    let mut chrom2_vec = Vec::new();
-                    let mut pos1_vec = Vec::new();
-                    let mut pos2_vec = Vec::new();
-                    let mut read_id_vec = Vec::new();
-                    let mut strand1_vec = Vec::new();
-                    let mut strand2_vec = Vec::new();
-                    let mut mapq_vec = Vec::new();
-
-                    for idx in 0..nrows {
-                        let row = df.get(idx).unwrap();
-                        let mut keep = true;
-                        let chrom1 = match row.get(1) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None,
-                        };
-
-                        let chrom2 = match row.get(3) {
-                            Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                            _ => None,
-                        };
-
-                        let pos1 = match row.get(2) {
-                            Some(AnyValue::UInt32(v)) => Some(v),
-                            _ => None,
-                        };
-
-                        let pos2 = match row.get(4) {
-                            Some(AnyValue::UInt32(v)) => Some(v),
-                            _ => None,
-                        };
-
-                        if let (Some(chrom1), Some(chrom2), Some(pos1), Some(pos2)) =
-                            (chrom1, chrom2, pos1, pos2)
-                        {
-                            let chrom1 = rev_map1.get(*chrom1);
-                            let chrom2 = rev_map2.get(*chrom2);
-                            let pos1 = *pos1 as usize;
-                            let pos2 = *pos2 as usize;
-
-                            let is_break_contig1 = interval_hash.contains_key(chrom1);
-                            let is_break_contig2 = interval_hash.contains_key(chrom2);
-
-                            if is_break_contig1 || is_break_contig2 {
-                                let strand1 = match row.get(5) {
-                                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                                    _ => None,
-                                };
-
-                                let strand2 = match row.get(6) {
-                                    Some(AnyValue::Categorical(v, _, _)) => Some(v),
-                                    _ => None,
-                                };
-
-                                let mapq = match row.get(7) {
-                                    Some(AnyValue::UInt8(v)) => Some(v),
-                                    _ => None,
-                                };
-
-                                let read_idx = match row.get(0) {
-                                    Some(AnyValue::String(v)) => Some(v),
-                                    _ => None,
-                                };
-
-                                let pos1 = pos1 as usize;
-                                let pos2 = pos2 as usize;
-
-                                let new1 = match is_break_contig1 {
-                                    true => {
-                                        let interval = interval_hash.get(chrom1).unwrap();
-                                        let res = interval.find(pos1, pos1 + 1).collect::<Vec<_>>();
-                                        if res.len() > 0 {
-                                            let new_pos = pos1 - res[0].start + 1;
-                                            let new_chrom = res[0].val.clone();
-                                            Some((new_chrom, new_pos as u32))
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    false => Some((chrom1.to_owned(), pos1 as u32)),
-                                };
-
-                                let new2 = match is_break_contig2 {
-                                    true => {
-                                        let interval = interval_hash.get(chrom2).unwrap();
-                                        let res = interval.find(pos2, pos2 + 1).collect::<Vec<_>>();
-                                        if res.len() > 0 {
-                                            let new_pos = pos2 - res[0].start + 1;
-                                            let new_chrom = res[0].val.clone();
-                                            Some((new_chrom, new_pos as u32))
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    false => Some((chrom2.to_owned(), pos2 as u32)),
-                                };
-
-                                if let (
-                                    Some((new_chrom1, new_pos1)),
-                                    Some((new_chrom2, new_pos2)),
-                                ) = (new1, new2)
-                                {
-                                    if let Some(read_idx) = read_idx {
-                                        read_id_vec.push(read_idx.to_string());
-                                    }
-
-                                    if let (Some(strand1), Some(strand2), Some(mapq)) =
-                                        (strand1, strand2, mapq)
-                                    {
-                                        strand1_vec.push(rev_map3.get(*strand1));
-                                        strand2_vec.push(rev_map4.get(*strand2));
-                                        mapq_vec.push(mapq.clone());
-                                    }
-
-                                    if new_chrom1 <= new_chrom2 {
-                                        chrom1_vec.push(new_chrom1);
-                                        pos1_vec.push(new_pos1);
-                                        chrom2_vec.push(new_chrom2);
-                                        pos2_vec.push(new_pos2);
-                                    } else {
-                                        chrom1_vec.push(new_chrom2);
-                                        pos1_vec.push(new_pos2);
-                                        chrom2_vec.push(new_chrom1);
-                                        pos2_vec.push(new_pos1);
-                                    }
-
-                                    keep = false;
-                                } else {
-                                    keep = true;
-                                }
-                            } else {
-                                keep = true;
-                            }
-                        } else {
-                            keep = true;
-                        }
-
-                        data.push(keep);
-                    }
-
-                    let df2 = df![
-                        "read_idx" => read_id_vec,
-                        "chrom1" => chrom1_vec,
-                        "pos1" => pos1_vec,
-                        "chrom2" => chrom2_vec,
-                        "pos2" => pos2_vec,
-                        "strand1" => strand1_vec,
-                        "strand2" => strand2_vec,
-                        "mapq" => mapq_vec
-                    ]
-                    .unwrap();
-
-                    let data = Series::new("break".into(), data);
-                    let df = df
-                        .filter(data.bool().unwrap())
-                        .unwrap()
-                        .lazy()
-                        .with_column(col("chrom1").cast(DataType::String))
-                        .with_column(col("chrom2").cast(DataType::String))
-                        .with_column(col("strand1").cast(DataType::String))
-                        .with_column(col("strand2").cast(DataType::String))
-                        .collect()
-                        .unwrap();
-
-                    let n_rows = df2.height();
-                    let df = if n_rows > 0 {
-                        df.vstack(&df2).unwrap()
-                    } else {
-                        df
-                    };
-
-                    let mut df = df
-                        .lazy()
-                        .with_column(
-                            col("chrom1")
-                                .cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
-                        )
-                        .with_column(
-                            col("chrom2")
-                                .cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
-                        )
-                        .with_column(
-                            col("strand1")
-                                .cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
-                        )
-                        .with_column(
-                            col("strand2")
-                                .cast(DataType::Categorical(None, CategoricalOrdering::Physical)),
-                        )
-                        .collect()
-                        .unwrap();
-
-                    let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-                    let new_file = format!("{}/{}", output_q_dir, file_name);
-                    let mut new_file = File::create(new_file).unwrap();
-                    ParquetWriter::new(&mut new_file).finish(&mut df).unwrap();
-
-                    let mut df = df.lazy().filter(col("mapq").gt_eq(1)).collect().unwrap();
-
-                    let file_name = Path::new(&file).file_name().unwrap().to_str().unwrap();
-                    let new_file = format!("{}/{}", copy_q_dir, file_name);
-                    let mut new_file = File::create(new_file).unwrap();
-                    ParquetWriter::new(&mut new_file).finish(&mut df).unwrap();
-                }
-            });
+        let mut tasks = Vec::new();
+        for (quality, destination_dir) in [("q0", &output_q_dir), ("q1", &copy_q_dir)] {
+            for source in collect_parquet_files(format!("{}/{}", self.file, quality).as_str()) {
+                let destination = Path::new(destination_dir).join(source.file_name().unwrap());
+                tasks.push((source, destination));
+            }
+        }
+        tasks.par_iter().for_each(|(source, destination)| {
+            remap_pairs_parquet_shard(source, destination, &break_segments).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "failed to remap pairs shard `{}`: {error}",
+                        source.display()
+                    )
+                },
+            );
         });
 
         let _ = copy_metadata_counts(self.file.as_str(), output.as_str());
@@ -2875,6 +3330,7 @@ impl PQS {
             format!("{}/_readme", self.file),
             format!("{}/_readme", output),
         );
+        copy_cn_info(Path::new(&self.file), Path::new(output))?;
 
         let q0_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let q1_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -3135,6 +3591,8 @@ impl PQS {
             format!("{}/_readme", self.file),
             format!("{}/_readme", output),
         );
+        let _ =
+            write_materialized_cn_info(Path::new(&self.file), collapsed_list, Path::new(&output));
 
         let reader = common_reader(collapsed_list);
         let mut collapsed_contigs: HashMap<String, Vec<String>> = HashMap::new();
@@ -3311,6 +3769,7 @@ impl PQS {
             format!("{}/_readme", self.file),
             format!("{}/_readme", output),
         );
+        write_materialized_cn_info(Path::new(&self.file), collapsed_list, Path::new(&output))?;
 
         let reader = common_reader(collapsed_list);
         let mut collapsed_contigs: HashMap<String, Vec<String>> = HashMap::new();
@@ -3854,7 +4313,7 @@ fn collect_parquet_files(parquets_dir: &str) -> Vec<PathBuf> {
     files
 }
 
-pub fn merge_pqs(input: Vec<&String>, output: &String) {
+pub fn merge_pqs(input: Vec<&String>, output: &String) -> anyResult<()> {
     let _ = std::fs::create_dir_all(output);
     let _ = std::fs::create_dir_all(format!("{}/q0", output));
     let _ = std::fs::create_dir_all(format!("{}/q1", output));
@@ -3871,6 +4330,7 @@ pub fn merge_pqs(input: Vec<&String>, output: &String) {
         format!("{}/_readme", input[0]),
         format!("{}/_readme", output),
     );
+    merge_cn_info(&input, Path::new(output))?;
 
     let mut q0_pq_files = Vec::new();
     let mut q1_pq_files = Vec::new();
@@ -3936,6 +4396,7 @@ pub fn merge_pqs(input: Vec<&String>, output: &String) {
     //     let output_file = format!("{}/q1/{}.parquet", output, idx);
     //     let _ = std::fs::copy(file, output_file);
     // });
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -3951,6 +4412,7 @@ fn parse_contig_bed_to_lapper(
     HashMap<String, Lapper<u32, usize>>,
     Vec<ContigMapRec>,
     HashMap<String, u32>,
+    BTreeMap<String, HashSet<String>>,
 )> {
     // Return:
     // 1) per-chrom lapper of intervals -> index into `recs`
@@ -3962,6 +4424,7 @@ fn parse_contig_bed_to_lapper(
     let mut recs: Vec<ContigMapRec> = Vec::new();
     let mut chrom_to_intervals: HashMap<String, Vec<Interval<u32, usize>>> = HashMap::new();
     let mut contig_sizes: HashMap<String, u32> = HashMap::new();
+    let mut cn_mapping = BTreeMap::<String, HashSet<String>>::new();
 
     for (ln, line) in rdr.lines().enumerate() {
         let line = line?;
@@ -4003,6 +4466,10 @@ fn parse_contig_bed_to_lapper(
             val: idx,
         });
 
+        cn_mapping
+            .entry(fields[0].to_string())
+            .or_default()
+            .insert(contig.clone());
         contig_sizes.insert(contig, end - start);
     }
 
@@ -4011,7 +4478,7 @@ fn parse_contig_bed_to_lapper(
         ivs.sort_by_key(|iv| iv.start);
         chrom_lappers.insert(chrom, Lapper::new(ivs));
     }
-    Ok((chrom_lappers, recs, contig_sizes))
+    Ok((chrom_lappers, recs, contig_sizes, cn_mapping))
 }
 
 #[inline]
@@ -4139,7 +4606,7 @@ fn map_chrpos_to_contig_fast(
     }
 }
 
-pub fn chr_pqs_to_contig_pqs(
+pub fn chr_pairs_pqs_to_contig_pqs(
     input_pqs: &String,
     contig_bed: &String,
     output: &String,
@@ -4147,15 +4614,31 @@ pub fn chr_pqs_to_contig_pqs(
 ) -> anyResult<()> {
     enable_string_cache();
 
+    let input_path = Path::new(input_pqs);
+    if !input_path.is_dir() {
+        bail!(
+            "pairs-chr2ctg only supports a pairs PQS directory; text .pairs and .pairs.gz inputs are not supported: {}",
+            input_path.display()
+        );
+    }
     let p = PQS::new(input_pqs);
     if !p.is_pqs() {
-        return Err(anyhow::anyhow!(
-            "Input is not a valid PQS dir: {}",
-            input_pqs
-        ));
+        bail!(
+            "pairs-chr2ctg requires a valid pairs PQS directory containing q0, q1, and _contigsizes: {}",
+            input_path.display()
+        );
+    }
+    let metadata_path = input_path.join("_metadata");
+    let metadata = std::fs::read_to_string(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    if !(metadata.contains("'format': 'pairs'") || metadata.contains("\"format\": \"pairs\"")) {
+        bail!(
+            "pairs-chr2ctg requires a pairs PQS input ('format': 'pairs'); other PQS formats are not supported: {}",
+            input_path.display()
+        );
     }
 
-    let (chrom_lappers, recs, contig_sizes) = parse_contig_bed_to_lapper(contig_bed)?;
+    let (chrom_lappers, recs, contig_sizes, cn_mapping) = parse_contig_bed_to_lapper(contig_bed)?;
 
     // prepare output dirs
     std::fs::create_dir_all(output)?;
@@ -4359,6 +4842,7 @@ pub fn chr_pqs_to_contig_pqs(
         q0_total.load(Ordering::Relaxed),
         q1_total.load(Ordering::Relaxed),
     )?;
+    write_remapped_cn_info(input_path, &cn_mapping, Path::new(output))?;
     Ok(())
 }
 
@@ -4413,6 +4897,7 @@ pub fn downsample_pqs(
         format!("{}/_readme", input_pqs),
         format!("{}/_readme", output),
     );
+    copy_cn_info(Path::new(input_pqs), Path::new(output))?;
 
     let q0_files = collect_parquet_files(format!("{}/q0", input_pqs).as_str());
     if q0_files.is_empty() {
@@ -4742,6 +5227,7 @@ pub fn prune_pqs(
         format!("{}/_readme", input_pqs),
         format!("{}/_readme", output),
     );
+    copy_cn_info(Path::new(input_pqs), Path::new(output))?;
 
     let q0_files = collect_parquet_files(format!("{}/q0", input_pqs).as_str());
     if q0_files.is_empty() {

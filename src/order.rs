@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 mod hierarchical_scan;
-use hierarchical_scan::sparse_hierarchical_end_candidates;
+use hierarchical_scan::{HierarchicalEndCandidate, sparse_hierarchical_end_candidates};
 
 #[derive(Debug, Clone)]
 pub struct ContactMatrix<'a> {
@@ -108,6 +108,22 @@ impl<'a> ContactMatrix<'a> {
 pub struct Tour<T = usize> {
     pub contigs: Vec<T>,
     pub signs: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HierarchicalJoinEvidence {
+    pub left_contig: usize,
+    pub right_contig: usize,
+    pub normalized_score: f64,
+    pub raw_support: f64,
+    pub confidence: f64,
+    pub reciprocal_confident: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct HierarchicalEndResult {
+    pub tour: Tour<usize>,
+    pub joins: Vec<HierarchicalJoinEvidence>,
 }
 
 impl<T: std::fmt::Display> Display for Tour<T> {
@@ -217,7 +233,7 @@ impl Fitness for MyFitness<'_> {
                 //     }
                 // }
                 // for (i, &u) in genes.iter().enumerate() {
-                //     if let Some(row) = matrix.adjacency.get(u) { // 改为 adjacency
+                //     if let Some(row) = matrix.adjacency.get(u) {
                 //         for &(v, contact) in row {
                 //             if v >= pos_map.len() { continue; }
                 //             let j = pos_map[v];
@@ -1579,9 +1595,26 @@ pub fn run_hierarchical_end_initializer(
     split_contacts: &crate::splitcontacts::SplitContacts,
     contig2idx: &HashMap<String, usize>,
 ) -> Tour {
+    run_hierarchical_end_initializer_with_evidence(tour, contigsizes, split_contacts, contig2idx)
+        .tour
+}
+
+/// Hierarchical half-contig path construction together with compact evidence
+/// for every adjacency introduced by a merge. Join endpoints are stored in
+/// canonical contig-id order, so later reversal of a complete path does not
+/// invalidate the evidence.
+pub fn run_hierarchical_end_initializer_with_evidence(
+    tour: &Tour,
+    contigsizes: &IndexMap<usize, usize>,
+    split_contacts: &crate::splitcontacts::SplitContacts,
+    contig2idx: &HashMap<String, usize>,
+) -> HierarchicalEndResult {
     let n = tour.contigs.len();
     if n <= 1 {
-        return tour.clone();
+        return HierarchicalEndResult {
+            tour: tour.clone(),
+            joins: Vec::new(),
+        };
     }
     // Half-contig contacts are sparse in practice. Keeping one sparse row per
     // physical half avoids allocating a (2n) x (2n) f64 matrix, which would
@@ -1620,6 +1653,7 @@ pub fn run_hierarchical_end_initializer(
     let mut paths = (0..n)
         .map(|contig| vec![(contig, true)])
         .collect::<Vec<_>>();
+    let mut joins = Vec::with_capacity(n - 1);
     let mut confident_merges = 0usize;
     while paths.len() > 1 {
         let halves = paths
@@ -1629,21 +1663,21 @@ pub fn run_hierarchical_end_initializer(
         let side_count = paths.len() * 2;
         let candidates = sparse_hierarchical_end_candidates(&halves, &contacts);
         let mut ranked = vec![Vec::<(usize, f64)>::new(); side_count];
-        for &(left_path, left_side, right_path, right_side, score) in &candidates {
-            let left_endpoint = 2 * left_path + left_side;
-            let right_endpoint = 2 * right_path + right_side;
-            ranked[left_endpoint].push((right_endpoint, score));
-            ranked[right_endpoint].push((left_endpoint, score));
+        for candidate in &candidates {
+            let left_endpoint = 2 * candidate.left_path + candidate.left_side;
+            let right_endpoint = 2 * candidate.right_path + candidate.right_side;
+            ranked[left_endpoint].push((right_endpoint, candidate.normalized_score));
+            ranked[right_endpoint].push((left_endpoint, candidate.normalized_score));
         }
         for row in &mut ranked {
             row.sort_unstable_by(|left, right| right.1.total_cmp(&left.1));
         }
 
-        let mut best = None::<(bool, f64, f64, usize, usize, usize, usize)>;
+        let mut best = None::<(bool, f64, HierarchicalEndCandidate)>;
         let mut confident_candidates = Vec::new();
-        for &(left_path, left_side, right_path, right_side, score) in &candidates {
-            let left_endpoint = 2 * left_path + left_side;
-            let right_endpoint = 2 * right_path + right_side;
+        for &end_candidate in &candidates {
+            let left_endpoint = 2 * end_candidate.left_path + end_candidate.left_side;
+            let right_endpoint = 2 * end_candidate.right_path + end_candidate.right_side;
             let alternative = |endpoint: usize, partner: usize| {
                 ranked[endpoint]
                     .iter()
@@ -1653,14 +1687,12 @@ pub fn run_hierarchical_end_initializer(
             let competitor = alternative(left_endpoint, right_endpoint)
                 .max(alternative(right_endpoint, left_endpoint));
             let confidence = if competitor > 0.0 {
-                score / competitor
+                end_candidate.normalized_score / competitor
             } else {
                 f64::INFINITY
             };
             let confident = confidence > 1.0;
-            let candidate = (
-                confident, confidence, score, left_path, left_side, right_path, right_side,
-            );
+            let candidate = (confident, confidence, end_candidate);
             if confident {
                 confident_candidates.push(candidate);
             }
@@ -1669,7 +1701,11 @@ pub fn run_hierarchical_end_initializer(
                     || (candidate.0 == current.0
                         && (candidate.1.total_cmp(&current.1).is_gt()
                             || (candidate.1.total_cmp(&current.1).is_eq()
-                                && candidate.2.total_cmp(&current.2).is_gt())))
+                                && candidate
+                                    .2
+                                    .normalized_score
+                                    .total_cmp(&current.2.normalized_score)
+                                    .is_gt())))
             }) {
                 best = Some(candidate);
             }
@@ -1686,15 +1722,15 @@ pub fn run_hierarchical_end_initializer(
                 right
                     .1
                     .total_cmp(&left.1)
-                    .then_with(|| right.2.total_cmp(&left.2))
-                    .then_with(|| left.3.cmp(&right.3))
-                    .then_with(|| left.5.cmp(&right.5))
+                    .then_with(|| right.2.normalized_score.total_cmp(&left.2.normalized_score))
+                    .then_with(|| left.2.left_path.cmp(&right.2.left_path))
+                    .then_with(|| left.2.right_path.cmp(&right.2.right_path))
             });
             let mut consumed = vec![false; paths.len()];
             let mut selected = Vec::new();
             for candidate in confident_candidates {
-                let left_path = candidate.3;
-                let right_path = candidate.5;
+                let left_path = candidate.2.left_path;
+                let right_path = candidate.2.right_path;
                 if !consumed[left_path] && !consumed[right_path] {
                     consumed[left_path] = true;
                     consumed[right_path] = true;
@@ -1704,7 +1740,15 @@ pub fn run_hierarchical_end_initializer(
             if !selected.is_empty() {
                 let merge_count = selected.len();
                 let mut next_paths = Vec::with_capacity(paths.len() - merge_count);
-                for (_, _, _, left_path, left_side, right_path, right_side) in selected {
+                for (reciprocal_confident, confidence, candidate) in selected {
+                    let HierarchicalEndCandidate {
+                        left_path,
+                        left_side,
+                        right_path,
+                        right_side,
+                        normalized_score,
+                        raw_support,
+                    } = candidate;
                     let mut left = paths[left_path].clone();
                     let mut right = paths[right_path].clone();
                     if left_side == 0 {
@@ -1719,6 +1763,21 @@ pub fn run_hierarchical_end_initializer(
                             *sign = !*sign;
                         }
                     }
+                    let left_contig = left.last().unwrap().0;
+                    let right_contig = right.first().unwrap().0;
+                    let (left_contig, right_contig) = if left_contig <= right_contig {
+                        (left_contig, right_contig)
+                    } else {
+                        (right_contig, left_contig)
+                    };
+                    joins.push(HierarchicalJoinEvidence {
+                        left_contig,
+                        right_contig,
+                        normalized_score,
+                        raw_support,
+                        confidence,
+                        reciprocal_confident,
+                    });
                     left.append(&mut right);
                     next_paths.push(left);
                 }
@@ -1733,15 +1792,38 @@ pub fn run_hierarchical_end_initializer(
             }
         }
 
-        let Some((confident, _, _, left_path, left_side, right_path, right_side)) = best else {
+        let Some((reciprocal_confident, confidence, candidate)) = best else {
             paths.sort_unstable_by(|left, right| right.len().cmp(&left.len()));
             let mut right = paths.pop().unwrap();
+            let left_contig = paths[0].last().unwrap().0;
+            let right_contig = right.first().unwrap().0;
+            let (left_contig, right_contig) = if left_contig <= right_contig {
+                (left_contig, right_contig)
+            } else {
+                (right_contig, left_contig)
+            };
+            joins.push(HierarchicalJoinEvidence {
+                left_contig,
+                right_contig,
+                normalized_score: 0.0,
+                raw_support: 0.0,
+                confidence: 0.0,
+                reciprocal_confident: false,
+            });
             paths[0].append(&mut right);
             continue;
         };
-        if confident {
+        if reciprocal_confident {
             confident_merges += 1;
         }
+        let HierarchicalEndCandidate {
+            left_path,
+            left_side,
+            right_path,
+            right_side,
+            normalized_score,
+            raw_support,
+        } = candidate;
         let mut right = paths.remove(right_path);
         let mut left = paths.remove(left_path);
         if left_side == 0 {
@@ -1756,6 +1838,21 @@ pub fn run_hierarchical_end_initializer(
                 *sign = !*sign;
             }
         }
+        let left_contig = left.last().unwrap().0;
+        let right_contig = right.first().unwrap().0;
+        let (left_contig, right_contig) = if left_contig <= right_contig {
+            (left_contig, right_contig)
+        } else {
+            (right_contig, left_contig)
+        };
+        joins.push(HierarchicalJoinEvidence {
+            left_contig,
+            right_contig,
+            normalized_score,
+            raw_support,
+            confidence,
+            reciprocal_confident,
+        });
         left.append(&mut right);
         paths.push(left);
     }
@@ -1766,9 +1863,12 @@ pub fn run_hierarchical_end_initializer(
         n - 1,
         confident_merges
     );
-    Tour {
-        contigs: path.iter().map(|(contig, _)| *contig).collect(),
-        signs: path.iter().map(|(_, sign)| *sign).collect(),
+    HierarchicalEndResult {
+        tour: Tour {
+            contigs: path.iter().map(|(contig, _)| *contig).collect(),
+            signs: path.iter().map(|(_, sign)| *sign).collect(),
+        },
+        joins,
     }
 }
 
@@ -2307,13 +2407,13 @@ pub fn run_evolove_optimizer(
         // let mut seed_population = vec![initial_genes.clone()];
 
         // let num_perturbed = (population_size as f64 * 0.5) as usize;
-        // let mut rng = SmallRng::seed_from_u64(seed + round_idx as u64); // 确保每轮扰动不同
+        // let mut rng = SmallRng::seed_from_u64(seed + round_idx as u64);
 
         // for _ in 0..num_perturbed {
         //     let mut perturbed_genes = initial_genes.clone();
         //     let len = perturbed_genes.len();
         //     if len > 2 {
-        //         let num_swaps = (len as f64 * 0.1).max(5.0) as usize; // 5% 的差异
+        //         let num_swaps = (len as f64 * 0.1).max(5.0) as usize;
         //         for _ in 0..num_swaps {
         //             let i = rng.gen_range(0..len);
         //             let j = rng.gen_range(0..len);

@@ -28,19 +28,88 @@ use std::time::{Duration, Instant};
 
 use crate::bed::Bed3;
 use crate::core::BaseTable;
-use crate::core::{Prof, common_reader, common_writer};
-use crate::porec::PoreCRecordPlus as PoreCRecord;
+use crate::core::{Prof, common_reader, common_writer, coverage_integrals_at};
+use crate::porec::{
+    ConcatPqsRecord, PoreCRecordPlus as PoreCRecord, write_concat_pqs_record_batches,
+};
 
 const GROUP_BATCH_SIZE: usize = 100_000;
 const RECORD_BATCH_SIZE: usize = 200_000;
 
 const CHUNK_SIZE: usize = 10_000;
 const WRITE_CHUNK: usize = 16 << 20; // 1 MB
+const MIN_PAF2POREC_BATCH_SIZE: usize = 2 * 1024 * 1024;
+const MAX_PAF2POREC_BATCH_SIZE: usize = 4 * 1024 * 1024;
+const PAF2POREC_BATCHES_PER_THREAD: usize = 4;
 
 const PASS_STR: &str = "pass";
 const SINGLETON_STR: &str = "singleton";
 const LOW_MQ_STR: &str = "low_mq";
 const COMPLEX_STR: &str = "complex";
+
+struct PafPorecRecord {
+    read_idx: u64,
+    query_length: u32,
+    query_start: u32,
+    query_end: u32,
+    query_strand: char,
+    target: Arc<str>,
+    target_start: u64,
+    target_end: u64,
+    mapq: u8,
+    identity: f32,
+}
+
+impl ConcatPqsRecord for PafPorecRecord {
+    fn read_idx(&self) -> u64 {
+        self.read_idx
+    }
+
+    fn query_length(&self) -> u32 {
+        self.query_length
+    }
+
+    fn query_start(&self) -> u32 {
+        self.query_start
+    }
+
+    fn query_end(&self) -> u32 {
+        self.query_end
+    }
+
+    fn query_strand(&self) -> char {
+        self.query_strand
+    }
+
+    fn target(&self) -> &str {
+        &self.target
+    }
+
+    fn target_start(&self) -> u64 {
+        self.target_start
+    }
+
+    fn target_end(&self) -> u64 {
+        self.target_end
+    }
+
+    fn mapq(&self) -> u8 {
+        self.mapq
+    }
+
+    fn identity(&self) -> f32 {
+        self.identity
+    }
+
+    fn filter_reason(&self) -> &str {
+        PASS_STR
+    }
+}
+
+enum PafPorecOutputBatch {
+    Text(String),
+    Records(Vec<PafPorecRecord>),
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PAFLine {
@@ -167,6 +236,20 @@ fn fast_parse_int(b: &[u8]) -> Option<u64> {
         n = n * 10 + (c - b'0') as u64;
     }
     Some(n)
+}
+
+fn paf2porec_batch_size(file: &str, threads: usize) -> usize {
+    let target_batches = threads.max(1).saturating_mul(PAF2POREC_BATCHES_PER_THREAD);
+    std::fs::metadata(file)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .and_then(|metadata| usize::try_from(metadata.len()).ok())
+        .map(|input_size| {
+            input_size
+                .div_ceil(target_batches)
+                .clamp(MIN_PAF2POREC_BATCH_SIZE, MAX_PAF2POREC_BATCH_SIZE)
+        })
+        .unwrap_or(MIN_PAF2POREC_BATCH_SIZE)
 }
 
 #[derive(Debug)]
@@ -345,40 +428,164 @@ impl Concatemer {
     }
 }
 
-fn process_group(
-    grp: &mut Vec<PoreCRecord>,
-    ih: &HashMap<String, Lapper<usize, u8>>,
-    is_digest: bool,
-    is_edges: bool,
-    max_len: u64,
-    max_ord: u32,
-    buf: &mut String,
-    p: &mut u64,
-    s: &mut u64,
-    l: &mut u64,
-    c: &mut u64,
-) {
-    let mut concatemer = Concatemer::with_capacity(grp.len() + 2);
-    for r in grp.drain(..) {
-        concatemer.push(r);
+struct ParsedPafRecord<'a> {
+    query_length: u32,
+    query_start: u32,
+    query_end: u32,
+    query_strand: char,
+    target: &'a str,
+    target_length: u64,
+    target_start: u64,
+    target_end: u64,
+    mapq: u8,
+    identity: f32,
+    filter_reason: FilterReason,
+}
+
+impl ParsedPafRecord<'_> {
+    fn is_in_regions(&self, interval_hash: &HashMap<String, Lapper<usize, u8>>) -> bool {
+        interval_hash.get(self.target).is_some_and(|interval| {
+            interval.count((self.target_start - 1) as usize, self.target_start as usize) > 0
+                && interval.count((self.target_end - 1) as usize, self.target_end as usize) > 0
+        })
     }
 
-    let (final_status, pass_indices) =
-        concatemer.process(is_digest, ih, is_edges, max_len, max_ord);
+    fn write_to(&self, read_idx: u64, output: &mut String) {
+        let _ = writeln!(
+            output,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            read_idx,
+            self.query_length,
+            self.query_start,
+            self.query_end,
+            self.query_strand,
+            self.target,
+            self.target_start,
+            self.target_end,
+            self.mapq,
+            self.identity,
+            self.filter_reason.as_str(),
+        );
+    }
+}
 
-    if final_status == PASS_STR {
-        for &idx in &pass_indices {
-            buf.push_str(&concatemer.records[idx].to_string());
-            buf.push('\n');
+fn finalize_parsed_group(
+    group: &mut [ParsedPafRecord<'_>],
+    interval_hash: &HashMap<String, Lapper<usize, u8>>,
+    is_filter_digest: bool,
+    is_filter_edges: bool,
+    max_edge_length: u64,
+    max_order: u32,
+) -> FilterReason {
+    let mut pass_count = 0usize;
+    for record in group.iter_mut() {
+        if record.filter_reason != FilterReason::Pass {
+            continue;
+        }
+        if (is_filter_digest && !record.is_in_regions(interval_hash))
+            || (is_filter_edges
+                && (record.target_start < max_edge_length
+                    || (record.target_length - record.target_end) < max_edge_length))
+        {
+            record.filter_reason = FilterReason::LowMQ;
+        } else {
+            pass_count += 1;
         }
     }
-    match final_status {
-        PASS_STR => *p += 1,
-        SINGLETON_STR => *s += 1,
-        LOW_MQ_STR => *l += 1,
-        COMPLEX_STR => *c += 1,
-        _ => {}
+
+    if pass_count == 0 {
+        if group.len() > 1 {
+            FilterReason::LowMQ
+        } else {
+            FilterReason::Singleton
+        }
+    } else if pass_count == 1 {
+        if let Some(record) = group
+            .iter_mut()
+            .find(|record| record.filter_reason == FilterReason::Pass)
+        {
+            record.filter_reason = FilterReason::Singleton;
+        }
+        FilterReason::Singleton
+    } else if pass_count > max_order as usize {
+        for record in group.iter_mut() {
+            if record.filter_reason == FilterReason::Pass {
+                record.filter_reason = FilterReason::Complex;
+            }
+        }
+        FilterReason::Complex
+    } else {
+        FilterReason::Pass
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_parsed_group(
+    group: &mut Vec<ParsedPafRecord<'_>>,
+    read_idx: u64,
+    interval_hash: &HashMap<String, Lapper<usize, u8>>,
+    is_filter_digest: bool,
+    is_filter_edges: bool,
+    max_edge_length: u64,
+    max_order: u32,
+    is_concat_pqs: bool,
+    target_sizes: &HashMap<Arc<str>, u64>,
+    text_output: &mut String,
+    record_output: &mut Vec<PafPorecRecord>,
+    pass: &mut u64,
+    singleton: &mut u64,
+    low_mq: &mut u64,
+    complex: &mut u64,
+) {
+    let final_status = finalize_parsed_group(
+        group,
+        interval_hash,
+        is_filter_digest,
+        is_filter_edges,
+        max_edge_length,
+        max_order,
+    );
+
+    if final_status == FilterReason::Pass {
+        if is_concat_pqs {
+            for record in group
+                .iter()
+                .filter(|record| record.filter_reason == FilterReason::Pass)
+            {
+                let target = target_sizes
+                    .get_key_value(record.target)
+                    .map(|(target, _)| Arc::clone(target))
+                    .expect("target length must be recorded before PQS output");
+                record_output.push(PafPorecRecord {
+                    read_idx,
+                    query_length: record.query_length,
+                    query_start: record.query_start,
+                    query_end: record.query_end,
+                    query_strand: record.query_strand,
+                    target,
+                    target_start: record.target_start,
+                    target_end: record.target_end,
+                    mapq: record.mapq,
+                    identity: record.identity,
+                });
+            }
+        } else {
+            for record in group
+                .iter()
+                .filter(|record| record.filter_reason == FilterReason::Pass)
+            {
+                record.write_to(read_idx, text_output);
+            }
+        }
+    }
+
+    match final_status {
+        FilterReason::Pass => *pass += 1,
+        FilterReason::Singleton => *singleton += 1,
+        FilterReason::LowMQ => *low_mq += 1,
+        FilterReason::Complex => *complex += 1,
+    }
+    group.clear();
 }
 
 impl PAFTable {
@@ -487,12 +694,11 @@ impl PAFTable {
         let max_edge_length = *max_edge_length;
 
         let is_filter_digest = !bed.is_empty();
-        let bed_obj = if is_filter_digest {
-            Bed3::new(bed)
+        let interval_hash = Arc::new(if is_filter_digest {
+            Bed3::new(bed).to_interval_hash()
         } else {
-            Bed3::new(&String::from(".tmp.bed"))
-        };
-        let interval_hash = Arc::new(bed_obj.to_interval_hash());
+            HashMap::new()
+        });
         let is_filter_edges = max_edge_length > 0;
 
         log::info!("Using {} threads for processing.", num_threads);
@@ -933,6 +1139,18 @@ impl PAFTable {
         secondary: bool,
         threads: usize,
     ) -> Result<(), Box<dyn Error>> {
+        if threads == 0 {
+            return Err("paf2porec thread count must be at least 1".into());
+        }
+        let final_output = output.trim_end_matches('/');
+        let is_concat_pqs =
+            final_output.ends_with(".concat.pqs") || final_output.ends_with(".porec.pqs");
+        if is_concat_pqs && final_output == "-" {
+            return Err("concat PQS output must be a directory path".into());
+        }
+        if is_concat_pqs && Path::new(final_output).exists() {
+            return Err(format!("concat PQS output already exists: {final_output}").into());
+        }
         let min_quality = *min_quality;
         let min_identity = *min_identity;
         let min_length = *min_length;
@@ -940,25 +1158,45 @@ impl PAFTable {
         let max_edge_length = *max_edge_length;
 
         let is_filter_digest = !bed.is_empty();
-        let bed_obj = if is_filter_digest {
-            Bed3::new(bed)
+        let interval_hash = Arc::new(if is_filter_digest {
+            Bed3::new(bed).to_interval_hash()
         } else {
-            Bed3::new(&String::from(".tmp.bed"))
-        };
-        let interval_hash = Arc::new(bed_obj.to_interval_hash());
+            HashMap::new()
+        });
         let is_filter_edges = max_edge_length > 0;
 
         let num_threads = threads;
         log::info!("Using {} threads for processing.", num_threads);
 
         let (tx_raw, rx_raw) = bounded::<Vec<u8>>(200);
-        let (tx_writer, rx_writer) = bounded::<String>(2000);
-
-        let output_clone = output.clone();
-        let writer_handle = thread::spawn(move || {
-            let mut writer = common_writer(&output_clone);
-            for chunk in rx_writer {
-                writer.write_all(chunk.as_bytes()).unwrap();
+        let (tx_writer, rx_writer) = bounded::<PafPorecOutputBatch>(2000);
+        let target_sizes = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
+        let output_clone = output.to_string();
+        let writer_target_sizes = Arc::clone(&target_sizes);
+        let writer_handle = thread::spawn(move || -> Result<(), String> {
+            if is_concat_pqs {
+                let batches = rx_writer.into_iter().filter_map(|batch| match batch {
+                    PafPorecOutputBatch::Records(records) => Some(records),
+                    PafPorecOutputBatch::Text(_) => None,
+                });
+                write_concat_pqs_record_batches(
+                    batches,
+                    writer_target_sizes,
+                    output_clone.trim_end_matches('/'),
+                    1_000_000,
+                    threads,
+                )
+                .map_err(|error| error.to_string())
+            } else {
+                let mut writer = common_writer(&output_clone);
+                for batch in rx_writer {
+                    if let PafPorecOutputBatch::Text(chunk) = batch {
+                        writer
+                            .write_all(chunk.as_bytes())
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                writer.flush().map_err(|error| error.to_string())
             }
         });
 
@@ -969,7 +1207,6 @@ impl PAFTable {
         let stats_low = Arc::new(AtomicU64::new(0));
         let stats_comp = Arc::new(AtomicU64::new(0));
         let global_read_idx = Arc::new(AtomicU64::new(1));
-
         for _ in 0..num_threads {
             let rx = rx_raw.clone();
             let tx_w = tx_writer.clone();
@@ -979,6 +1216,7 @@ impl PAFTable {
             let s_l = stats_low.clone();
             let s_c = stats_comp.clone();
             let g_rid = global_read_idx.clone();
+            let shared_target_sizes = Arc::clone(&target_sizes);
 
             handles.push(thread::spawn(move || {
                 let mut local_p = 0;
@@ -986,14 +1224,17 @@ impl PAFTable {
                 let mut local_l = 0;
                 let mut local_c = 0;
                 let mut output_buffer = String::with_capacity(WRITE_CHUNK);
+                let mut record_buffer = Vec::<PafPorecRecord>::with_capacity(100_000);
+                let mut local_target_sizes = HashMap::<Arc<str>, u64>::new();
 
-                fn parse_line_only(
-                    line: &[u8],
+                fn parse_line_only<'a>(
+                    line: &'a [u8],
                     min_q: u8,
                     min_l: u32,
                     min_id: f32,
                     sec: bool,
-                ) -> Option<PoreCRecord> {
+                    target_sizes: Option<&mut HashMap<Arc<str>, u64>>,
+                ) -> Option<ParsedPafRecord<'a>> {
                     let mut iter = line.split(|&b| b == b'\t');
                     let _q_bytes = iter.next()?;
 
@@ -1011,6 +1252,15 @@ impl PAFTable {
                     let mat: u32 = fast_parse_int(iter.next()?)? as u32;
                     let aln: u32 = fast_parse_int(iter.next()?)? as u32;
                     let mapq: u8 = fast_parse_int(iter.next()?)? as u8;
+
+                    let target_name = unsafe { std::str::from_utf8_unchecked(t_bytes) };
+                    if let Some(target_sizes) = target_sizes {
+                        if let Some(length) = target_sizes.get_mut(target_name) {
+                            *length = (*length).max(tlen);
+                        } else {
+                            target_sizes.insert(Arc::from(target_name), tlen);
+                        }
+                    }
 
                     if mapq < min_q {
                         return None;
@@ -1035,33 +1285,30 @@ impl PAFTable {
                     } else {
                         0.0
                     };
-                    let fr = if q_cov < min_l || ident < min_id {
-                        LOW_MQ_STR
+                    let filter_reason = if q_cov < min_l || ident < min_id {
+                        FilterReason::LowMQ
                     } else {
-                        PASS_STR
+                        FilterReason::Pass
                     };
 
-                    let t_str = unsafe { String::from_utf8_unchecked(t_bytes.to_vec()) };
-
-                    Some(PoreCRecord {
-                        read_idx: 0,
+                    Some(ParsedPafRecord {
                         query_length: qlen,
                         query_start: qs,
                         query_end: qe,
                         query_strand: strand_c,
-                        target: t_str,
+                        target: target_name,
                         target_length: tlen,
                         target_start: ts,
                         target_end: te,
-                        mapq: mapq,
+                        mapq,
                         identity: ident,
-                        filter_reason: fr.to_string(),
+                        filter_reason,
                     })
                 }
 
                 while let Ok(batch_bytes) = rx.recv() {
                     let mut start = 0;
-                    let mut current_group: Vec<PoreCRecord> = Vec::with_capacity(32);
+                    let mut current_group = Vec::<ParsedPafRecord<'_>>::with_capacity(32);
                     let mut old_q_bytes: &[u8] = &[];
 
                     while start < batch_bytes.len() {
@@ -1086,25 +1333,34 @@ impl PAFTable {
                         if is_switch {
                             if !current_group.is_empty() {
                                 let rid = g_rid.fetch_add(1, Ordering::Relaxed);
-                                for r in &mut current_group {
-                                    r.read_idx = rid;
-                                }
-                                process_group(
+                                emit_parsed_group(
                                     &mut current_group,
+                                    rid,
                                     &ih,
                                     is_filter_digest,
                                     is_filter_edges,
                                     max_edge_length,
                                     max_order,
+                                    is_concat_pqs,
+                                    &local_target_sizes,
                                     &mut output_buffer,
+                                    &mut record_buffer,
                                     &mut local_p,
                                     &mut local_s,
                                     &mut local_l,
                                     &mut local_c,
                                 );
-
-                                if output_buffer.len() >= WRITE_CHUNK {
-                                    tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
+                                if is_concat_pqs && record_buffer.len() >= 100_000 {
+                                    tx_w.send(PafPorecOutputBatch::Records(std::mem::take(
+                                        &mut record_buffer,
+                                    )))
+                                    .unwrap();
+                                    record_buffer = Vec::with_capacity(100_000);
+                                } else if !is_concat_pqs && output_buffer.len() >= WRITE_CHUNK {
+                                    tx_w.send(PafPorecOutputBatch::Text(std::mem::take(
+                                        &mut output_buffer,
+                                    )))
+                                    .unwrap();
                                     output_buffer = String::with_capacity(WRITE_CHUNK);
                                 }
                             }
@@ -1113,26 +1369,33 @@ impl PAFTable {
                             old_q_bytes = q_bytes;
                         }
 
-                        if let Some(pcr) =
-                            parse_line_only(line, min_quality, min_length, min_identity, secondary)
-                        {
+                        let sizes = is_concat_pqs.then_some(&mut local_target_sizes);
+                        if let Some(pcr) = parse_line_only(
+                            line,
+                            min_quality,
+                            min_length,
+                            min_identity,
+                            secondary,
+                            sizes,
+                        ) {
                             current_group.push(pcr);
                         }
                     }
 
                     if !current_group.is_empty() {
                         let rid = g_rid.fetch_add(1, Ordering::Relaxed);
-                        for r in &mut current_group {
-                            r.read_idx = rid;
-                        }
-                        process_group(
+                        emit_parsed_group(
                             &mut current_group,
+                            rid,
                             &ih,
                             is_filter_digest,
                             is_filter_edges,
                             max_edge_length,
                             max_order,
+                            is_concat_pqs,
+                            &local_target_sizes,
                             &mut output_buffer,
+                            &mut record_buffer,
                             &mut local_p,
                             &mut local_s,
                             &mut local_l,
@@ -1140,26 +1403,52 @@ impl PAFTable {
                         );
                     }
 
-                    if output_buffer.len() >= WRITE_CHUNK {
-                        tx_w.send(std::mem::take(&mut output_buffer)).unwrap();
+                    if !is_concat_pqs && output_buffer.len() >= WRITE_CHUNK {
+                        tx_w.send(PafPorecOutputBatch::Text(std::mem::take(
+                            &mut output_buffer,
+                        )))
+                        .unwrap();
                         output_buffer = String::with_capacity(WRITE_CHUNK);
+                    } else if is_concat_pqs && record_buffer.len() >= 100_000 {
+                        tx_w.send(PafPorecOutputBatch::Records(std::mem::take(
+                            &mut record_buffer,
+                        )))
+                        .unwrap();
+                        record_buffer = Vec::with_capacity(100_000);
                     }
                 }
 
-                if !output_buffer.is_empty() {
-                    tx_w.send(output_buffer).unwrap();
+                if is_concat_pqs && !record_buffer.is_empty() {
+                    tx_w.send(PafPorecOutputBatch::Records(record_buffer))
+                        .unwrap();
+                } else if !is_concat_pqs && !output_buffer.is_empty() {
+                    tx_w.send(PafPorecOutputBatch::Text(output_buffer)).unwrap();
                 }
                 s_p.fetch_add(local_p, Ordering::Relaxed);
                 s_s.fetch_add(local_s, Ordering::Relaxed);
                 s_l.fetch_add(local_l, Ordering::Relaxed);
                 s_c.fetch_add(local_c, Ordering::Relaxed);
+                if is_concat_pqs {
+                    let mut sizes = shared_target_sizes.lock().unwrap();
+                    for (target, length) in local_target_sizes {
+                        if let Some(known) = sizes.get_mut(target.as_ref()) {
+                            *known = (*known).max(length);
+                        } else {
+                            sizes.insert(target.to_string(), length);
+                        }
+                    }
+                }
             }));
         }
         drop(tx_writer);
 
         let mut reader = common_reader(&self.file);
-        const BATCH_SIZE_LIMIT: usize = 16 * 1024 * 1024;
-        let mut buffer = vec![0u8; BATCH_SIZE_LIMIT * 2];
+        let batch_size_limit = paf2porec_batch_size(&self.file, threads);
+        log::info!(
+            "Using {:.2} MiB target input batches.",
+            batch_size_limit as f64 / (1024.0 * 1024.0)
+        );
+        let mut buffer = vec![0u8; batch_size_limit * 2];
         let mut bytes_in_buffer = 0;
 
         #[inline(always)]
@@ -1172,51 +1461,66 @@ impl PAFTable {
         }
 
         loop {
-            let bytes_read = reader.read(&mut buffer[bytes_in_buffer..]).unwrap_or(0);
-            if bytes_read == 0 && bytes_in_buffer == 0 {
+            let bytes_read = reader.read(&mut buffer[bytes_in_buffer..])?;
+            if bytes_read == 0 {
+                if bytes_in_buffer > 0 {
+                    tx_raw.send(buffer[..bytes_in_buffer].to_vec()).unwrap();
+                }
                 break;
             }
             bytes_in_buffer += bytes_read;
 
+            // Read::read may legally return fewer bytes than requested for pipes,
+            // stdin, compressed streams, and regular files. Accumulate short reads
+            // until there is enough input to find a complete read-group boundary.
+            if bytes_in_buffer <= batch_size_limit {
+                continue;
+            }
+
             let mut chunk_end = bytes_in_buffer;
-            if bytes_in_buffer > BATCH_SIZE_LIMIT {
-                if let Some(pos) = buffer[BATCH_SIZE_LIMIT..bytes_in_buffer]
+            let Some(pos) = buffer[batch_size_limit..bytes_in_buffer]
+                .iter()
+                .position(|&b| b == b'\n')
+            else {
+                buffer.resize(buffer.len() * 2, 0);
+                continue;
+            };
+            let nl_idx = batch_size_limit + pos;
+            let line_start = match buffer[..nl_idx].iter().rposition(|&b| b == b'\n') {
+                Some(p) => p + 1,
+                None => 0,
+            };
+            let q_last = get_qname(&buffer[line_start..nl_idx]);
+
+            let mut scan_pos = nl_idx + 1;
+            let mut found = false;
+            while scan_pos < bytes_in_buffer {
+                let Some(tab_offset) = buffer[scan_pos..bytes_in_buffer]
+                    .iter()
+                    .position(|&b| b == b'\t')
+                else {
+                    break;
+                };
+                let q_cur = &buffer[scan_pos..scan_pos + tab_offset];
+                if q_cur != q_last {
+                    chunk_end = scan_pos;
+                    found = true;
+                    break;
+                }
+                let Some(newline_offset) = buffer[scan_pos..bytes_in_buffer]
                     .iter()
                     .position(|&b| b == b'\n')
-                {
-                    let nl_idx = BATCH_SIZE_LIMIT + pos;
-                    let line_start = match buffer[..nl_idx].iter().rposition(|&b| b == b'\n') {
-                        Some(p) => p + 1,
-                        None => 0,
-                    };
-                    let q_last = get_qname(&buffer[line_start..nl_idx]);
+                else {
+                    break;
+                };
+                scan_pos += newline_offset + 1;
+            }
 
-                    let mut scan_pos = nl_idx + 1;
-                    let mut found = false;
-                    while scan_pos < bytes_in_buffer {
-                        let next_nl = match buffer[scan_pos..bytes_in_buffer]
-                            .iter()
-                            .position(|&b| b == b'\n')
-                        {
-                            Some(p) => scan_pos + p,
-                            None => bytes_in_buffer,
-                        };
-                        let line = &buffer[scan_pos..next_nl];
-                        if !line.is_empty() && line[0] != b'#' {
-                            let q_cur = get_qname(line);
-                            if q_cur != q_last {
-                                chunk_end = scan_pos;
-                                found = true;
-                                break;
-                            }
-                        }
-                        scan_pos = next_nl + 1;
-                    }
-
-                    if !found && bytes_in_buffer < buffer.len() {
-                        continue;
-                    }
+            if !found {
+                if bytes_in_buffer == buffer.len() {
+                    buffer.resize(buffer.len() * 2, 0);
                 }
+                continue;
             }
 
             let chunk = &buffer[..chunk_end];
@@ -1235,7 +1539,15 @@ impl PAFTable {
         for h in handles {
             h.join().unwrap();
         }
-        writer_handle.join().unwrap();
+        let writer_result = writer_handle
+            .join()
+            .map_err(|_| "paf2porec output writer thread panicked")?;
+        if let Err(error) = writer_result {
+            if is_concat_pqs && Path::new(final_output).exists() {
+                let _ = std::fs::remove_dir_all(final_output);
+            }
+            return Err(error.into());
+        }
 
         let final_stats = (
             stats_pass.load(Ordering::Relaxed),
@@ -1267,10 +1579,7 @@ impl PAFTable {
         };
         summary.save(&format!("{}.read.summary", output_prefix));
 
-        log::info!(
-            "Successful output Pore-C table `{}` (raw-bytes-batched)",
-            output
-        );
+        log::info!("Successful output Pore-C table `{output}` (raw-bytes-batched)");
         Ok(())
     }
     pub fn to_depth(
@@ -1306,12 +1615,19 @@ impl PAFTable {
         let chrom_map = Arc::new(chrom_map);
 
         let (sender, receiver) = bounded::<Vec<u8>>(100);
+        let shared_events = Arc::new(
+            (0..num_chroms)
+                .map(|_| Mutex::new(Vec::<(u32, i32)>::new()))
+                .collect::<Vec<_>>(),
+        );
 
         let mut handles = Vec::new();
-        for _ in 0..8 {
+        let num_workers = rayon::current_num_threads().max(1);
+        for _ in 0..num_workers {
             let receiver = receiver.clone();
             let chrom_map = chrom_map.clone();
-            handles.push(thread::spawn(move || {
+            let shared_events = shared_events.clone();
+            handles.push(thread::spawn(move || -> Result<(), String> {
                 let mut local_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
 
                 fn fast_parse_u64(bytes: &[u8]) -> Option<u64> {
@@ -1402,13 +1718,24 @@ impl PAFTable {
 
                         if let Ok(target_str) = std::str::from_utf8(target_bytes) {
                             if let Some(&idx) = chrom_map.get(target_str) {
-                                local_events[idx].push((t_start as u32, 1));
-                                local_events[idx].push((t_end as u32, -1));
+                                let t_start = u32::try_from(t_start).map_err(|_| {
+                                    format!("PAF target start exceeds UInt32 on {target_str}")
+                                })?;
+                                let t_end = u32::try_from(t_end).map_err(|_| {
+                                    format!("PAF target end exceeds UInt32 on {target_str}")
+                                })?;
+                                local_events[idx].push((t_start, 1));
+                                local_events[idx].push((t_end, -1));
                             }
                         }
                     }
                 }
-                local_events
+                for (idx, mut events) in local_events.into_iter().enumerate() {
+                    if !events.is_empty() {
+                        shared_events[idx].lock().unwrap().append(&mut events);
+                    }
+                }
+                Ok(())
             }));
         }
 
@@ -1454,22 +1781,32 @@ impl PAFTable {
 
         drop(sender);
 
-        let mut global_events: Vec<Vec<(u32, i32)>> = vec![Vec::new(); num_chroms];
-
         for handle in handles {
-            let local_events = handle.join().unwrap();
-            for (i, events) in local_events.into_iter().enumerate() {
-                global_events[i].extend(events);
-            }
+            let result = handle
+                .join()
+                .map_err(|_| std::io::Error::other("paf2depth parser worker panicked"))?;
+            result.map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         }
+        let shared_events =
+            Arc::try_unwrap(shared_events).expect("paf2depth event collectors are still shared");
+        let global_events = shared_events
+            .into_iter()
+            .map(|events| events.into_inner().unwrap())
+            .collect::<Vec<_>>();
 
         rayon::scope(|s| {
-            let (tx, rx) = bounded::<String>(1024);
+            let (tx, rx) = bounded::<(usize, String)>(1024);
 
-            s.spawn(|_| {
+            s.spawn(move |_| {
                 let mut wtr = common_writer(output);
-                for s in rx {
-                    wtr.write_all(s.as_bytes()).unwrap();
+                let mut pending = BTreeMap::new();
+                let mut next_idx = 0usize;
+                while let Ok((idx, data)) = rx.recv() {
+                    pending.insert(idx, data);
+                    while let Some(data) = pending.remove(&next_idx) {
+                        wtr.write_all(data.as_bytes()).unwrap();
+                        next_idx += 1;
+                    }
                 }
             });
 
@@ -1478,6 +1815,7 @@ impl PAFTable {
                 .enumerate()
                 .for_each_with(tx, |tx, (i, mut events)| {
                     if events.is_empty() {
+                        tx.send((i, String::new())).unwrap();
                         return;
                     }
                     let chrom_len = chrom_sizes[i];
@@ -1485,51 +1823,31 @@ impl PAFTable {
 
                     events.par_sort_unstable_by_key(|e| e.0);
 
-                    let mut prefix_sum = Vec::with_capacity(chrom_len + 1);
-                    prefix_sum.push(0);
-
-                    let mut current_cov = 0i32;
-                    let mut prev_pos = 0usize;
-                    let mut running_sum = 0i64;
-
-                    for (pos, delta) in events {
-                        let pos = pos as usize;
-                        if pos >= chrom_len {
-                            break;
-                        }
-
-                        if pos > prev_pos {
-                            let cov = current_cov as i64;
-                            let count = pos - prev_pos;
-                            for _ in 0..count {
-                                running_sum += cov;
-                                prefix_sum.push(running_sum);
-                            }
-                        }
-                        current_cov += delta;
-                        prev_pos = pos;
+                    if window_size == 0 || step_size == 0 {
+                        tx.send((i, String::new())).unwrap();
+                        return;
                     }
+                    let window_starts = (0..chrom_len).step_by(step_size).collect::<Vec<_>>();
+                    let window_ends = window_starts
+                        .iter()
+                        .map(|start| start.saturating_add(window_size).min(chrom_len))
+                        .collect::<Vec<_>>();
+                    let mut query_positions = Vec::with_capacity(window_starts.len() * 2);
+                    query_positions.extend_from_slice(&window_starts);
+                    query_positions.extend_from_slice(&window_ends);
+                    query_positions.sort_unstable();
+                    query_positions.dedup();
+                    let integrals = coverage_integrals_at(&events, &query_positions, chrom_len);
 
-                    if prev_pos < chrom_len {
-                        let cov = current_cov as i64;
-                        let count = chrom_len - prev_pos;
-                        for _ in 0..count {
-                            running_sum += cov;
-                            prefix_sum.push(running_sum);
-                        }
-                    }
-
-                    let mut output_buf = String::with_capacity(64 * 1024);
-                    let mut start = 0usize;
-
-                    while start < chrom_len {
-                        let end = std::cmp::min(start + window_size, chrom_len);
+                    let mut output_buf = String::with_capacity(window_starts.len() * 32);
+                    for (start, end) in window_starts.into_iter().zip(window_ends) {
                         let len = end - start;
                         if len == 0 {
-                            break;
+                            continue;
                         }
-
-                        let sum = prefix_sum[end] - prefix_sum[start];
+                        let start_index = query_positions.binary_search(&start).unwrap();
+                        let end_index = query_positions.binary_search(&end).unwrap();
+                        let sum = integrals[end_index] - integrals[start_index];
                         let mean = sum as f64 / len as f64;
 
                         write!(
@@ -1538,17 +1856,8 @@ impl PAFTable {
                             chrom_name, start, end, mean
                         )
                         .unwrap();
-
-                        if output_buf.len() > 60 * 1024 {
-                            tx.send(std::mem::take(&mut output_buf)).unwrap();
-                            output_buf = String::with_capacity(64 * 1024);
-                        }
-
-                        start += step_size;
                     }
-                    if !output_buf.is_empty() {
-                        tx.send(output_buf).unwrap();
-                    }
+                    tx.send((i, output_buf)).unwrap();
                 });
         });
 
@@ -2636,7 +2945,6 @@ Please sort/group by 1st column before downsampling, e.g.:\n\
             let mut it = t.split('\t');
             let qname = it.next().unwrap_or("").to_string();
 
-            // 跳过不必要的列
             it.next(); // qlen
             it.next(); // qstart
             it.next(); // qend

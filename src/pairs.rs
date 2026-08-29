@@ -2488,7 +2488,7 @@ impl Pairs {
                                 let mut file = File::create(path).unwrap();
                                 ParquetWriter::new(&mut file)
                                     // .with_compression(ParquetCompression::Zstd(Some(1)))
-                                    // .with_compression(ParquetCompression::Uncompressed) // 或 Snappy
+                                    // .with_compression(ParquetCompression::Uncompressed)
                                     .finish(&mut df)
                                     .unwrap();
                             }

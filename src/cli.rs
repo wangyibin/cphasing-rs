@@ -1046,7 +1046,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("paf2porec")
-                .about("convert paf to concatemer (con) table")
+                .about("convert PAF to text Pore-C or alignment-level concat PQS")
                 .alias("paf2concatemer")
                 .alias("paf2concat")
                 .alias("paf2pcon")
@@ -1064,7 +1064,7 @@ pub fn cli() -> Command {
                         .short('o')
                         .value_parser(value_parser!(String))
                         .default_value("-")
-                        .help("output file, default is stdout"))
+                        .help("output path; .concat.pqs/.porec.pqs selects PQS; .concat/.porec selects text; adding .gz compresses text"))
                 .arg(
                     Arg::new("MIN_MAPQ")
                         .long("min-mapq")
@@ -1120,6 +1120,76 @@ pub fn cli() -> Command {
                         .short('t')
                         .value_parser(value_parser!(usize))
                         .default_value("8")
+                )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porec2pqs")
+                .about("convert an alignment-level Pore-C table to concat.pqs")
+                .alias("concatemer2pqs")
+                .alias("con2pqs")
+                .arg(arg!(<TABLE> "Pore-C alignment table, optionally gzip-compressed"))
+                .arg(arg!(<CHROMSIZES> "two-column contig sizes file"))
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .default_value("-")
+                        .help("output concat.pqs directory; derived from TABLE by default")
+                )
+                .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                        .help("target alignment rows per shard; read_idx groups are never split")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                        .help("parallel parser and Parquet writer threads")
+                )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
+            Command::new("porec-split")
+                .alias("split-porec")
+                .about("split a Pore-C table into complete-read concat.pqs shards")
+                .arg(arg!(<TABLE> "Pore-C table or concat.pqs directory"))
+                .arg(
+                    Arg::new("CHROMSIZES")
+                        .long("chromsizes")
+                        .value_parser(value_parser!(String))
+                        .help("required for text input; concat.pqs uses its _contigsizes")
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .long("output")
+                        .short('o')
+                        .value_parser(value_parser!(String))
+                        .required(true)
+                        .help("output .concat.pqs/.porec.pqs directory")
+                )
+                .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                        .help("target rows per shard; never splits read_idx")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                        .help("parallel parser and Parquet writer threads")
                 )
                 .arg_required_else_help(true),
         )
@@ -1194,6 +1264,20 @@ pub fn cli() -> Command {
                         .help("number of threads")
                 )
                 .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                        .help("target alignment rows per shard for concat.pqs output")
+                )
+                .arg(
+                    Arg::new("CHROMSIZES")
+                        .long("chromsizes")
+                        .value_parser(value_parser!(String))
+                        .help("contig sizes required when text input is written as concat.pqs")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1218,18 +1302,31 @@ pub fn cli() -> Command {
                         .default_value("8")
                 )
                 .arg(
+                    Arg::new("CHUNKSIZE")
+                        .long("chunksize")
+                        .short('c')
+                        .value_parser(value_parser!(usize))
+                        .default_value("1000000")
+                        .help("target alignment rows per shard for concat.pqs output")
+                )
+                .arg(
+                    Arg::new("CHROMSIZES")
+                        .long("chromsizes")
+                        .value_parser(value_parser!(String))
+                        .help("contig sizes required when text input is written as concat.pqs")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-")
-                        .help("output file, default is stdout"))
+                        .help("materialize a duplicated output; without this option only input PQS/cn.info is updated"))
                 .arg_required_else_help(true),
 
         )
         .subcommand(
             Command::new("porec-merge")
-                .about("Merge multiple pore-c table file into single file")
+                .about("merge Pore-C text tables or natively merge concat PQS directories")
                 .alias("concatemer-merge")
                 .alias("con-merge")
                 .arg(
@@ -1244,6 +1341,14 @@ pub fn cli() -> Command {
                         .value_parser(value_parser!(String))
                         .default_value("-")
                         .help("output file, default is stdout")
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                        .help("parallel Parquet workers for native PQS output")
                 )
                 .arg_required_else_help(true),
         )
@@ -1541,6 +1646,14 @@ pub fn cli() -> Command {
                         .help("Random seed")
                 )
                 .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(value_parser!(usize))
+                        .default_value("8")
+                        .help("Parallel workers for native concat PQS input/output")
+                )
+                .arg(
                     Arg::new("OUTPUT")
                         .long("output")
                         .short('o')
@@ -1773,8 +1886,7 @@ pub fn cli() -> Command {
                         .long("output")
                         .short('o')
                         .value_parser(value_parser!(String))
-                        .default_value("-")
-                        .help("output file, default is stdout"))
+                        .help("materialize a duplicated output; without this option only input PQS/cn.info is updated"))
                 .arg_required_else_help(true),
         )
         .subcommand(
@@ -1889,6 +2001,13 @@ pub fn cli() -> Command {
                         .help("The ratio threshold for contacts (MAPQ=0) (e.g., 3.0 means Q0_data > 3 * Q1_data ), only effect for pairs.pqs and mapq=0.")
                 )
                 .arg(
+                    Arg::new("USE_CN")
+                        .long("use-cn")
+                        .action(ArgAction::SetTrue)
+                        .default_value("false")
+                        .help("Use optional PAIRS/cn.info copy numbers when generating PQS CLM outputs."),
+                )
+                .arg(
                     Arg::new("THREADS")
                         .long("threads")
                         .short('t')
@@ -1938,6 +2057,11 @@ pub fn cli() -> Command {
             Command::new("pairs2mnd")
                 .about("convert pairs to mnd file")
                 .arg(arg!(<PAIRS> "pairs"))
+                .arg(
+                    Arg::new("IGNORE_CN")
+                        .long("ignore-cn")
+                        .action(ArgAction::SetTrue)
+                        .help("ignore optional pairs.pqs/cn.info and keep original contig names"))
                 .arg(
                     Arg::new("MIN_QUALITY")
                         .long("min-quality")
@@ -2088,15 +2212,15 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true)
         )
         .subcommand(
-        Command::new("pqs-chr2ctg")
-            .about("Convert a chromosome-level PQS directory to contig-level PQS using a BED mapping")
+        Command::new("pairs-chr2ctg")
+            .about("Convert a chromosome-level pairs PQS directory to contig-level pairs PQS; text .pairs/.pairs.gz inputs are not supported")
             .arg(
                 Arg::new("INPUT")
                     .long("input")
                     .short('i')
                     .value_parser(value_parser!(String))
                     .required(true)
-                    .help("Input chromosome-level PQS directory (contains q0/q1 parquet and _contigsizes)")
+                    .help("Input chromosome-level pairs PQS directory; text .pairs and .pairs.gz files are not supported")
             )
             .arg(
                 Arg::new("BED")
@@ -2112,7 +2236,7 @@ pub fn cli() -> Command {
                     .short('o')
                     .value_parser(value_parser!(String))
                     .required(true)
-                    .help("Output contig-level PQS directory")
+                    .help("Output contig-level pairs PQS directory")
             )
             .arg(
                 Arg::new("THREADS")

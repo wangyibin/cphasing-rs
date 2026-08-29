@@ -1,5 +1,5 @@
 use crate::clm::ClmbReader;
-use crate::order::Tour;
+use crate::order::{HierarchicalJoinEvidence, Tour};
 use crate::splitcontacts::SplitContacts;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -16,6 +16,14 @@ pub const DEFAULT_POPULATION_SIZE: usize = 100;
 pub const DEFAULT_STALE_GENERATIONS: usize = 5_000;
 pub const DEFAULT_MUTATION_PROBABILITY: f64 = 0.2;
 pub const DEFAULT_MAX_GENERATIONS: usize = 1_000_000;
+const HIERARCHICAL_REFINED_BLOCK_SIZE: usize = 8;
+/// Endpoint competition is distinct from the whole-CLM top-two/top-three
+/// margin in `BackboneConfig`, so keep its empirically selected gate separate.
+const HIERARCHICAL_MIN_CONFIDENCE: f64 = 1.1;
+const HIERARCHICAL_MIN_SIGNIFICANT_RELATIVE_GAIN: f64 = 5e-4;
+const HIERARCHICAL_BLOCK_PATIENCE: usize = 2_000;
+const HIERARCHICAL_FULL_PATIENCE: usize = 5_000;
+const ELITE_COUNT: usize = 1;
 const GOLDEN_LOWER_BOUND: i32 = 16;
 const GOLDEN_UPPER_BOUND: i32 = 50;
 const GOLDEN_BINS: usize = (GOLDEN_UPPER_BOUND - GOLDEN_LOWER_BOUND + 1) as usize;
@@ -879,6 +887,95 @@ struct BackboneCandidate {
 }
 
 impl BackbonePlan {
+    /// Build conservative path blocks directly from the adjacency evidence
+    /// produced by the hierarchical end initializer. Only joins that are
+    /// adjacent in `seed_order` can become locked edges, so every unit is a
+    /// contiguous slice of that seed and its orientation is unambiguous.
+    pub fn from_hierarchical_joins(
+        seed_order: &[usize],
+        joins: &[HierarchicalJoinEvidence],
+        config: &BackboneConfig,
+    ) -> Result<Self, String> {
+        config.validate()?;
+        let n = seed_order.len();
+        validate_tour(seed_order, n)?;
+        if !config.enabled || n < 2 || joins.is_empty() {
+            return Ok(Self::seed_singletons(seed_order, config));
+        }
+
+        // A hierarchical join connects two cluster endpoints. Once the final
+        // seed has been decoded, such a join is useful only when those
+        // endpoints are adjacent in the seed. Canonicalizing the pair makes
+        // this independent of cluster orientation and also deduplicates
+        // repeated evidence deterministically.
+        let mut reciprocal_joins = 0usize;
+        let mut supported_joins = 0usize;
+        let mut confidence_qualified_joins = 0usize;
+        let mut trusted_pairs = HashMap::<(usize, usize), ()>::new();
+        for join in joins {
+            if join.left_contig >= n || join.right_contig >= n {
+                return Err(format!(
+                    "hierarchical join endpoint ({}, {}) is outside 0..{}",
+                    join.left_contig, join.right_contig, n
+                ));
+            }
+            if !join.reciprocal_confident {
+                continue;
+            }
+            reciprocal_joins += 1;
+            if !join.raw_support.is_finite() || join.raw_support < config.min_links {
+                continue;
+            }
+            supported_joins += 1;
+            if join.confidence.is_nan() || join.confidence < HIERARCHICAL_MIN_CONFIDENCE {
+                continue;
+            }
+            confidence_qualified_joins += 1;
+            let pair = if join.left_contig < join.right_contig {
+                (join.left_contig, join.right_contig)
+            } else {
+                (join.right_contig, join.left_contig)
+            };
+            trusted_pairs.insert(pair, ());
+        }
+
+        let mut units = Vec::new();
+        let mut current = vec![seed_order[0]];
+        let mut accepted_edges = 0usize;
+        for adjacent in seed_order.windows(2) {
+            let pair = if adjacent[0] < adjacent[1] {
+                (adjacent[0], adjacent[1])
+            } else {
+                (adjacent[1], adjacent[0])
+            };
+            if current.len() < config.max_block_size && trusted_pairs.contains_key(&pair) {
+                current.push(adjacent[1]);
+                accepted_edges += 1;
+            } else {
+                units.push(current);
+                current = vec![adjacent[1]];
+            }
+        }
+        units.push(current);
+
+        let plan = Self::from_hierarchical_units(n, units, accepted_edges, config);
+        let largest_block = plan.units.iter().map(Vec::len).max().unwrap_or(0);
+        log::info!(
+            "Hierarchical Backbone evidence: {} joins, {} reciprocal, {} support-qualified, {} confidence-qualified (threshold {:.3}), {} unique trusted pairs, {} accepted seed adjacencies; {} blocks / {} units, largest block {}",
+            joins.len(),
+            reciprocal_joins,
+            supported_joins,
+            confidence_qualified_joins,
+            HIERARCHICAL_MIN_CONFIDENCE,
+            trusted_pairs.len(),
+            plan.accepted_edges,
+            plan.block_count,
+            plan.units.len(),
+            largest_block
+        );
+        Ok(plan)
+    }
+
     pub fn discover(problem: &OptimizeProblem, config: &BackboneConfig) -> Self {
         let n = problem.contig_count();
         if !config.enabled || n < 3 || problem.edges.is_empty() {
@@ -1083,6 +1180,42 @@ impl BackbonePlan {
         }
     }
 
+    fn seed_singletons(seed_order: &[usize], config: &BackboneConfig) -> Self {
+        let n = seed_order.len();
+        Self::from_hierarchical_units(
+            n,
+            seed_order.iter().map(|&contig| vec![contig]).collect(),
+            0,
+            config,
+        )
+    }
+
+    fn from_hierarchical_units(
+        n: usize,
+        units: Vec<Vec<usize>>,
+        accepted_edges: usize,
+        config: &BackboneConfig,
+    ) -> Self {
+        let mut unit_of_contig = vec![usize::MAX; n];
+        for (unit_index, unit) in units.iter().enumerate() {
+            for &contig in unit {
+                unit_of_contig[contig] = unit_index;
+            }
+        }
+        let block_count = units.iter().filter(|unit| unit.len() > 1).count();
+        let reduction = n.saturating_sub(units.len());
+        let useful =
+            block_count > 0 && (reduction as f64) >= config.min_reduction_fraction * n as f64;
+
+        Self {
+            units,
+            unit_of_contig,
+            block_count,
+            accepted_edges,
+            useful,
+        }
+    }
+
     pub fn units(&self) -> &[Vec<usize>] {
         &self.units
     }
@@ -1101,6 +1234,41 @@ impl BackbonePlan {
 
     pub fn is_useful(&self) -> bool {
         self.useful
+    }
+
+    /// Split every existing path unit into smaller contiguous units without
+    /// joining across a parent boundary. The resulting units can be freely
+    /// reordered and reversed by a later unit-GA stage, progressively
+    /// releasing constraints while retaining a complete contig partition.
+    pub fn refined(&self, max_block_size: usize) -> Result<Self, String> {
+        if max_block_size == 0 {
+            return Err("refined backbone maximum block size must be at least 1".into());
+        }
+        if self.units.iter().all(|unit| unit.len() <= max_block_size) {
+            return Ok(self.clone());
+        }
+
+        let n = self.unit_of_contig.len();
+        let units = self
+            .units
+            .iter()
+            .flat_map(|unit| unit.chunks(max_block_size).map(|chunk| chunk.to_vec()))
+            .collect::<Vec<_>>();
+        let mut unit_of_contig = vec![usize::MAX; n];
+        for (unit_index, unit) in units.iter().enumerate() {
+            for &contig in unit {
+                unit_of_contig[contig] = unit_index;
+            }
+        }
+        let block_count = units.iter().filter(|unit| unit.len() > 1).count();
+        let accepted_edges = n.saturating_sub(units.len());
+        Ok(Self {
+            units,
+            unit_of_contig,
+            block_count,
+            accepted_edges,
+            useful: self.useful && block_count > 0,
+        })
     }
 
     pub fn decode(&self, genes: &[UnitGene]) -> Result<Vec<usize>, String> {
@@ -1245,6 +1413,75 @@ struct PairOrientationData {
     orientations: [OrientationSummary; 4],
     signed_links: f64,
 }
+
+/// Gap convention used when projecting CLM distances onto a fixed tour.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum OrientationGapModel {
+    /// Preserve the historical ALLHiC `EvaluateQ` indexing exactly.
+    #[default]
+    AllhicLegacy,
+    /// Add only complete contigs strictly between the linked contigs.
+    Intervening,
+}
+
+/// Per-pair support normalization for the banded orientation objective.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum OrientationPairWeight {
+    /// Retain the raw link-weighted CLM log-distance score.
+    #[default]
+    Links,
+    /// Divide each pair score by the square root of its link support.
+    SqrtLinks,
+    /// Divide each pair score by its link support so every pair has equal mass.
+    EqualPair,
+}
+
+/// Configuration for exact fixed-order, banded CLM orientation inference.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BandedOrientationConfig {
+    pub rank_window: usize,
+    pub gap_model: OrientationGapModel,
+    pub pair_weight: OrientationPairWeight,
+    pub min_links: usize,
+    pub require_complete: bool,
+}
+
+impl Default for BandedOrientationConfig {
+    fn default() -> Self {
+        Self {
+            rank_window: 2,
+            gap_model: OrientationGapModel::Intervening,
+            pair_weight: OrientationPairWeight::Links,
+            min_links: 1,
+            require_complete: true,
+        }
+    }
+}
+
+/// Audit summary returned by exact banded orientation inference.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandedOrientationResult {
+    pub initial_score: f64,
+    pub final_score: f64,
+    pub changed_signs: usize,
+    pub used_pairs: usize,
+    pub skipped_incomplete_pairs: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BandedOrientationEdge {
+    left_rank: usize,
+    potentials: [f64; 4],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BandedOrientationCell {
+    score: f64,
+    changed_signs: usize,
+}
+
+const MAX_BANDED_ORIENTATION_WINDOW: usize = 16;
+const MAX_BANDED_ORIENTATION_DP_CELLS: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OrientationProblem {
@@ -1444,14 +1681,301 @@ impl OrientationProblem {
 
     /// Equivalent to ALLHiC's `EvaluateQ`. Larger values are better.
     pub fn evaluate(&self, tour: &Tour<usize>) -> f64 {
+        self.evaluate_with_gap_model(tour, OrientationGapModel::AllhicLegacy)
+    }
+
+    /// Evaluate a tour with an explicit gap convention. The historical
+    /// [`Self::evaluate`] entry point deliberately retains ALLHiC's indexing.
+    pub fn evaluate_with_gap_model(
+        &self,
+        tour: &Tour<usize>,
+        gap_model: OrientationGapModel,
+    ) -> f64 {
         let Some((positions, signs_by_id, starts)) = self.layout(tour) else {
             return f64::NEG_INFINITY;
         };
 
         self.pairs
             .iter()
-            .map(|pair| self.evaluate_pair(pair, &positions, &signs_by_id, &starts))
+            .map(|pair| {
+                self.evaluate_pair_with_gap_model(
+                    pair,
+                    &positions,
+                    &signs_by_id,
+                    &starts,
+                    gap_model,
+                )
+            })
             .sum()
+    }
+
+    /// Exactly maximize a fixed-order CLM orientation objective whose pair
+    /// interactions are bounded by `rank_window`.
+    pub fn optimize_banded(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+    ) -> Result<BandedOrientationResult, String> {
+        self.optimize_banded_with_source_prior(tour, config, 0.0)
+    }
+
+    /// Exactly maximize the banded CLM objective with a dimensionless prior
+    /// favoring the input signs. Returned scores remain raw CLM evidence.
+    pub fn optimize_banded_with_source_prior(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+        prior_strength: f64,
+    ) -> Result<BandedOrientationResult, String> {
+        if !prior_strength.is_finite() || prior_strength < 0.0 {
+            return Err(format!(
+                "banded orientation prior_strength must be finite and non-negative, got {prior_strength}"
+            ));
+        }
+        if config.rank_window == 0 || config.rank_window > MAX_BANDED_ORIENTATION_WINDOW {
+            return Err(format!(
+                "banded orientation rank_window must be in 1..={MAX_BANDED_ORIENTATION_WINDOW}, got {}",
+                config.rank_window
+            ));
+        }
+        let n = self.lengths.len();
+        if tour.contigs.len() != n || tour.signs.len() != n {
+            return Err(format!(
+                "banded orientation requires a complete tour of {n} contigs, got {} contigs and {} signs",
+                tour.contigs.len(),
+                tour.signs.len()
+            ));
+        }
+        // Intervening gaps are reverse-complement invariant. Canonicalizing the
+        // axis also makes floating-point accumulation and tertiary DP ties
+        // identical for a tour and its reverse complement.
+        let reverse_axis = config.gap_model == OrientationGapModel::Intervening
+            && tour.contigs.iter().rev().cmp(tour.contigs.iter()) == std::cmp::Ordering::Less;
+        let mut working_tour = tour.clone();
+        if reverse_axis {
+            working_tour.contigs.reverse();
+            working_tour.signs.reverse();
+            for sign in &mut working_tour.signs {
+                *sign = !*sign;
+            }
+        }
+        let Some((positions, _, starts)) = self.layout(&working_tour) else {
+            return Err(
+                "banded orientation tour contains an out-of-range or duplicate contig".into(),
+            );
+        };
+        if positions.iter().any(|&position| position == usize::MAX) {
+            return Err("banded orientation tour does not contain every problem contig".into());
+        }
+
+        let mut edges_by_right = vec![Vec::<BandedOrientationEdge>::new(); n];
+        let mut node_scale = vec![0.0; n];
+        let mut used_pairs = 0usize;
+        let mut skipped_incomplete_pairs = 0usize;
+        let mut bandwidth = 0usize;
+        for pair in &self.pairs {
+            let pu = positions[pair.u];
+            let pv = positions[pair.v];
+            let (left_rank, right_rank) = if pu < pv { (pu, pv) } else { (pv, pu) };
+            let span = right_rank - left_rank;
+            if span > config.rank_window {
+                continue;
+            }
+
+            let first_links = pair.orientations[0].links;
+            let complete = pair
+                .orientations
+                .iter()
+                .all(|summary| summary.present && summary.links == first_links);
+            let support = if complete {
+                first_links
+            } else {
+                pair.orientations
+                    .iter()
+                    .map(|summary| summary.links)
+                    .max()
+                    .unwrap_or(0)
+            };
+            if config.require_complete && (!complete || support < config.min_links) {
+                skipped_incomplete_pairs += 1;
+                continue;
+            }
+            if support == 0 || support < config.min_links {
+                continue;
+            }
+
+            let gap = orientation_gap(&starts, left_rank, right_rank, config.gap_model);
+            if gap > MAX_ORIENTATION_DISTANCE {
+                continue;
+            }
+            let divisor = match config.pair_weight {
+                OrientationPairWeight::Links => 1.0,
+                OrientationPairWeight::SqrtLinks => (support as f64).sqrt(),
+                OrientationPairWeight::EqualPair => support as f64,
+            };
+            let pair_scores: [f64; 4] = std::array::from_fn(|orientation| {
+                self.evaluate_summary(&pair.orientations[orientation], gap) / divisor
+            });
+            let mut potentials = [0.0; 4];
+            for left_bit in 0..2 {
+                for right_bit in 0..2 {
+                    let left_forward = left_bit != 0;
+                    let right_forward = right_bit != 0;
+                    let orientation = if pu < pv {
+                        orientation_index(left_forward, right_forward)
+                    } else {
+                        orientation_index(!right_forward, !left_forward)
+                    };
+                    potentials[(left_bit << 1) | right_bit] = pair_scores[orientation];
+                }
+            }
+            let pair_max = potentials.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            for potential in &mut potentials {
+                *potential -= pair_max;
+            }
+            let edge_min = potentials.iter().copied().fold(f64::INFINITY, f64::min);
+            let edge_max = potentials.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let edge_range = edge_max - edge_min;
+            node_scale[left_rank] += edge_range;
+            node_scale[right_rank] += edge_range;
+            edges_by_right[right_rank].push(BandedOrientationEdge {
+                left_rank,
+                potentials,
+            });
+            bandwidth = bandwidth.max(span);
+            used_pairs += 1;
+        }
+        for edges in &mut edges_by_right {
+            edges.sort_unstable_by_key(|edge| edge.left_rank);
+        }
+        if used_pairs == 0 {
+            return Ok(BandedOrientationResult {
+                initial_score: 0.0,
+                final_score: 0.0,
+                changed_signs: 0,
+                used_pairs,
+                skipped_incomplete_pairs,
+            });
+        }
+
+        let input_signs = working_tour.signs.clone();
+        let score_signs = |signs: &[bool]| -> f64 {
+            edges_by_right
+                .iter()
+                .enumerate()
+                .map(|(right_rank, edges)| {
+                    edges
+                        .iter()
+                        .map(|edge| {
+                            let left_bit = usize::from(signs[edge.left_rank]);
+                            let right_bit = usize::from(signs[right_rank]);
+                            edge.potentials[(left_bit << 1) | right_bit]
+                        })
+                        .sum::<f64>()
+                })
+                .sum()
+        };
+        let initial_score = score_signs(&input_signs);
+
+        let state_count = 1usize << bandwidth;
+        let dp_cells = n.checked_mul(state_count).ok_or_else(|| {
+            "banded orientation DP dimensions overflow addressable memory".to_string()
+        })?;
+        if dp_cells > MAX_BANDED_ORIENTATION_DP_CELLS {
+            return Err(format!(
+                "banded orientation DP needs {dp_cells} traceback cells for {n} contigs and bandwidth {bandwidth}; reduce rank_window (limit {MAX_BANDED_ORIENTATION_DP_CELLS})"
+            ));
+        }
+
+        let unreachable = BandedOrientationCell {
+            score: f64::NEG_INFINITY,
+            changed_signs: usize::MAX,
+        };
+        let mut current = vec![unreachable; state_count];
+        let mut next = vec![unreachable; state_count];
+        current[0] = BandedOrientationCell {
+            score: 0.0,
+            changed_signs: 0,
+        };
+        let mut parents = vec![vec![u32::MAX; state_count]; n];
+        let state_mask = state_count - 1;
+        for right_rank in 0..n {
+            next.fill(unreachable);
+            for (state, cell) in current.iter().copied().enumerate() {
+                if cell.changed_signs == usize::MAX {
+                    continue;
+                }
+                for right_bit in 0..2 {
+                    let mut added_score = 0.0;
+                    for edge in &edges_by_right[right_rank] {
+                        let distance = right_rank - edge.left_rank;
+                        let left_bit = (state >> (distance - 1)) & 1;
+                        added_score += edge.potentials[(left_bit << 1) | right_bit];
+                    }
+                    let next_state = ((state << 1) | right_bit) & state_mask;
+                    let sign_changed = (right_bit != 0) != input_signs[right_rank];
+                    let raw_candidate_score = cell.score + added_score;
+                    let objective_score = if prior_strength == 0.0 || !sign_changed {
+                        raw_candidate_score
+                    } else {
+                        raw_candidate_score - prior_strength * node_scale[right_rank]
+                    };
+                    let candidate = BandedOrientationCell {
+                        score: objective_score,
+                        changed_signs: cell.changed_signs + usize::from(sign_changed),
+                    };
+                    let incumbent_parent = parents[right_rank][next_state] as usize;
+                    if banded_orientation_candidate_is_better(
+                        candidate,
+                        state,
+                        next[next_state],
+                        incumbent_parent,
+                    ) {
+                        next[next_state] = candidate;
+                        parents[right_rank][next_state] = state as u32;
+                    }
+                }
+            }
+            std::mem::swap(&mut current, &mut next);
+        }
+
+        let mut best_state = 0usize;
+        let mut best = unreachable;
+        for (state, cell) in current.iter().copied().enumerate() {
+            if banded_orientation_candidate_is_better(cell, state, best, best_state) {
+                best = cell;
+                best_state = state;
+            }
+        }
+        let mut optimized_signs = vec![false; n];
+        let mut state = best_state;
+        for right_rank in (0..n).rev() {
+            optimized_signs[right_rank] = state & 1 != 0;
+            let parent = parents[right_rank][state];
+            debug_assert_ne!(parent, u32::MAX);
+            state = parent as usize;
+        }
+        let final_score = score_signs(&optimized_signs);
+        let changed_signs = optimized_signs
+            .iter()
+            .zip(&input_signs)
+            .filter(|(optimized, input)| optimized != input)
+            .count();
+        debug_assert_eq!(changed_signs, best.changed_signs);
+        if reverse_axis {
+            optimized_signs.reverse();
+            for sign in &mut optimized_signs {
+                *sign = !*sign;
+            }
+        }
+        tour.signs = optimized_signs;
+        Ok(BandedOrientationResult {
+            initial_score,
+            final_score,
+            changed_signs,
+            used_pairs,
+            skipped_incomplete_pairs,
+        })
     }
 
     fn layout(&self, tour: &Tour<usize>) -> Option<(Vec<usize>, Vec<bool>, Vec<u64>)> {
@@ -1482,6 +2006,23 @@ impl OrientationProblem {
         signs_by_id: &[bool],
         starts: &[u64],
     ) -> f64 {
+        self.evaluate_pair_with_gap_model(
+            pair,
+            positions,
+            signs_by_id,
+            starts,
+            OrientationGapModel::AllhicLegacy,
+        )
+    }
+
+    fn evaluate_pair_with_gap_model(
+        &self,
+        pair: &PairOrientationData,
+        positions: &[usize],
+        signs_by_id: &[bool],
+        starts: &[u64],
+        gap_model: OrientationGapModel,
+    ) -> f64 {
         let pu = positions[pair.u];
         let pv = positions[pair.v];
         if pu == usize::MAX || pv == usize::MAX {
@@ -1506,8 +2047,15 @@ impl OrientationProblem {
         if !summary.present {
             return 0.0;
         }
-        let gap = starts[right - 1].saturating_sub(starts[left]);
+        let gap = orientation_gap(starts, left, right, gap_model);
         if gap > MAX_ORIENTATION_DISTANCE {
+            return 0.0;
+        }
+        self.evaluate_summary(summary, gap)
+    }
+
+    fn evaluate_summary(&self, summary: &OrientationSummary, gap: u64) -> f64 {
+        if !summary.present {
             return 0.0;
         }
         summary
@@ -1555,6 +2103,55 @@ impl OrientationProblem {
         }
     }
 
+    /// Refine signs with an explicit gap convention. The intervening-gap
+    /// path operates on a canonical tour axis so scan order and ties are
+    /// strictly reverse-complement covariant.
+    pub fn refine_with_gap_model(
+        &self,
+        tour: &mut Tour<usize>,
+        gap_model: OrientationGapModel,
+    ) -> OrientationResult {
+        if gap_model == OrientationGapModel::AllhicLegacy {
+            return self.refine(tour);
+        }
+
+        let reverse_axis = tour.contigs.len() == tour.signs.len()
+            && tour.contigs.iter().rev().cmp(tour.contigs.iter()) == std::cmp::Ordering::Less;
+        let mut working_tour = tour.clone();
+        if reverse_axis {
+            working_tour.contigs.reverse();
+            working_tour.signs.reverse();
+            for sign in &mut working_tour.signs {
+                *sign = !*sign;
+            }
+        }
+
+        let initial_score = self.evaluate_with_gap_model(&working_tour, gap_model);
+        let mut phases = 0;
+        loop {
+            phases += 1;
+            let whole_accepted = self.flip_whole_with_gap_model(&mut working_tour, gap_model);
+            let one_accepted = self.flip_one_with_gap_model(&mut working_tour, gap_model);
+            if !whole_accepted && !one_accepted {
+                break;
+            }
+        }
+        let result = OrientationResult {
+            initial_score,
+            final_score: self.evaluate_with_gap_model(&working_tour, gap_model),
+            phases,
+        };
+
+        if reverse_axis {
+            working_tour.signs.reverse();
+            for sign in &mut working_tour.signs {
+                *sign = !*sign;
+            }
+        }
+        tour.signs = working_tour.signs;
+        result
+    }
+
     fn flip_all(&self, tour: &mut Tour<usize>) -> bool {
         let old_signs = tour.signs.clone();
         let old_score = self.evaluate(tour);
@@ -1591,7 +2188,6 @@ impl OrientationProblem {
             return false;
         };
         let mut accepted = false;
-        let mut score = self.evaluate(tour);
         for position in 0..tour.contigs.len() {
             let id = tour.contigs[position];
             let old_contribution: f64 = self.incident_pairs[id]
@@ -1608,9 +2204,73 @@ impl OrientationProblem {
                     self.evaluate_pair(&self.pairs[pair_index], &positions, &signs_by_id, &starts)
                 })
                 .sum();
-            let new_score = score - old_contribution + new_contribution;
-            if new_score > score {
-                score = new_score;
+            if orientation_local_improves(old_contribution, new_contribution) {
+                accepted = true;
+            } else {
+                tour.signs[position] = !tour.signs[position];
+                signs_by_id[id] = !signs_by_id[id];
+            }
+        }
+        accepted
+    }
+
+    fn flip_whole_with_gap_model(
+        &self,
+        tour: &mut Tour<usize>,
+        gap_model: OrientationGapModel,
+    ) -> bool {
+        let old_score = self.evaluate_with_gap_model(tour, gap_model);
+        for sign in &mut tour.signs {
+            *sign = !*sign;
+        }
+        if self.evaluate_with_gap_model(tour, gap_model) <= old_score {
+            for sign in &mut tour.signs {
+                *sign = !*sign;
+            }
+            false
+        } else {
+            true
+        }
+    }
+
+    fn flip_one_with_gap_model(
+        &self,
+        tour: &mut Tour<usize>,
+        gap_model: OrientationGapModel,
+    ) -> bool {
+        let Some((positions, mut signs_by_id, starts)) = self.layout(tour) else {
+            return false;
+        };
+        let mut accepted = false;
+        for position in 0..tour.contigs.len() {
+            let id = tour.contigs[position];
+            let old_contribution: f64 = self.incident_pairs[id]
+                .iter()
+                .map(|&pair_index| {
+                    self.evaluate_pair_with_gap_model(
+                        &self.pairs[pair_index],
+                        &positions,
+                        &signs_by_id,
+                        &starts,
+                        gap_model,
+                    )
+                })
+                .sum();
+            tour.signs[position] = !tour.signs[position];
+            signs_by_id[id] = !signs_by_id[id];
+            let new_contribution: f64 = self.incident_pairs[id]
+                .iter()
+                .map(|&pair_index| {
+                    self.evaluate_pair_with_gap_model(
+                        &self.pairs[pair_index],
+                        &positions,
+                        &signs_by_id,
+                        &starts,
+                        gap_model,
+                    )
+                })
+                .sum();
+            if orientation_local_improves(old_contribution, new_contribution) {
                 accepted = true;
             } else {
                 tour.signs[position] = !tour.signs[position];
@@ -1677,8 +2337,44 @@ pub struct OrientationResult {
     pub phases: usize,
 }
 
+#[inline]
+fn orientation_local_improves(old_contribution: f64, new_contribution: f64) -> bool {
+    // Comparing the local terms directly avoids cancellation in
+    // `global_score - old + new`. A rounded false improvement can otherwise
+    // flip back on the next refinement phase and keep the outer loop alive.
+    new_contribution > old_contribution
+}
+
 fn orientation_index(a_forward: bool, b_forward: bool) -> usize {
     (usize::from(!a_forward) << 1) | usize::from(!b_forward)
+}
+
+#[inline]
+fn orientation_gap(
+    starts: &[u64],
+    left: usize,
+    right: usize,
+    gap_model: OrientationGapModel,
+) -> u64 {
+    debug_assert!(left < right);
+    match gap_model {
+        OrientationGapModel::AllhicLegacy => starts[right - 1].saturating_sub(starts[left]),
+        OrientationGapModel::Intervening => starts[right].saturating_sub(starts[left + 1]),
+    }
+}
+
+#[inline]
+fn banded_orientation_candidate_is_better(
+    candidate: BandedOrientationCell,
+    candidate_parent: usize,
+    incumbent: BandedOrientationCell,
+    incumbent_parent: usize,
+) -> bool {
+    candidate.score > incumbent.score
+        || (candidate.score == incumbent.score
+            && (candidate.changed_signs < incumbent.changed_signs
+                || (candidate.changed_signs == incumbent.changed_signs
+                    && candidate_parent < incumbent_parent)))
 }
 
 fn golden_bin(distance: u64) -> usize {
@@ -1697,7 +2393,9 @@ fn golden_representatives() -> GoldenArrayRepresentatives {
 pub struct OptimizeConfig {
     pub population_size: usize,
     /// Stop after strictly more than this many generations without improvement,
-    /// matching ALLHiC's `generation - updated > ngen` condition.
+    /// matching ALLHiC's `generation - updated > ngen` condition. The
+    /// hierarchical fast path additionally caps this patience per resolution
+    /// and resets it only after a cumulative meaningful improvement.
     pub stale_generations: usize,
     pub max_generations: usize,
     pub mutation_probability: f64,
@@ -1917,7 +2615,7 @@ impl OrderEvaluationWorkspace {
 }
 
 struct UnitEvaluationScratch {
-    decoded: Vec<usize>,
+    decoded: [Vec<usize>; 4],
     midpoints: Vec<f64>,
     timings: FitnessDetailTimings,
 }
@@ -1925,7 +2623,12 @@ struct UnitEvaluationScratch {
 impl UnitEvaluationScratch {
     fn new(contig_count: usize) -> Self {
         Self {
-            decoded: Vec::with_capacity(contig_count),
+            // The first lane also serves scalar objectives. Allocate the
+            // other three lanes lazily when a reciprocal-distance batch is
+            // encountered so non-SIMD runs retain their previous footprint.
+            decoded: std::array::from_fn(|lane| {
+                Vec::with_capacity(if lane == 0 { contig_count } else { 0 })
+            }),
             midpoints: vec![0.0; contig_count],
             timings: FitnessDetailTimings::default(),
         }
@@ -1978,17 +2681,6 @@ fn evaluation_worker_count(
     } else {
         available_threads.min(dirty_count)
     }
-}
-
-fn per_individual_scratch_fits(
-    population_size: usize,
-    contig_count: usize,
-    bytes_per_contig: usize,
-) -> bool {
-    population_size
-        .checked_mul(contig_count)
-        .and_then(|elements| elements.checked_mul(bytes_per_contig))
-        .is_some_and(|bytes| bytes <= MAX_PERSISTENT_EVALUATION_SCRATCH_BYTES)
 }
 
 fn scratch_slot_budget(contig_count: usize, bytes_per_contig: usize) -> usize {
@@ -2195,6 +2887,107 @@ fn score_dirty_orders(
     worker_count
 }
 
+fn score_dirty_unit_scalar(
+    individual: &mut UnitIndividual,
+    plan: &BackbonePlan,
+    problem: &OptimizeProblem,
+    scratch: &mut UnitEvaluationScratch,
+    timing_enabled: bool,
+) {
+    plan.decode_into(individual.genes.as_ref(), &mut scratch.decoded[0]);
+    individual.score = if timing_enabled {
+        problem.evaluate_with_buffer_profiled(
+            &scratch.decoded[0],
+            &mut scratch.midpoints,
+            Some(&mut scratch.timings),
+        )
+    } else {
+        problem.evaluate_with_buffer(&scratch.decoded[0], &mut scratch.midpoints)
+    };
+    individual.dirty = false;
+}
+
+fn score_dirty_unit_chunk(
+    individuals: &mut [UnitIndividual],
+    plan: &BackbonePlan,
+    problem: &OptimizeProblem,
+    scratch: &mut UnitEvaluationScratch,
+    timing_enabled: bool,
+) {
+    if problem.objective != OrderObjective::ReciprocalDistance || !avx_fitness_batch_supported() {
+        for individual in individuals.iter_mut().filter(|individual| individual.dirty) {
+            score_dirty_unit_scalar(individual, plan, problem, scratch, timing_enabled);
+        }
+        return;
+    }
+
+    let mut dirty = individuals.iter_mut().filter(|individual| individual.dirty);
+    loop {
+        let Some(first) = dirty.next() else {
+            break;
+        };
+        let Some(second) = dirty.next() else {
+            score_dirty_unit_scalar(first, plan, problem, scratch, timing_enabled);
+            break;
+        };
+        let Some(third) = dirty.next() else {
+            score_dirty_unit_scalar(first, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(second, plan, problem, scratch, timing_enabled);
+            break;
+        };
+        let Some(fourth) = dirty.next() else {
+            score_dirty_unit_scalar(first, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(second, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(third, plan, problem, scratch, timing_enabled);
+            break;
+        };
+
+        for (decoded, individual) in scratch
+            .decoded
+            .iter_mut()
+            .zip([&*first, &*second, &*third, &*fourth])
+        {
+            plan.decode_into(individual.genes.as_ref(), decoded);
+        }
+        let orders = scratch.decoded.each_ref().map(Vec::as_slice);
+        let scores = if let Some(required_midpoints) = problem.contig_count().checked_mul(4) {
+            if scratch.midpoints.len() < required_midpoints {
+                scratch.midpoints.resize(required_midpoints, 0.0);
+            }
+            if interleaved_fitness_enabled() {
+                problem.evaluate_reciprocal_interleaved_batch4(
+                    orders,
+                    &mut scratch.midpoints,
+                    timing_enabled.then_some(&mut scratch.timings),
+                )
+            } else {
+                let contig_count = problem.contig_count();
+                let (positions0, remaining) = scratch.midpoints.split_at_mut(contig_count);
+                let (positions1, remaining) = remaining.split_at_mut(contig_count);
+                let (positions2, positions3) = remaining.split_at_mut(contig_count);
+                problem.evaluate_reciprocal_batch4(
+                    orders,
+                    [positions0, positions1, positions2, positions3],
+                    timing_enabled.then_some(&mut scratch.timings),
+                )
+            }
+        } else {
+            None
+        };
+        if let Some(scores) = scores {
+            for (individual, score) in [first, second, third, fourth].into_iter().zip(scores) {
+                individual.score = score;
+                individual.dirty = false;
+            }
+        } else {
+            score_dirty_unit_scalar(first, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(second, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(third, plan, problem, scratch, timing_enabled);
+            score_dirty_unit_scalar(fourth, plan, problem, scratch, timing_enabled);
+        }
+    }
+}
+
 fn score_dirty_units(
     individuals: &mut [UnitIndividual],
     plan: &BackbonePlan,
@@ -2216,92 +3009,47 @@ fn score_dirty_units(
         return 0;
     }
 
-    if worker_count == 1 {
-        let scratch = &mut workspace.scratch[0];
-        for individual in individuals.iter_mut().filter(|individual| individual.dirty) {
-            plan.decode_into(individual.genes.as_ref(), &mut scratch.decoded);
-            individual.score = if timing_enabled {
-                problem.evaluate_with_buffer_profiled(
-                    &scratch.decoded,
-                    &mut scratch.midpoints,
-                    Some(&mut scratch.timings),
-                )
-            } else {
-                problem.evaluate_with_buffer(&scratch.decoded, &mut scratch.midpoints)
-            };
-            individual.dirty = false;
-        }
+    let simd_batching = problem.objective == OrderObjective::ReciprocalDistance
+        && avx_fitness_batch_supported()
+        && dirty_count >= 4;
+    let lanes_per_scratch = if simd_batching { 4 } else { 1 };
+    // Keep at least four dirty individuals in every SIMD worker chunk. On
+    // high-core-count hosts, splitting one individual per worker would
+    // silently defeat batch4 and recreate the scalar unit-GA bottleneck.
+    let batch_slot_limit = if simd_batching {
+        (dirty_count / 4).max(1)
     } else {
-        let bytes_per_contig = std::mem::size_of::<usize>() + std::mem::size_of::<f64>();
-        if per_individual_scratch_fits(individuals.len(), problem.contig_count(), bytes_per_contig)
-        {
-            workspace.ensure_slots(individuals.len(), problem.contig_count());
-            individuals
-                .par_iter_mut()
-                .zip(workspace.scratch.par_iter_mut())
-                .filter(|(individual, _)| individual.dirty)
-                .for_each(|(individual, scratch)| {
-                    plan.decode_into(individual.genes.as_ref(), &mut scratch.decoded);
-                    individual.score = if timing_enabled {
-                        problem.evaluate_with_buffer_profiled(
-                            &scratch.decoded,
-                            &mut scratch.midpoints,
-                            Some(&mut scratch.timings),
-                        )
-                    } else {
-                        problem.evaluate_with_buffer(&scratch.decoded, &mut scratch.midpoints)
-                    };
-                    individual.dirty = false;
-                });
-        } else {
-            let slot_count = worker_count
-                .min(scratch_slot_budget(
-                    problem.contig_count(),
-                    bytes_per_contig,
-                ))
-                .min(individuals.len());
-            workspace.ensure_slots(slot_count, problem.contig_count());
-            if slot_count == 1 {
-                let scratch = &mut workspace.scratch[0];
-                for individual in individuals.iter_mut().filter(|individual| individual.dirty) {
-                    plan.decode_into(individual.genes.as_ref(), &mut scratch.decoded);
-                    individual.score = if timing_enabled {
-                        problem.evaluate_with_buffer_profiled(
-                            &scratch.decoded,
-                            &mut scratch.midpoints,
-                            Some(&mut scratch.timings),
-                        )
-                    } else {
-                        problem.evaluate_with_buffer(&scratch.decoded, &mut scratch.midpoints)
-                    };
-                    individual.dirty = false;
-                }
-            } else {
-                let chunks =
-                    balanced_dirty_chunks_mut(individuals, dirty_count, slot_count, |individual| {
-                        individual.dirty
-                    });
-                chunks
-                    .into_par_iter()
-                    .zip(workspace.scratch[..slot_count].par_iter_mut())
-                    .for_each(|(chunk, scratch)| {
-                        for individual in chunk.iter_mut().filter(|individual| individual.dirty) {
-                            plan.decode_into(individual.genes.as_ref(), &mut scratch.decoded);
-                            individual.score = if timing_enabled {
-                                problem.evaluate_with_buffer_profiled(
-                                    &scratch.decoded,
-                                    &mut scratch.midpoints,
-                                    Some(&mut scratch.timings),
-                                )
-                            } else {
-                                problem
-                                    .evaluate_with_buffer(&scratch.decoded, &mut scratch.midpoints)
-                            };
-                            individual.dirty = false;
-                        }
-                    });
-            }
-        }
+        individuals.len()
+    };
+    let bytes_per_contig = (std::mem::size_of::<usize>() + std::mem::size_of::<f64>())
+        .saturating_mul(lanes_per_scratch);
+    let slot_count = worker_count
+        .min(batch_slot_limit)
+        .min(scratch_slot_budget(
+            problem.contig_count(),
+            bytes_per_contig,
+        ))
+        .min(individuals.len());
+    workspace.ensure_slots(slot_count, problem.contig_count());
+    if slot_count == 1 {
+        score_dirty_unit_chunk(
+            individuals,
+            plan,
+            problem,
+            &mut workspace.scratch[0],
+            timing_enabled,
+        );
+    } else {
+        let chunks =
+            balanced_dirty_chunks_mut(individuals, dirty_count, slot_count, |individual| {
+                individual.dirty
+            });
+        chunks
+            .into_par_iter()
+            .zip(workspace.scratch[..slot_count].par_iter_mut())
+            .for_each(|(chunk, scratch)| {
+                score_dirty_unit_chunk(chunk, plan, problem, scratch, timing_enabled);
+            });
     }
     worker_count
 }
@@ -2354,6 +3102,49 @@ pub fn optimize_order(
     Ok(optimize_order_standard(initial_tour, problem, config, None))
 }
 
+/// Run ordering with hierarchical initializer evidence as the preferred
+/// coarse partition. If that evidence does not provide the configured amount
+/// of dimensionality reduction, the ordinary CLM backbone discovery (and its
+/// standard-GA fallback) remains unchanged.
+pub fn optimize_order_with_hierarchical_joins(
+    initial_tour: &Tour<usize>,
+    problem: &OptimizeProblem,
+    config: &OptimizeConfig,
+    joins: &[HierarchicalJoinEvidence],
+) -> Result<OptimizeResult, String> {
+    config.validate(problem.contig_count())?;
+    validate_tour(&initial_tour.contigs, problem.contig_count())?;
+    if initial_tour.signs.len() != problem.contig_count() {
+        return Err(format!(
+            "tour sign count ({}) does not match contig count ({})",
+            initial_tour.signs.len(),
+            problem.contig_count()
+        ));
+    }
+
+    if config.backbone.enabled && config.phases >= 2 {
+        let plan =
+            BackbonePlan::from_hierarchical_joins(&initial_tour.contigs, joins, &config.backbone)?;
+        if plan.is_useful() {
+            log::info!(
+                "Using hierarchical initializer evidence for Backbone GA: {} blocks / {} units for {} contigs",
+                plan.block_count(),
+                plan.unit_count(),
+                problem.contig_count()
+            );
+            return optimize_order_hierarchical_multilevel(initial_tour, problem, config, plan);
+        }
+        log::info!(
+            "Hierarchical Backbone fallback: {} blocks / {} units for {} contigs do not meet the reduction threshold; discovering CLM backbone",
+            plan.block_count(),
+            plan.unit_count(),
+            problem.contig_count()
+        );
+    }
+
+    optimize_order(initial_tour, problem, config)
+}
+
 fn optimize_order_standard(
     initial_tour: &Tour<usize>,
     problem: &OptimizeProblem,
@@ -2368,7 +3159,15 @@ fn optimize_order_standard(
     let mut generations = Vec::with_capacity(config.phases);
 
     for phase in 1..=config.phases {
-        let outcome = run_phase(&best_order, problem, config, phase, &mut rng, &mut reports);
+        let outcome = run_phase(
+            &best_order,
+            problem,
+            config,
+            phase,
+            &mut rng,
+            &mut reports,
+            0.0,
+        );
         generations.push(outcome.generations);
         if outcome.score < best_score {
             best_score = outcome.score;
@@ -2417,6 +3216,8 @@ fn optimize_order_multilevel(
         1,
         &mut rng,
         &mut reports,
+        0,
+        0.0,
     );
     generations.push(coarse.generations);
 
@@ -2432,7 +3233,15 @@ fn optimize_order_multilevel(
     // path-block constraints are therefore removable by the original four
     // mutation operators.
     for phase in 2..=config.phases {
-        let outcome = run_phase(&best_order, problem, config, phase, &mut rng, &mut reports);
+        let outcome = run_phase(
+            &best_order,
+            problem,
+            config,
+            phase,
+            &mut rng,
+            &mut reports,
+            0.0,
+        );
         generations.push(outcome.generations);
         if outcome.score < best_score {
             best_score = outcome.score;
@@ -2456,6 +3265,195 @@ fn optimize_order_multilevel(
             accepted_edges: plan.accepted_edges(),
             seed_score: Some(seed_score),
             coarse_score: Some(coarse.score),
+        }),
+    ))
+}
+
+fn hierarchical_stage_config(
+    config: &OptimizeConfig,
+    search_dimension: usize,
+    generation_multiplier: usize,
+    minimum_generations: usize,
+    maximum_generations: usize,
+    maximum_patience: usize,
+) -> OptimizeConfig {
+    let mut stage = config.clone();
+    let adaptive_limit = search_dimension
+        .saturating_mul(generation_multiplier)
+        .clamp(minimum_generations, maximum_generations);
+    stage.max_generations = stage.max_generations.min(adaptive_limit);
+    stage.stale_generations = stage.stale_generations.min(maximum_patience);
+    stage
+}
+
+fn optimize_order_hierarchical_multilevel(
+    initial_tour: &Tour<usize>,
+    problem: &OptimizeProblem,
+    config: &OptimizeConfig,
+    coarse_plan: BackbonePlan,
+) -> Result<OptimizeResult, String> {
+    let initial_score = problem.evaluate(&initial_tour.contigs);
+    let seed_genes = coarse_plan.initial_genes(&initial_tour.contigs);
+    let seed_order = coarse_plan.decode(&seed_genes)?;
+    let seed_score = problem.evaluate(&seed_order);
+    let mut rng = SmallRng::seed_from_u64(config.seed);
+    let mut reports = Vec::new();
+    let mut generations = Vec::with_capacity(config.phases);
+
+    let coarse_config = hierarchical_stage_config(
+        config,
+        coarse_plan.unit_count(),
+        10,
+        5_000,
+        20_000,
+        HIERARCHICAL_BLOCK_PATIENCE,
+    );
+    log::info!(
+        "Hierarchical Backbone stage block{}: {} blocks / {} units, max {} generations, patience {}",
+        config.backbone.max_block_size,
+        coarse_plan.block_count(),
+        coarse_plan.unit_count(),
+        coarse_config.max_generations,
+        coarse_config.stale_generations
+    );
+    let coarse = run_unit_phase(
+        &seed_genes,
+        &coarse_plan,
+        problem,
+        &coarse_config,
+        1,
+        &mut rng,
+        &mut reports,
+        0,
+        HIERARCHICAL_MIN_SIGNIFICANT_RELATIVE_GAIN,
+    );
+    log::info!(
+        "Hierarchical Backbone block{} completed {} generations with fitness {:.6}",
+        config.backbone.max_block_size,
+        coarse.generations,
+        coarse.score
+    );
+    let coarse_order = coarse_plan.decode(&coarse.genes)?;
+    let mut phase_one_generations = coarse.generations;
+    let mut phase_one_score = coarse.score;
+    let mut phase_one_order = coarse_order;
+
+    let refined_plan = coarse_plan.refined(HIERARCHICAL_REFINED_BLOCK_SIZE)?;
+    if refined_plan.unit_count() > coarse_plan.unit_count() {
+        let refined_seed_genes = refined_plan.initial_genes(&phase_one_order);
+        let refined_config = hierarchical_stage_config(
+            config,
+            refined_plan.unit_count(),
+            10,
+            5_000,
+            20_000,
+            HIERARCHICAL_BLOCK_PATIENCE,
+        );
+        log::info!(
+            "Hierarchical Backbone stage block{}: {} blocks / {} units, max {} generations, patience {}",
+            HIERARCHICAL_REFINED_BLOCK_SIZE,
+            refined_plan.block_count(),
+            refined_plan.unit_count(),
+            refined_config.max_generations,
+            refined_config.stale_generations
+        );
+        let refined = run_unit_phase(
+            &refined_seed_genes,
+            &refined_plan,
+            problem,
+            &refined_config,
+            1,
+            &mut rng,
+            &mut reports,
+            phase_one_generations,
+            HIERARCHICAL_MIN_SIGNIFICANT_RELATIVE_GAIN,
+        );
+        log::info!(
+            "Hierarchical Backbone block{} completed {} generations with fitness {:.6}",
+            HIERARCHICAL_REFINED_BLOCK_SIZE,
+            refined.generations,
+            refined.score
+        );
+        phase_one_generations = phase_one_generations.saturating_add(refined.generations);
+        if refined.score < phase_one_score {
+            phase_one_score = refined.score;
+            phase_one_order = refined_plan.decode(&refined.genes)?;
+        }
+    } else {
+        log::info!(
+            "Hierarchical Backbone block{} refinement skipped: all coarse blocks are already at most {} contigs",
+            HIERARCHICAL_REFINED_BLOCK_SIZE,
+            HIERARCHICAL_REFINED_BLOCK_SIZE
+        );
+    }
+    // Preserve the public two-phase shape: callers see block32 + block8 as
+    // the combined first macro phase, followed by the unlocked phase(s).
+    generations.push(phase_one_generations);
+
+    let mut best_order = initial_tour.contigs.clone();
+    let mut best_score = initial_score;
+    if phase_one_score < best_score {
+        best_score = phase_one_score;
+        best_order = phase_one_order;
+    }
+
+    // The final macro phase works on individual contigs, so every temporary
+    // hierarchical constraint can be broken if the exact ALLHiC objective
+    // disagrees with an initializer join.
+    let full_config = hierarchical_stage_config(
+        config,
+        problem.contig_count(),
+        50,
+        10_000,
+        100_000,
+        HIERARCHICAL_FULL_PATIENCE,
+    );
+    for phase in 2..=config.phases {
+        log::info!(
+            "Hierarchical Backbone stage block1 (GA{}): {} contigs, max {} generations, patience {}",
+            phase,
+            problem.contig_count(),
+            full_config.max_generations,
+            full_config.stale_generations
+        );
+        let outcome = run_phase(
+            &best_order,
+            problem,
+            &full_config,
+            phase,
+            &mut rng,
+            &mut reports,
+            HIERARCHICAL_MIN_SIGNIFICANT_RELATIVE_GAIN,
+        );
+        log::info!(
+            "Hierarchical Backbone block1 GA{} completed {} generations with fitness {:.6}",
+            phase,
+            outcome.generations,
+            outcome.score
+        );
+        generations.push(outcome.generations);
+        if outcome.score < best_score {
+            best_score = outcome.score;
+            best_order = outcome.order;
+        }
+    }
+
+    Ok(build_optimize_result(
+        initial_tour,
+        problem.contig_count(),
+        initial_score,
+        best_order,
+        best_score,
+        generations,
+        reports,
+        Some(BackboneReport {
+            used: true,
+            contig_count: problem.contig_count(),
+            unit_count: coarse_plan.unit_count(),
+            block_count: coarse_plan.block_count(),
+            accepted_edges: coarse_plan.accepted_edges(),
+            seed_score: Some(seed_score),
+            coarse_score: Some(phase_one_score),
         }),
     ))
 }
@@ -2985,6 +3983,12 @@ struct UnitPhaseOutcome {
     generations: usize,
 }
 
+fn is_significant_improvement(reference: f64, candidate: f64, minimum_relative_gain: f64) -> bool {
+    candidate < reference
+        && (minimum_relative_gain <= 0.0
+            || reference - candidate >= minimum_relative_gain * reference.abs().max(f64::EPSILON))
+}
+
 fn run_unit_phase(
     seed_genes: &[UnitGene],
     plan: &BackbonePlan,
@@ -2993,6 +3997,8 @@ fn run_unit_phase(
     phase: usize,
     rng: &mut SmallRng,
     reports: &mut Vec<GenerationReport>,
+    report_generation_offset: usize,
+    minimum_significant_relative_gain: f64,
 ) -> UnitPhaseOutcome {
     let timing_enabled = ga_timing_enabled();
     let phase_started = timing_enabled.then(Instant::now);
@@ -3011,6 +4017,7 @@ fn run_unit_phase(
     ];
     let mut offspring = population.clone();
     let mut hall_of_fame = population[0].clone();
+    let mut significant_score = hall_of_fame.score;
     let mut last_improvement = 0usize;
     let mut completed = 0usize;
     let available_threads = rayon::current_num_threads().max(1);
@@ -3072,6 +4079,11 @@ fn run_unit_phase(
         if let Some(stage_started) = stage_started {
             timings.fitness += stage_started.elapsed();
         }
+        for elite in offspring.iter_mut().take(ELITE_COUNT) {
+            chromosome_buffers.replace(&mut elite.genes, hall_of_fame.genes.clone());
+            elite.score = hall_of_fame.score;
+            elite.dirty = false;
+        }
         let stage_started = timing_enabled.then(Instant::now);
         offspring.sort_unstable_by(|a, b| a.score.total_cmp(&b.score));
         std::mem::swap(&mut population, &mut offspring);
@@ -3083,18 +4095,26 @@ fn run_unit_phase(
 
         if population[0].score < hall_of_fame.score {
             hall_of_fame = population[0].clone();
-            last_improvement = generation;
+            if is_significant_improvement(
+                significant_score,
+                hall_of_fame.score,
+                minimum_significant_relative_gain,
+            ) {
+                significant_score = hall_of_fame.score;
+                last_improvement = generation;
+            }
         }
-        if config.report_interval > 0 && generation % config.report_interval == 0 {
+        let reported_generation = report_generation_offset.saturating_add(generation);
+        if config.report_interval > 0 && reported_generation % config.report_interval == 0 {
             log::info!(
                 "Current iteration BackboneGA{}-{}: max_score={:.5}",
                 phase,
-                generation,
+                reported_generation,
                 -hall_of_fame.score
             );
             reports.push(GenerationReport {
                 phase,
-                generation,
+                generation: reported_generation,
                 best_score: hall_of_fame.score,
             });
         }
@@ -3134,6 +4154,7 @@ fn run_phase(
     phase: usize,
     rng: &mut SmallRng,
     reports: &mut Vec<GenerationReport>,
+    minimum_significant_relative_gain: f64,
 ) -> PhaseOutcome {
     let timing_enabled = ga_timing_enabled();
     let phase_started = timing_enabled.then(Instant::now);
@@ -3154,6 +4175,7 @@ fn run_phase(
     // Only offspring selected for mutation copy the underlying tour.
     let mut offspring = population.clone();
     let mut hall_of_fame = population[0].clone();
+    let mut significant_score = hall_of_fame.score;
     let mut last_improvement = 0usize;
     let mut completed = 0usize;
     let available_threads = rayon::current_num_threads().max(1);
@@ -3220,6 +4242,11 @@ fn run_phase(
         if let Some(stage_started) = stage_started {
             timings.fitness += stage_started.elapsed();
         }
+        for elite in offspring.iter_mut().take(ELITE_COUNT) {
+            chromosome_buffers.replace(&mut elite.order, hall_of_fame.order.clone());
+            elite.score = hall_of_fame.score;
+            elite.dirty = false;
+        }
         let stage_started = timing_enabled.then(Instant::now);
         offspring.sort_unstable_by(|a, b| a.score.total_cmp(&b.score));
         std::mem::swap(&mut population, &mut offspring);
@@ -3231,7 +4258,14 @@ fn run_phase(
 
         if population[0].score < hall_of_fame.score {
             hall_of_fame = population[0].clone();
-            last_improvement = generation;
+            if is_significant_improvement(
+                significant_score,
+                hall_of_fame.score,
+                minimum_significant_relative_gain,
+            ) {
+                significant_score = hall_of_fame.score;
+                last_improvement = generation;
+            }
         }
         if config.report_interval > 0 && generation % config.report_interval == 0 {
             log::info!(
@@ -3503,14 +4537,32 @@ fn validate_tour(order: &[usize], contig_count: usize) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod orientation_precision_tests {
+    use super::orientation_local_improves;
+
+    #[test]
+    fn equal_local_contributions_are_not_rounded_into_an_improvement() {
+        let global_score = f64::from_bits(0xc0df_5ce4_ac5f_529d);
+        let contribution = f64::from_bits(0xc0c0_8f20_d41e_e71d);
+
+        // This is the former acceptance expression. Although the local
+        // contribution is unchanged, cancellation rounds it one ULP upward.
+        assert!(global_score - contribution + contribution > global_score);
+        assert!(!orientation_local_improves(contribution, contribution));
+    }
+}
+
+#[cfg(test)]
 mod timing_tests {
     use super::{
-        AffectedEdgeProfiler, ContactEdge, FitnessDetailTimings, MutationKind, MutationRecord,
-        OptimizeProblem, OrderEvaluationWorkspace, OrderObjective, UnitEvaluationWorkspace,
-        avx_fitness_batch_supported, combined_histogram_quantile, histogram_quantile,
-        profile_ga_value_enabled,
+        AffectedEdgeProfiler, BackbonePlan, ContactEdge, FitnessDetailTimings, MutationKind,
+        MutationRecord, OptimizeProblem, OrderEvaluationWorkspace, OrderObjective,
+        UnitEvaluationWorkspace, UnitGene, UnitIndividual, avx_fitness_batch_supported,
+        combined_histogram_quantile, histogram_quantile, profile_ga_value_enabled,
+        score_dirty_units,
     };
     use std::ffi::OsStr;
+    use std::sync::Arc;
 
     #[test]
     fn ga_timing_environment_values_are_parsed_explicitly() {
@@ -3664,6 +4716,160 @@ mod timing_tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn unit_batch4_matches_scalar_bits_across_parallel_chunks_and_tail() {
+        if !avx_fitness_batch_supported() {
+            return;
+        }
+        let edge_pattern = [
+            ContactEdge {
+                u: 0,
+                v: 1,
+                links: 13.0,
+            },
+            ContactEdge {
+                u: 3,
+                v: 4,
+                links: 17.0,
+            },
+            ContactEdge {
+                u: 0,
+                v: 4,
+                links: 19.0,
+            },
+            ContactEdge {
+                u: 1,
+                v: 3,
+                links: 23.0,
+            },
+        ];
+        let problem = OptimizeProblem {
+            lengths: vec![2.0, 3.0, 5.0, 7.0, 11.0],
+            // Enough work to select the parallel chunk path. Repeating an
+            // edge is valid for this scorer and keeps the fixture compact.
+            edges: (0..8_192)
+                .map(|index| edge_pattern[index % edge_pattern.len()])
+                .collect(),
+            objective: OrderObjective::ReciprocalDistance,
+            anchors: vec![false; 5],
+            endpoint_multiscale: None,
+        };
+        let plan = BackbonePlan::singletons(5);
+        let permutations = [
+            [0, 1, 2, 3, 4],
+            [4, 3, 2, 1, 0],
+            [1, 3, 0, 4, 2],
+            [2, 0, 4, 1, 3],
+            [3, 1, 4, 0, 2],
+            [4, 0, 2, 3, 1],
+            [0, 2, 4, 3, 1],
+            [1, 4, 2, 0, 3],
+            [3, 0, 1, 4, 2],
+        ];
+        let mut individuals = permutations
+            .into_iter()
+            .map(|permutation| UnitIndividual {
+                genes: Arc::new(
+                    permutation
+                        .into_iter()
+                        .map(|unit| UnitGene {
+                            unit,
+                            reversed: false,
+                        })
+                        .collect(),
+                ),
+                score: f64::INFINITY,
+                dirty: true,
+            })
+            .collect::<Vec<_>>();
+        let expected = individuals
+            .iter()
+            .map(|individual| {
+                problem
+                    .evaluate(&plan.decode(individual.genes.as_ref()).unwrap())
+                    .to_bits()
+            })
+            .collect::<Vec<_>>();
+
+        let mut workspace = UnitEvaluationWorkspace::new(problem.contig_count());
+        let workers = score_dirty_units(&mut individuals, &plan, &problem, &mut workspace, 4, true);
+
+        assert_eq!(workers, 4);
+        assert_eq!(workspace.scratch.len(), 2);
+        for (individual, expected_bits) in individuals.iter().zip(expected) {
+            assert!(!individual.dirty);
+            assert_eq!(individual.score.to_bits(), expected_bits);
+        }
+        let timings = workspace.timings();
+        assert_eq!(timings.evaluations, 9);
+        assert_eq!(timings.simd_batches, 2);
+        assert_eq!(timings.contact_edges, 8_192 * 9);
+    }
+
+    #[test]
+    fn unit_non_reciprocal_objective_remains_scalar() {
+        let problem = OptimizeProblem {
+            lengths: vec![2.0, 3.0, 5.0, 7.0, 11.0],
+            edges: vec![
+                ContactEdge {
+                    u: 0,
+                    v: 1,
+                    links: 13.0,
+                },
+                ContactEdge {
+                    u: 0,
+                    v: 4,
+                    links: 19.0,
+                },
+            ],
+            objective: OrderObjective::LogDistance,
+            anchors: vec![false; 5],
+            endpoint_multiscale: None,
+        };
+        let plan = BackbonePlan::singletons(5);
+        let mut individuals = [
+            [0, 1, 2, 3, 4],
+            [4, 2, 0, 1, 3],
+            [2, 3, 1, 4, 0],
+            [1, 0, 4, 3, 2],
+        ]
+        .into_iter()
+        .map(|permutation| UnitIndividual {
+            genes: Arc::new(
+                permutation
+                    .into_iter()
+                    .map(|unit| UnitGene {
+                        unit,
+                        reversed: false,
+                    })
+                    .collect(),
+            ),
+            score: f64::INFINITY,
+            dirty: true,
+        })
+        .collect::<Vec<_>>();
+        let expected = individuals
+            .iter()
+            .map(|individual| {
+                problem
+                    .evaluate(&plan.decode(individual.genes.as_ref()).unwrap())
+                    .to_bits()
+            })
+            .collect::<Vec<_>>();
+
+        let mut workspace = UnitEvaluationWorkspace::new(problem.contig_count());
+        score_dirty_units(&mut individuals, &plan, &problem, &mut workspace, 1, true);
+
+        for (individual, expected_bits) in individuals.iter().zip(expected) {
+            assert!(!individual.dirty);
+            assert_eq!(individual.score.to_bits(), expected_bits);
+        }
+        let timings = workspace.timings();
+        assert_eq!(timings.evaluations, 4);
+        assert_eq!(timings.simd_batches, 0);
+        assert!(workspace.scratch[0].decoded[1..].iter().all(Vec::is_empty));
     }
 
     #[test]

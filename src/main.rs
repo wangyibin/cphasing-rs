@@ -21,6 +21,7 @@ use cphasing::kprune::*;
 use cphasing::methy::{modbam2fastq, modify_fasta};
 use cphasing::optimize::{
     AllhicProblem, BackboneConfig, OptimizeConfig, OrderObjective, optimize_order,
+    optimize_order_with_hierarchical_joins,
 };
 use cphasing::order::*;
 use cphasing::paf::PAFTable;
@@ -911,6 +912,81 @@ fn main() {
             )
             .unwrap();
         }
+        Some(("porec2pqs", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .expect("required");
+            if !Path::new(table).exists() {
+                log::error!("Pore-C table `{}` not found.", table);
+                std::process::exit(1);
+            }
+            if !Path::new(chromsizes).exists() {
+                log::error!("Chromsizes file `{}` not found.", chromsizes);
+                std::process::exit(1);
+            }
+
+            let output_raw = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output = if output_raw == "-" {
+                let uncompressed = table.strip_suffix(".gz").unwrap_or(table);
+                let prefix = uncompressed
+                    .strip_suffix(".porec")
+                    .or_else(|| uncompressed.strip_suffix(".concat"))
+                    .or_else(|| uncompressed.strip_suffix(".concatemer"))
+                    .or_else(|| uncompressed.strip_suffix(".con"))
+                    .unwrap_or(uncompressed);
+                format!("{prefix}.concat.pqs")
+            } else {
+                output_raw
+                    .strip_suffix('/')
+                    .unwrap_or(output_raw)
+                    .to_string()
+            };
+            if Path::new(&output).exists() {
+                log::error!(
+                    "Concat PQS output `{}` already exists; choose a new output directory.",
+                    output
+                );
+                std::process::exit(1);
+            }
+
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let mut table_reader = PoreCTable::new(table);
+            if let Err(error) =
+                table_reader.to_concat_pqs(chromsizes, &output, *chunksize, *threads)
+            {
+                if Path::new(&output).exists() {
+                    let _ = std::fs::remove_dir_all(&output);
+                }
+                panic!("porec2pqs failed: {error}");
+            }
+        }
+        Some(("porec-split", sub_matches)) => {
+            let table = sub_matches.get_one::<String>("TABLE").expect("required");
+            let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
+            let chunksize = *sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
+            if !(output.trim_end_matches('/').ends_with(".concat.pqs")
+                || output.trim_end_matches('/').ends_with(".porec.pqs"))
+            {
+                panic!("porec-split output must end with .concat.pqs or .porec.pqs");
+            }
+            let inferred_chromsizes = Path::new(table).join("_contigsizes");
+            let chromsizes = sub_matches
+                .get_one::<String>("CHROMSIZES")
+                .map(|path| path.as_str())
+                .or_else(|| {
+                    inferred_chromsizes
+                        .is_file()
+                        .then(|| inferred_chromsizes.to_str().unwrap())
+                })
+                .unwrap_or_else(|| panic!("porec-split text input requires --chromsizes"));
+            let mut porec = PoreCTable::new(table);
+            porec
+                .split_to_concat_pqs(&chromsizes.to_string(), output, chunksize, threads)
+                .unwrap_or_else(|error| panic!("porec-split failed: {error}"));
+        }
         Some(("porec2pairs", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches
@@ -966,8 +1042,15 @@ fn main() {
                 )
                 .unwrap();
             } else {
-                prt.to_pairs(&chromsizes, &output, *min_quality, *min_order, *max_order)
-                    .unwrap();
+                prt.to_pairs(
+                    &chromsizes,
+                    &output,
+                    *min_quality,
+                    *min_order,
+                    *max_order,
+                    *threads,
+                )
+                .unwrap();
             }
         }
         Some(("porec-break", sub_matches)) => {
@@ -976,10 +1059,13 @@ fn main() {
                 .get_one::<String>("BREAK_BED")
                 .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let mut prt = PoreCTable::new(&table);
-            prt.break_contigs(&break_bed, &output, *threads);
+            prt.break_contigs(&break_bed, &output, *threads, *chunksize, chromsizes)
+                .unwrap();
         }
 
         Some(("porec-dup", sub_matches)) => {
@@ -988,10 +1074,25 @@ fn main() {
                 .get_one::<String>("COLLAPSED")
                 .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let chunksize = sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
+            let chromsizes = sub_matches.get_one::<String>("CHROMSIZES");
+            let output = sub_matches.get_one::<String>("OUTPUT");
 
-            let mut prt = PoreCTable::new(&table);
-            prt.dup(&collapsed_list, 123, &output, *threads);
+            if let Some(output) = output {
+                let mut prt = PoreCTable::new(&table);
+                prt.dup(
+                    &collapsed_list,
+                    123,
+                    output,
+                    *threads,
+                    *chunksize,
+                    chromsizes,
+                )
+                .unwrap();
+            } else {
+                cphasing::pqs::update_cn_info(table, collapsed_list)
+                    .unwrap_or_else(|error| panic!("porec-dup failed: {error}"));
+            }
         }
         Some(("porec-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches
@@ -999,8 +1100,10 @@ fn main() {
                 .expect("required")
                 .collect();
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            merge_porec_tables(tables, output)
+            merge_porec_tables(tables, output, *threads)
+                .unwrap_or_else(|error| panic!("porec-merge failed: {error}"));
         }
         Some(("porec2reads", m)) => {
             // let table = m.get_one::<String>("TABLE").unwrap();
@@ -1115,17 +1218,22 @@ fn main() {
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
 
-            ThreadPoolBuilder::new()
-                .num_threads(*threads)
-                .build_global()
-                .unwrap();
-
             let mut prt = PoreCTable::new(&table);
             if *invert {
                 log::info!("Invert the table.");
             }
-            // prt.intersect(&bed, *invert, &output);
-            prt.intersect_multi_threads(&bed, *invert, &output);
+            if output.trim_end_matches('/').ends_with(".concat.pqs")
+                || output.trim_end_matches('/').ends_with(".porec.pqs")
+            {
+                prt.intersect_concat_pqs_native(&bed, *invert, &output, *threads)
+                    .unwrap();
+            } else {
+                ThreadPoolBuilder::new()
+                    .num_threads(*threads)
+                    .build_global()
+                    .unwrap();
+                prt.intersect_multi_threads(&bed, *invert, &output);
+            }
         }
 
         Some(("paf-downsample", sub_matches)) => {
@@ -1229,6 +1337,7 @@ fn main() {
             let frac = *sub_matches.get_one::<f64>("FRAC").expect("error");
 
             let seed = *sub_matches.get_one::<u64>("SEED").expect("error");
+            let threads = *sub_matches.get_one::<usize>("THREADS").expect("error");
             let min_mapq = *sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
             let min_order = *sub_matches.get_one::<usize>("MIN_ORDER").expect("error");
             let max_order = *sub_matches.get_one::<usize>("MAX_ORDER").expect("error");
@@ -1282,6 +1391,7 @@ fn main() {
                 target_pairs,
                 frac_opt,
                 frac_by_pairs,
+                threads,
             )
             .unwrap();
         }
@@ -1389,6 +1499,7 @@ fn main() {
                     *min_quality,
                     *min_order,
                     *max_order as usize,
+                    *threads,
                 )
                 .unwrap();
             }
@@ -1497,7 +1608,8 @@ fn main() {
                             );
                             std::fs::remove_dir_all(&output).unwrap();
                         }
-                        let _ = merge_pqs(files, &output);
+                        merge_pqs(files, output)
+                            .unwrap_or_else(|error| panic!("pairs-merge failed: {error}"));
                     }
                     false => {
                         log::error!("The first input directory is not a PQS directory.");
@@ -1517,6 +1629,7 @@ fn main() {
 
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
+                .stack_size(16 * 1024 * 1024)
                 .build_global()
                 .unwrap();
 
@@ -1548,14 +1661,18 @@ fn main() {
                 .get_one::<String>("COLLAPSED")
                 .expect("required");
             let threads = sub_matches.get_one::<usize>("THREADS").expect("error");
-            let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
+            let output = sub_matches.get_one::<String>("OUTPUT");
 
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
                 .build_global()
                 .unwrap();
 
-            if Path::new(&pairs).is_dir() {
+            if output.is_none() {
+                cphasing::pqs::update_cn_info(pairs, collapsed_list)
+                    .unwrap_or_else(|error| panic!("pairs-dup failed: {error}"));
+            } else if Path::new(&pairs).is_dir() {
+                let output = output.expect("checked above");
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
@@ -1573,6 +1690,7 @@ fn main() {
                     }
                 }
             } else {
+                let output = output.expect("checked above");
                 let mut pairs = Pairs::new(&pairs);
                 pairs.dup(&collapsed_list, 123, &output);
             }
@@ -1687,6 +1805,7 @@ fn main() {
                 .get_one::<f64>("MAX_DEPTH_RATIO")
                 .expect("error");
             let max_q0_ratio = sub_matches.get_one::<f64>("MAX_Q0_RATIO").expect("error");
+            let use_cn = sub_matches.get_one::<bool>("USE_CN").expect("error");
 
             ThreadPoolBuilder::new()
                 .num_threads(*threads)
@@ -1703,7 +1822,7 @@ fn main() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
-                        let _ = p.to_clm(
+                        p.to_clm(
                             *min_contacts,
                             *min_quality,
                             &output,
@@ -1714,13 +1833,19 @@ fn main() {
                             *disable_filter,
                             *max_depth_ratio,
                             *max_q0_ratio,
-                        );
+                            *use_cn,
+                        )
+                        .unwrap_or_else(|error| panic!("pairs2clm failed: {error}"));
                     }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
                     }
                 }
             } else {
+                if *use_cn {
+                    log::error!("--use-cn is only supported for pairs.pqs directory input.");
+                    std::process::exit(2);
+                }
                 let mut pairs = Pairs::new(&pairs);
                 pairs.to_clm(
                     *min_contacts,
@@ -1766,13 +1891,15 @@ fn main() {
         Some(("pairs2mnd", sub_matches)) => {
             let pairs = sub_matches.get_one::<String>("PAIRS").expect("required");
             let min_quality = sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
+            let ignore_cn = sub_matches.get_one::<bool>("IGNORE_CN").expect("error");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             if Path::new(&pairs).is_dir() {
                 let p = PQS::new(&pairs);
                 match p.is_pqs() {
                     true => {
-                        let _ = p.to_mnd(*min_quality, &output);
+                        p.to_mnd(*min_quality, output, !*ignore_cn)
+                            .unwrap_or_else(|error| panic!("pairs2mnd failed: {error}"));
                     }
                     false => {
                         log::error!("The input directory is not a PQS directory.");
@@ -1813,13 +1940,16 @@ fn main() {
             let mut prt = PoreCTable::new(input);
             prt.chr_porec_to_contig_porec(bed, output, threads).unwrap();
         }
-        Some(("pqs-chr2ctg", sub_m)) => {
+        Some(("pairs-chr2ctg", sub_m)) => {
             let input = sub_m.get_one::<String>("INPUT").unwrap();
             let bed = sub_m.get_one::<String>("BED").unwrap();
             let output = sub_m.get_one::<String>("OUTPUT").unwrap();
             let threads = *sub_m.get_one::<usize>("THREADS").unwrap();
 
-            let _ = chr_pqs_to_contig_pqs(input, bed, output, threads);
+            if let Err(error) = chr_pairs_pqs_to_contig_pqs(input, bed, output, threads) {
+                log::error!("pairs-chr2ctg failed: {error:#}");
+                std::process::exit(1);
+            }
         }
         Some(("pairs-prune", sub_matches)) => {
             let input = sub_matches.get_one::<String>("INPUT").expect("required");
@@ -2156,6 +2286,7 @@ fn main() {
                 contigs: contigsizes_idx.keys().cloned().collect(),
                 signs: signs,
             };
+            let mut hierarchical_joins = None;
 
             if *resume && Path::new(&output).exists() {
                 log::info!(
@@ -2294,12 +2425,14 @@ fn main() {
                     SplitContacts::read_from_file(split_contacts_path, Some(&whitelist))
                         .unwrap_or_else(|error| panic!("invalid split contacts: {error}"));
                 let before = problem.evaluate(&tour.contigs);
-                tour = run_hierarchical_end_initializer(
+                let initialized = run_hierarchical_end_initializer_with_evidence(
                     &tour,
                     &contigsizes_idx,
                     &split_contacts,
                     &contig2idx,
                 );
+                tour = initialized.tour;
+                hierarchical_joins = Some(initialized.joins);
                 log::info!(
                     "Hierarchical end initializer: {} contact pairs, ordering fitness {:.6} -> {:.6}",
                     split_contacts.data.len(),
@@ -2353,8 +2486,12 @@ fn main() {
                     },
                     ..OptimizeConfig::default()
                 };
-                let result = optimize_order(&tour, &problem, &config)
-                    .unwrap_or_else(|error| panic!("optimization failed: {error}"));
+                let result = if let Some(joins) = hierarchical_joins.as_deref() {
+                    optimize_order_with_hierarchical_joins(&tour, &problem, &config, joins)
+                } else {
+                    optimize_order(&tour, &problem, &config)
+                }
+                .unwrap_or_else(|error| panic!("optimization failed: {error}"));
                 if let Some(backbone) = &result.backbone {
                     if backbone.used {
                         log::info!(

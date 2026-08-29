@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-use cphasing::clm::ClmbReader;
+use cphasing::clm::{ClmbReader, ClmbWriter, encode_endpoint};
 
 fn clmb_as_text(path: impl AsRef<std::path::Path>) -> String {
     let mut reader = ClmbReader::open(path).unwrap();
@@ -191,6 +191,100 @@ D\tD\tD_0\tD_1\t+\t0\t0\t-\t0\t0\n",
     );
     let group1_reader = ClmbReader::open(output_dir.join("group1.clmb")).unwrap();
     assert_eq!(group1_reader.header.target_block_size, 256 * 1024);
+    assert_eq!(
+        clmb_as_text(output_dir.join("group1.clmb")),
+        "block+ C+\t2\t152 162\nblock- C+\t1\t132\n"
+    );
+    assert_eq!(
+        clmb_as_text(output_dir.join("group2.clmb")),
+        "block+ D+\t1\t234\n"
+    );
+    assert_eq!(clmb_as_text(output_dir.join("group3.clmb")), "");
+}
+
+#[test]
+fn gfa_contract_inputs_cli_remaps_clmb_blocks_in_parallel() {
+    let directory = tempfile::tempdir().unwrap();
+    let mapping = directory.path().join("mapping.tsv");
+    let contacts = directory.path().join("input.contacts");
+    let clmb = directory.path().join("input.clmb");
+    let clusters = directory.path().join("clusters.txt");
+    let output_contacts = directory.path().join("output.contacts");
+    let output_dir = directory.path().join("split-clm");
+    fs::write(
+        &mapping,
+        "A\tblock\tblock_0\tblock_0\t+\t135\t100\t-\t100\t135\n\
+B\tblock\tblock_1\tblock_1\t+\t0\t95\t-\t95\t0\n\
+C\tC\tC_0\tC_1\t+\t0\t7\t-\t0\t11\n\
+D\tD\tD_0\tD_1\t+\t0\t0\t-\t0\t0\n",
+    )
+    .unwrap();
+    fs::write(&contacts, "A_0\tC_1\t2\n").unwrap();
+    fs::write(
+        &clusters,
+        "group1\t2\tblock C\ngroup2\t2\tblock D\ngroup3\t0\n",
+    )
+    .unwrap();
+    let contigs = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+    let mut writer = ClmbWriter::create_synchronous(&clmb, &contigs, 20, None, None).unwrap();
+    writer
+        .write_record(
+            encode_endpoint(0, 0).unwrap(),
+            encode_endpoint(2, 0).unwrap(),
+            &[10, 20],
+        )
+        .unwrap();
+    writer
+        .write_record(
+            encode_endpoint(1, 1).unwrap(),
+            encode_endpoint(2, 0).unwrap(),
+            &[30],
+        )
+        .unwrap();
+    writer
+        .write_record(
+            encode_endpoint(0, 0).unwrap(),
+            encode_endpoint(3, 0).unwrap(),
+            &[99],
+        )
+        .unwrap();
+    writer
+        .write_record(
+            encode_endpoint(0, 0).unwrap(),
+            encode_endpoint(1, 0).unwrap(),
+            &[5],
+        )
+        .unwrap();
+    writer.finish().unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
+        .arg("gfa")
+        .arg("contract-inputs")
+        .arg("--mapping")
+        .arg(&mapping)
+        .arg("--contacts")
+        .arg(&contacts)
+        .arg("--contacts-output")
+        .arg(&output_contacts)
+        .arg("--clm")
+        .arg(&clmb)
+        .arg("--clusters")
+        .arg(&clusters)
+        .arg("--clm-output-dir")
+        .arg(&output_dir)
+        .arg("--threads")
+        .arg("4")
+        .output()
+        .unwrap();
+
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("GFA preprocessing timing: contract CLM:")
+    );
     assert_eq!(
         clmb_as_text(output_dir.join("group1.clmb")),
         "block+ C+\t2\t152 162\nblock- C+\t1\t132\n"

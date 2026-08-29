@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::path::Path;
+use std::process::Command;
 
 use cphasing::core::BaseTable;
 use cphasing::pqs::PQS;
@@ -56,6 +57,7 @@ fn pairs_dup_keeps_quality_subsets_consistent_and_links_unaffected_shards() {
     .unwrap();
     fs::write(input.join("_metadata"), "test metadata\n").unwrap();
     fs::write(input.join("_readme"), "test readme\n").unwrap();
+    fs::write(input.join("cn.info"), "collapsed\t2\n").unwrap();
 
     write_shard(
         &input.join("q0/0.parquet"),
@@ -95,6 +97,10 @@ fn pairs_dup_keeps_quality_subsets_consistent_and_links_unaffected_shards() {
         fs::read(input.join("q0/1.parquet")).unwrap(),
         fs::read(output.join("q0/1.parquet")).unwrap(),
     );
+    assert_eq!(
+        fs::read_to_string(output.join("cn.info")).unwrap(),
+        "collapsed\t1\ncollapsed_d2\t1\n"
+    );
 
     #[cfg(unix)]
     {
@@ -104,4 +110,37 @@ fn pairs_dup_keeps_quality_subsets_consistent_and_links_unaffected_shards() {
             fs::metadata(output.join("q0/1.parquet")).unwrap().ino(),
         );
     }
+}
+
+#[test]
+fn pairs_dup_without_output_only_updates_cn_info() {
+    let directory = tempfile::Builder::new()
+        .prefix("pairs-dup-cn-test-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let input = directory.path().join("input.pairs.pqs");
+    fs::create_dir_all(input.join("q0")).unwrap();
+    fs::create_dir_all(input.join("q1")).unwrap();
+    fs::write(input.join("_contigsizes"), "A\t100\nB\t100\n").unwrap();
+    fs::write(input.join("_metadata"), "{'format': 'pairs'}\n").unwrap();
+    fs::write(input.join("_readme"), "test\n").unwrap();
+    let collapsed = directory.path().join("collapsed.tsv");
+    fs::write(&collapsed, "A\tA_d2\nA\tA_d3\nA\tA_d3\n").unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
+        .arg("pairs-dup")
+        .arg(&input)
+        .arg(&collapsed)
+        .arg("--threads")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(result.stdout.is_empty());
+    assert_eq!(fs::read_to_string(input.join("cn.info")).unwrap(), "A\t3\n");
+    assert!(!directory.path().join("input.pairs.pqs_dup").exists());
 }

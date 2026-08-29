@@ -950,13 +950,11 @@ pub fn bam2pairs(input_bam: &String, min_mapq: u8, output: &String, threads: usi
             return;
         }
 
-        // 按 Read 上的匹配起点顺序进行 5' 到 3' 排序
         valid.sort_by_key(|r| {
             let (qstart, _, _) = get_query_start_end(r);
             qstart
         });
 
-        // 组内所有片段两两配对 (Pore-C Concatemer 展开)
         for i in 0..valid.len() {
             for j in (i + 1)..valid.len() {
                 let r1 = valid[i];

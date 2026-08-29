@@ -1,25 +1,34 @@
 use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use gzp::Compression as ParallelCompression;
+use gzp::deflate::Mgzip;
+use gzp::par::compress::ParCompressBuilder;
 use hashbrown::HashMap;
 use rayon::prelude::*;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Instant;
 use tempfile::{Builder, NamedTempFile, tempdir_in, tempfile_in};
 
-use crate::clm::{CLMB_DEFAULT_BLOCK_SIZE, ClmbReader, ClmbWriter, encode_endpoint, is_clmb_file};
-use crate::core::common_reader;
+use crate::clm::{
+    CLMB_DEFAULT_BLOCK_SIZE, ClmbReader, ClmbRecord, ClmbWriter, EncodedClmbBlock, encode_endpoint,
+    is_clmb_file,
+};
+use crate::core::{common_reader, parse_output};
 
 const IO_BUFFER_SIZE: usize = 256 * 1024;
 const CONTACT_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const CLUSTER_CLMB_BLOCK_SIZE: usize = 256 * 1024;
+const CONTACT_OUTPUT_BATCH_RECORDS: usize = 1_000_000;
+const CONTACT_OUTPUT_CHUNK_RECORDS: usize = 50_000;
 
 type EndContactKey = (u32, u8, u32, u8);
 type SegmentEndKey = (u32, u8);
@@ -658,6 +667,18 @@ fn fast_writer(path: &str) -> Result<Box<dyn Write>> {
     }
 }
 
+fn parallel_fast_writer(path: &str, threads: usize) -> Result<Box<dyn Write + Send>> {
+    let buffered = parse_output(Some(PathBuf::from(path)))?;
+    if Path::new(path).extension().and_then(|value| value.to_str()) != Some("gz") {
+        return Ok(buffered);
+    }
+    let writer = ParCompressBuilder::<Mgzip>::new()
+        .num_threads(threads.max(1))?
+        .compression_level(ParallelCompression::fast())
+        .from_writer(buffered);
+    Ok(Box::new(writer))
+}
+
 fn run_sort(
     source: &Path,
     output: &Path,
@@ -708,12 +729,19 @@ fn temporary_root(requested: Option<&str>) -> Result<PathBuf> {
     }
 }
 
-fn remap_contacts(mapping: &MappingTable, input: &str, output: &str, threads: usize) -> Result<()> {
+fn remap_contacts(
+    mapping: &MappingTable,
+    input: &str,
+    output: &str,
+    threads: usize,
+    output_threads: usize,
+) -> Result<()> {
     let contraction = ContactContractionTable::from_mapping(mapping);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads.max(1))
         .build()
         .context("cannot create contact contraction thread pool")?;
+    let aggregation_started = Instant::now();
     let counts = pool.install(|| {
         ContactChunkReader::new(input)
             .par_bridge()
@@ -723,6 +751,10 @@ fn remap_contacts(mapping: &MappingTable, input: &str, output: &str, threads: us
             })
             .try_reduce(HashMap::new, merge_contracted_contacts)
     })?;
+    log::info!(
+        "GFA preprocessing timing: contact aggregation: {:.3} s",
+        aggregation_started.elapsed().as_secs_f64()
+    );
 
     let mut contacts = counts.into_iter().collect::<Vec<_>>();
     let sort_started = Instant::now();
@@ -731,14 +763,29 @@ fn remap_contacts(mapping: &MappingTable, input: &str, output: &str, threads: us
         "GFA preprocessing timing: output sorting: {:.3} s",
         sort_started.elapsed().as_secs_f64()
     );
-    let mut writer = fast_writer(output)?;
-    for ((end1, end2), count) in &contacts {
-        write_contact_record(
-            &mut writer,
-            &contraction.labels[*end1 as usize],
-            &contraction.labels[*end2 as usize],
-            *count,
-        )?;
+    let output_started = Instant::now();
+    let mut writer = parallel_fast_writer(output, output_threads)?;
+    for batch in contacts.chunks(CONTACT_OUTPUT_BATCH_RECORDS) {
+        let buffers = pool.install(|| {
+            batch
+                .par_chunks(CONTACT_OUTPUT_CHUNK_RECORDS)
+                .map(|chunk| {
+                    let mut buffer = Vec::with_capacity(chunk.len().saturating_mul(48));
+                    for ((end1, end2), count) in chunk {
+                        write_contact_record(
+                            &mut buffer,
+                            &contraction.labels[*end1 as usize],
+                            &contraction.labels[*end2 as usize],
+                            *count,
+                        )?;
+                    }
+                    Ok(buffer)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+        for buffer in buffers {
+            writer.write_all(&buffer)?;
+        }
     }
     if contacts.is_empty() {
         if let Some(unit) = &contraction.first_unit {
@@ -746,6 +793,10 @@ fn remap_contacts(mapping: &MappingTable, input: &str, output: &str, threads: us
         }
     }
     writer.flush()?;
+    log::info!(
+        "GFA preprocessing timing: contact output: {:.3} s",
+        output_started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -1078,7 +1129,282 @@ fn remap_clm_to_clmb(mapping: &MappingTable, input: &str, output: &str) -> Resul
     writer.finish()
 }
 
-fn remap_clm_by_cluster_to_clmb(
+#[derive(Clone, Copy)]
+struct ClmbSegmentRemap {
+    unit: u32,
+    orientations: [u8; 2],
+    left_offsets: [u64; 2],
+    right_offsets: [u64; 2],
+}
+
+struct ClmbClusterRemapPlan {
+    segments: Vec<Option<ClmbSegmentRemap>>,
+    unit_group_masks: Vec<Vec<u64>>,
+    units: Vec<String>,
+    groups: Vec<String>,
+}
+
+impl ClmbClusterRemapPlan {
+    fn new(mapping: &MappingTable, contigs: &[String], cluster_path: &str) -> Result<Self> {
+        let units = mapping.units();
+        let unit_ids = units
+            .iter()
+            .enumerate()
+            .map(|(id, unit)| Ok((unit.clone(), u32::try_from(id)?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        let orientation_id = |orientation: char| -> Result<u8> {
+            match orientation {
+                '+' => Ok(0),
+                '-' => Ok(1),
+                _ => bail!("invalid mapped CLM orientation `{orientation}`"),
+            }
+        };
+        let segments = contigs
+            .iter()
+            .map(|contig| {
+                mapping
+                    .segments
+                    .get(contig)
+                    .map(|item| {
+                        Ok(ClmbSegmentRemap {
+                            unit: unit_ids[&item.unit],
+                            orientations: [
+                                orientation_id(item.plus.orientation)?,
+                                orientation_id(item.minus.orientation)?,
+                            ],
+                            left_offsets: [item.plus.left_offset, item.minus.left_offset],
+                            right_offsets: [item.plus.right_offset, item.minus.right_offset],
+                        })
+                    })
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut groups = Vec::new();
+        let mut group_units = Vec::new();
+        let mut cluster_reader = common_reader(cluster_path);
+        let mut line = String::new();
+        while cluster_reader.read_line(&mut line)? != 0 {
+            let mut fields = line.split_whitespace();
+            if let Some(group) = fields.next() {
+                fields.next();
+                groups.push(group.to_string());
+                group_units.push(
+                    fields
+                        .filter_map(|unit| unit_ids.get(unit).copied())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            line.clear();
+        }
+        let mask_words = groups.len().div_ceil(64);
+        let mut unit_group_masks = vec![vec![0u64; mask_words]; units.len()];
+        for (group_id, group_members) in group_units.into_iter().enumerate() {
+            for unit in group_members {
+                unit_group_masks[unit as usize][group_id / 64] |= 1u64 << (group_id % 64);
+            }
+        }
+        Ok(Self {
+            segments,
+            unit_group_masks,
+            units,
+            groups,
+        })
+    }
+
+    fn remap_block(&self, records: Vec<ClmbRecord>) -> Result<Vec<(Vec<usize>, ClmbRecord)>> {
+        let mut mapped_records = Vec::with_capacity(records.len());
+        for mut record in records {
+            let Some(mapping1) = self
+                .segments
+                .get(record.contig1() as usize)
+                .copied()
+                .flatten()
+            else {
+                continue;
+            };
+            let Some(mapping2) = self
+                .segments
+                .get(record.contig2() as usize)
+                .copied()
+                .flatten()
+            else {
+                continue;
+            };
+            if mapping1.unit == mapping2.unit {
+                continue;
+            }
+            let mut shared_groups = Vec::new();
+            for (word_index, (&left, &right)) in self.unit_group_masks[mapping1.unit as usize]
+                .iter()
+                .zip(&self.unit_group_masks[mapping2.unit as usize])
+                .enumerate()
+            {
+                let mut shared = left & right;
+                while shared != 0 {
+                    let bit = shared.trailing_zeros() as usize;
+                    shared_groups.push(word_index * 64 + bit);
+                    shared &= shared - 1;
+                }
+            }
+            if shared_groups.is_empty() {
+                continue;
+            }
+            let orientation1 = record.orientation1() as usize;
+            let orientation2 = record.orientation2() as usize;
+            let shift = mapping1.left_offsets[orientation1]
+                .checked_add(mapping2.right_offsets[orientation2])
+                .context("contracted CLM shift exceeds u64")?;
+            for distance in &mut record.distances {
+                *distance = distance
+                    .checked_add(shift)
+                    .context("contracted CLM distance exceeds u64")?
+                    .max(2);
+            }
+            record.endpoint1 = encode_endpoint(mapping1.unit, mapping1.orientations[orientation1])?;
+            record.endpoint2 = encode_endpoint(mapping2.unit, mapping2.orientations[orientation2])?;
+            mapped_records.push((shared_groups, record));
+        }
+        Ok(mapped_records)
+    }
+}
+
+fn write_mapped_clmb_block(
+    writers: &mut [ClmbWriter],
+    records: Vec<(Vec<usize>, ClmbRecord)>,
+) -> Result<()> {
+    for (groups, record) in records {
+        for group in groups {
+            writers[group].write_record(record.endpoint1, record.endpoint2, &record.distances)?;
+        }
+    }
+    Ok(())
+}
+
+fn remap_clmb_by_cluster_parallel(
+    mapping: &MappingTable,
+    cluster_path: &str,
+    input: &str,
+    output_directory: &str,
+    threads: usize,
+) -> Result<()> {
+    let output_directory = PathBuf::from(output_directory);
+    std::fs::create_dir_all(&output_directory)?;
+    let reader = ClmbReader::open(input)?;
+    let plan = Arc::new(ClmbClusterRemapPlan::new(
+        mapping,
+        &reader.header.contigs,
+        cluster_path,
+    )?);
+    let mut writers = plan
+        .groups
+        .iter()
+        .map(|group| {
+            ClmbWriter::create_synchronous(
+                output_directory.join(format!("{group}.clmb")),
+                &plan.units,
+                CLUSTER_CLMB_BLOCK_SIZE,
+                None,
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let worker_count = threads.max(1);
+    let queue_capacity = worker_count.saturating_mul(2).max(2);
+    let (job_sender, job_receiver) =
+        crossbeam_channel::bounded::<(usize, EncodedClmbBlock)>(queue_capacity);
+    let (result_sender, result_receiver) = crossbeam_channel::bounded::<
+        Result<(usize, Vec<(Vec<usize>, ClmbRecord)>)>,
+    >(queue_capacity);
+
+    std::thread::scope(|scope| -> Result<()> {
+        let producer_results = result_sender.clone();
+        let producer = scope.spawn(move || {
+            let mut reader = reader;
+            let mut block_id = 0usize;
+            loop {
+                match reader.next_encoded_block() {
+                    Ok(Some(block)) => {
+                        if job_sender.send((block_id, block)).is_err() {
+                            break;
+                        }
+                        block_id += 1;
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = producer_results.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let jobs = job_receiver.clone();
+            let results = result_sender.clone();
+            let plan = Arc::clone(&plan);
+            workers.push(scope.spawn(move || {
+                for (block_id, block) in jobs {
+                    let result = block
+                        .decode(plan.segments.len())
+                        .with_context(|| format!("failed to decode CLMB block in `{input}`"))
+                        .and_then(|records| plan.remap_block(records))
+                        .map(|records| (block_id, records));
+                    if results.send(result).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(job_receiver);
+        drop(result_sender);
+
+        let mut pending = BTreeMap::new();
+        let mut next_block = 0usize;
+        let mut first_error = None;
+        for result in result_receiver {
+            match result {
+                Ok((block_id, records)) if first_error.is_none() => {
+                    pending.insert(block_id, records);
+                    while let Some(records) = pending.remove(&next_block) {
+                        if let Err(error) = write_mapped_clmb_block(&mut writers, records) {
+                            first_error = Some(error);
+                            pending.clear();
+                            break;
+                        }
+                        next_block += 1;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(error);
+                    pending.clear();
+                }
+                Err(_) => {}
+            }
+        }
+        producer
+            .join()
+            .map_err(|_| anyhow::anyhow!("CLMB block producer panicked"))?;
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("CLMB remap worker panicked"))?;
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(())
+    })?;
+
+    for writer in writers {
+        writer.finish()?;
+    }
+    Ok(())
+}
+
+fn remap_text_clm_by_cluster_to_clmb(
     mapping: &MappingTable,
     cluster_path: &str,
     input: &str,
@@ -1163,6 +1489,20 @@ fn remap_clm_by_cluster_to_clmb(
         writer.finish()?;
     }
     Ok(())
+}
+
+fn remap_clm_by_cluster_to_clmb(
+    mapping: &MappingTable,
+    cluster_path: &str,
+    input: &str,
+    output_directory: &str,
+    threads: usize,
+) -> Result<()> {
+    if is_clmb_file(input)? {
+        remap_clmb_by_cluster_parallel(mapping, cluster_path, input, output_directory, threads)
+    } else {
+        remap_text_clm_by_cluster_to_clmb(mapping, cluster_path, input, output_directory)
+    }
 }
 
 #[allow(dead_code)]
@@ -1396,15 +1736,34 @@ pub fn contract_gfa_scaffolding_inputs(
         let output_directory = clm_output_directory.unwrap();
         std::thread::scope(|scope| -> Result<()> {
             let contacts = scope.spawn(|| {
-                remap_contacts(
+                let started = Instant::now();
+                let result = remap_contacts(
                     &mapping,
                     contacts_input,
                     contacts_output,
                     concurrent_contact_threads,
-                )
+                    threads,
+                );
+                log::info!(
+                    "GFA preprocessing timing: contract contacts: {:.3} s",
+                    started.elapsed().as_secs_f64()
+                );
+                result
             });
             let clm = scope.spawn(|| {
-                remap_clm_by_cluster_to_clmb(&mapping, cluster_path, input, output_directory)
+                let started = Instant::now();
+                let result = remap_clm_by_cluster_to_clmb(
+                    &mapping,
+                    cluster_path,
+                    input,
+                    output_directory,
+                    concurrent_clm_threads,
+                );
+                log::info!(
+                    "GFA preprocessing timing: contract CLM: {:.3} s",
+                    started.elapsed().as_secs_f64()
+                );
+                result
             });
             contacts
                 .join()
@@ -1416,15 +1775,23 @@ pub fn contract_gfa_scaffolding_inputs(
     } else if let (Some(input), Some(output)) = (clm_input, clm_output) {
         std::thread::scope(|scope| -> Result<()> {
             let contacts = scope.spawn(|| {
-                remap_contacts(
+                let started = Instant::now();
+                let result = remap_contacts(
                     &mapping,
                     contacts_input,
                     contacts_output,
                     concurrent_contact_threads,
-                )
+                    threads,
+                );
+                log::info!(
+                    "GFA preprocessing timing: contract contacts: {:.3} s",
+                    started.elapsed().as_secs_f64()
+                );
+                result
             });
             let clm = scope.spawn(|| {
-                if output.ends_with(".clmb") {
+                let started = Instant::now();
+                let result = if output.ends_with(".clmb") {
                     remap_clm_to_clmb(&mapping, input, output)
                 } else {
                     remap_clm(
@@ -1435,7 +1802,12 @@ pub fn contract_gfa_scaffolding_inputs(
                         sort_buffer,
                         concurrent_clm_threads,
                     )
-                }
+                };
+                log::info!(
+                    "GFA preprocessing timing: contract CLM: {:.3} s",
+                    started.elapsed().as_secs_f64()
+                );
+                result
             });
             contacts
                 .join()
@@ -1445,7 +1817,7 @@ pub fn contract_gfa_scaffolding_inputs(
             Ok(())
         })?;
     } else {
-        remap_contacts(&mapping, contacts_input, contacts_output, threads)?;
+        remap_contacts(&mapping, contacts_input, contacts_output, threads, threads)?;
     }
     Ok(())
 }

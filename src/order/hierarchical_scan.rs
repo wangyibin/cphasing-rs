@@ -1,6 +1,14 @@
 use hashbrown::HashMap;
 
-pub(crate) type HierarchicalEndCandidate = (usize, usize, usize, usize, f64);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HierarchicalEndCandidate {
+    pub(crate) left_path: usize,
+    pub(crate) left_side: usize,
+    pub(crate) right_path: usize,
+    pub(crate) right_side: usize,
+    pub(crate) normalized_score: f64,
+    pub(crate) raw_support: f64,
+}
 pub(crate) type OrientedPathHalves = [(Vec<usize>, f64); 2];
 
 pub(crate) fn sparse_hierarchical_end_candidates(
@@ -64,7 +72,14 @@ pub(crate) fn sparse_hierarchical_end_candidates(
                 let left_length = halves[left_path][left_side].1;
                 let right_length = halves[right_path][right_side].1;
                 let score = count / (left_length * right_length).max(1.0);
-                Some((left_path, left_side, right_path, right_side, score))
+                Some(HierarchicalEndCandidate {
+                    left_path,
+                    left_side,
+                    right_path,
+                    right_side,
+                    normalized_score: score,
+                    raw_support: count,
+                })
             },
         )
         .collect()
