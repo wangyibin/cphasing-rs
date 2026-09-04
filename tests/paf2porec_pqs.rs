@@ -8,9 +8,9 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use polars::prelude::*;
 
-fn run_paf2porec(paf: &std::path::Path, output: &std::path::Path) {
+fn run_paf2concat(paf: &std::path::Path, output: &std::path::Path) {
     let result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
-        .arg("paf2porec")
+        .arg("paf2concat")
         .arg(paf)
         .arg("--output")
         .arg(output)
@@ -43,7 +43,7 @@ read1\t1000\t310\t610\t+\tB\t1000\t100\t400\t290\t300\t60\ttp:A:P\n",
 
     let text_input = directory.path().join("input.concat");
     let text_output = directory.path().join("converted.concat");
-    run_paf2porec(&paf, &text_input);
+    run_paf2concat(&paf, &text_input);
     let text_result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
         .arg("porec-chr2ctg")
         .arg("--input")
@@ -99,7 +99,7 @@ read1\t1000\t310\t610\t+\tB\t1000\t100\t400\t290\t300\t60\ttp:A:P\n",
 
     let pqs_input = directory.path().join("input.concat.pqs");
     let pqs_output = directory.path().join("converted.concat.pqs");
-    run_paf2porec(&paf, &pqs_input);
+    run_paf2concat(&paf, &pqs_input);
     let pqs_result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
         .arg("porec-chr2ctg")
         .arg("--input")
@@ -153,10 +153,10 @@ read2\t900\t260\t560\t+\tC\t3000\t200\t500\t290\t300\t30\ttp:A:P\n",
     let text = directory.path().join("output.concat.gz");
     let concat_pqs = directory.path().join("output.concat.pqs");
     let porec_pqs = directory.path().join("alias.porec.pqs");
-    run_paf2porec(&paf, &plain_text);
-    run_paf2porec(&paf, &text);
-    run_paf2porec(&paf, &concat_pqs);
-    run_paf2porec(&paf, &porec_pqs);
+    run_paf2concat(&paf, &plain_text);
+    run_paf2concat(&paf, &text);
+    run_paf2concat(&paf, &concat_pqs);
+    run_paf2concat(&paf, &porec_pqs);
     assert_eq!(fs::read_to_string(&plain_text).unwrap().lines().count(), 4);
 
     for output in [&concat_pqs, &porec_pqs] {
@@ -592,7 +592,7 @@ read2\t900\t260\t560\t+\tC\t3000\t200\t500\t290\t300\t30\ttp:A:P\n",
     )
     .unwrap();
     let input = directory.path().join("input.concat.pqs");
-    run_paf2porec(&paf, &input);
+    run_paf2concat(&paf, &input);
     fs::write(input.join("cn.info"), "A\t2\n").unwrap();
 
     let split = directory.path().join("split.concat.pqs");
@@ -852,7 +852,7 @@ fn paf2porec_short_stdin_reads_preserve_complete_read_groups() {
     let regular_paf = directory.path().join("regular.paf");
     fs::write(&regular_paf, records.concat()).unwrap();
     let regular_output = directory.path().join("regular.concat");
-    run_paf2porec(&regular_paf, &regular_output);
+    run_paf2concat(&regular_paf, &regular_output);
 
     let streamed_output = directory.path().join("streamed.concat");
     let mut child = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
@@ -920,7 +920,7 @@ fn paf2porec_keeps_a_read_group_crossing_the_target_batch_boundary() {
     let paf = directory.path().join("input.paf");
     fs::write(&paf, &paf_text).unwrap();
     let output = directory.path().join("output.concat");
-    run_paf2porec(&paf, &output);
+    run_paf2concat(&paf, &output);
 
     let regular_text = fs::read_to_string(&output).unwrap();
     let rows = regular_text.lines().collect::<Vec<_>>();
@@ -1108,7 +1108,7 @@ read2\t900\t260\t560\t+\tC\t3000\t200\t500\t290\t300\t30\ttp:A:P\n";
 }
 
 #[test]
-fn porec2pairs_compact_parser_skips_unused_columns_and_preserves_pair_fields() {
+fn concat2pairs_and_porec2pairs_compact_parser_preserve_pair_fields() {
     let directory = tempfile::Builder::new()
         .prefix("porec2pairs-compact-")
         .tempdir_in(env!("CARGO_MANIFEST_DIR"))
@@ -1123,13 +1123,13 @@ fn porec2pairs_compact_parser_skips_unused_columns_and_preserves_pair_fields() {
     .unwrap();
     let chromsizes = directory.path().join("contigsizes");
     fs::write(&chromsizes, "A\t100\nB\t100\n").unwrap();
-    let pairs = directory.path().join("output.pairs");
+    let concat_pairs = directory.path().join("concat2pairs.pairs");
     let result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
-        .arg("porec2pairs")
+        .arg("concat2pairs")
         .arg(&porec)
         .arg(&chromsizes)
         .arg("--output")
-        .arg(&pairs)
+        .arg(&concat_pairs)
         .arg("--threads")
         .arg("1")
         .output()
@@ -1139,7 +1139,7 @@ fn porec2pairs_compact_parser_skips_unused_columns_and_preserves_pair_fields() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let data_lines = fs::read_to_string(&pairs)
+    let data_lines = fs::read_to_string(&concat_pairs)
         .unwrap()
         .lines()
         .filter(|line| !line.starts_with('#'))
@@ -1147,8 +1147,29 @@ fn porec2pairs_compact_parser_skips_unused_columns_and_preserves_pair_fields() {
         .collect::<Vec<_>>();
     assert_eq!(data_lines, ["1\tA\t50\tB\t20\t-\t+\t50"]);
     assert_eq!(
-        fs::read_to_string(directory.path().join("output.concatemer.summary")).unwrap(),
+        fs::read_to_string(directory.path().join("concat2pairs.concatemer.summary")).unwrap(),
         "2\t1"
+    );
+
+    let porec_pairs = directory.path().join("porec2pairs.pairs");
+    let result = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
+        .arg("porec2pairs")
+        .arg(&porec)
+        .arg(&chromsizes)
+        .arg("--output")
+        .arg(&porec_pairs)
+        .arg("--threads")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&concat_pairs).unwrap(),
+        fs::read_to_string(&porec_pairs).unwrap()
     );
 }
 

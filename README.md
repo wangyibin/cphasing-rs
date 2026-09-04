@@ -1,7 +1,15 @@
 # Library of [C-Phasing](https://github.com/wangyibin/CPhasing.git)
 
+[![Bioconda Downloads](https://anaconda.org/bioconda/cphasing-rs/badges/downloads.svg)](https://anaconda.org/channels/bioconda/packages/cphasing-rs/overview)
 
 ## Installation
+
+- Install with Conda ([Bioconda package](https://anaconda.org/channels/bioconda/packages/cphasing-rs/overview))
+```
+conda install bioconda::cphasing-rs
+```
+
+
 
 - Download from release
 ```

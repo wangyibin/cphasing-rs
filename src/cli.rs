@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{
@@ -9,8 +10,12 @@ use clap::{
     },
     value_parser,
 };
+use cool2mcool::mcool::BASE_RESOLUTION;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const COOL2MCOOL_DEFAULT_RESOLUTIONS: &str =
+    "2500000,1000000,500000,250000,100000,50000,25000,10000,5000,1000";
+const COOL2MCOOL_DEFAULT_KR_MIN_RESOLUTION: &str = "5000";
 
 #[allow(dead_code)]
 fn non_negative_f64(value: &str) -> Result<f64, String> {
@@ -48,14 +53,222 @@ fn positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn cool2mcool_resolution(value: &str) -> Result<u64, String> {
+    let resolution = value.parse::<u64>().map_err(|error| {
+        format!("expected a positive resolution in base pairs, got {value:?}: {error}")
+    })?;
+    if resolution == 0 || resolution % BASE_RESOLUTION != 0 {
+        return Err(format!(
+            "resolution must be a positive multiple of {BASE_RESOLUTION} bp"
+        ));
+    }
+    Ok(resolution)
+}
+
+fn cool2mcool_compression_level(value: &str) -> Result<u8, String> {
+    let level = value.parse::<u8>().map_err(|error| {
+        format!("expected a gzip compression level from 1 to 9, got {value:?}: {error}")
+    })?;
+    if (1..=9).contains(&level) {
+        Ok(level)
+    } else {
+        Err("gzip compression level must be between 1 and 9".to_string())
+    }
+}
+
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Yellow.on_default());
 
+const ROOT_HELP_TEMPLATE: &str = "\
+{before-help}{about-with-newline}
+{usage-heading} {usage}{after-help}{options}";
+
+struct HelpGroup {
+    heading: &'static str,
+    commands: &'static [&'static str],
+}
+
+const HELP_GROUPS: &[HelpGroup] = &[
+    HelpGroup {
+        heading: "PAF",
+        commands: &[
+            "methalign",
+            "paf2concat",
+            "paf2depth",
+            "paf2pairs",
+            "paf-downsample",
+        ],
+    },
+    HelpGroup {
+        heading: "CONCATEMER",
+        commands: &[
+            "concat2pqs",
+            "concat2pairs",
+            "concat2depth",
+            "concat2reads",
+            "concat-split",
+            "concat-merge",
+            "concat-intersect",
+            "concat-downsample",
+            "concat-break",
+            "concat-dup",
+            "concat-chr2ctg",
+        ],
+    },
+    HelpGroup {
+        heading: "PAIRS",
+        commands: &[
+            "pairs-downsample",
+            "pairs-merge",
+            "pairs-filter",
+            "pairs-break",
+            "pairs-dup",
+            "pairs-split",
+            "pairs2contacts",
+            "pairs2clm",
+            "pairs2depth",
+            "pairs2mnd",
+            "pairs2bam",
+            "pairs2porec",
+            "pairs-chr2ctg",
+            "pairs-prune",
+            "pairs-intersect",
+            "splitcontacts",
+            "cool2mcool",
+        ],
+    },
+    HelpGroup {
+        heading: "BAM",
+        commands: &[
+            "bam2paf",
+            "bam2pairs",
+            "bam-chr2ctg",
+            "bam-prune",
+            "bam2fastq",
+            "bam2fasta",
+            "modbam2fq",
+            "bamstat",
+            "splitbam",
+        ],
+    },
+    HelpGroup {
+        heading: "ASSEMBLY & GRAPH",
+        commands: &[
+            "kprune",
+            "clm",
+            "mergeclm",
+            "splitclm",
+            "gfa",
+            "optimize",
+            "phase-reads",
+        ],
+    },
+    HelpGroup {
+        heading: "SEQUENCE, RESTRICTION ENZYME & SIMULATION",
+        commands: &[
+            "splitfastq",
+            "extract-fasta",
+            "slidefastq",
+            "slidefasta",
+            "slide2raw",
+            "digest",
+            "count_re",
+            "cutsite",
+            "chromsizes",
+            "modfa",
+            "simulator",
+        ],
+    },
+];
+
+fn use_colored_help() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
+fn append_styled(output: &mut String, text: &str, style: &str, use_color: bool) {
+    if use_color {
+        output.push_str(style);
+    }
+    output.push_str(text);
+    if use_color {
+        output.push_str("\x1b[0m");
+    }
+}
+
+fn append_command_group(
+    output: &mut String,
+    heading: &str,
+    commands: &mut Vec<&Command>,
+    use_color: bool,
+) {
+    if commands.is_empty() {
+        return;
+    }
+
+    commands.sort_by_key(|command| (command.get_display_order(), command.get_name()));
+    append_styled(
+        output,
+        &format!("{heading}:\n"),
+        "\x1b[1;32m",
+        use_color,
+    );
+
+    let width = commands
+        .iter()
+        .map(|command| command.get_name().len())
+        .max()
+        .unwrap_or_default();
+    for command in commands {
+        output.push_str("  ");
+        append_styled(output, command.get_name(), "\x1b[1;36m", use_color);
+        output.push_str(&" ".repeat(width - command.get_name().len() + 2));
+        output.push_str(
+            &command
+                .get_about()
+                .map(|about| about.to_string())
+                .unwrap_or_default(),
+        );
+        output.push('\n');
+    }
+    output.push('\n');
+}
+
+fn grouped_subcommands_help(command: &Command) -> String {
+    let use_color = use_colored_help();
+    let visible_commands = command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+
+    for group in HELP_GROUPS {
+        let mut commands = visible_commands
+            .iter()
+            .copied()
+            .filter(|command| group.commands.contains(&command.get_name()))
+            .collect::<Vec<_>>();
+        append_command_group(&mut output, group.heading, &mut commands, use_color);
+    }
+
+    let mut ungrouped = visible_commands
+        .into_iter()
+        .filter(|command| {
+            !HELP_GROUPS
+                .iter()
+                .any(|group| group.commands.contains(&command.get_name()))
+        })
+        .collect::<Vec<_>>();
+    append_command_group(&mut output, "OTHER COMMANDS", &mut ungrouped, use_color);
+    append_styled(&mut output, "OPTIONS:\n", "\x1b[1;32m", use_color);
+
+    output
+}
+
 pub fn cli() -> Command {
-    Command::new("cphasing")
+    let command = Command::new("cphasing")
         .color(ColorChoice::Auto)
         .about("Phasing and scaffolding based on Pore-C or Hi-C data")
         .subcommand_required(true)
@@ -131,10 +344,10 @@ pub fn cli() -> Command {
                         .default_value("-")
                         .help("output file, default is stdout"))
                 .arg_required_else_help(true),
-
         )
         .subcommand(
             Command::new("methalign")
+                .display_order(10)
                      .about("refine alignments by methylation or without methylation")
                         .arg(arg!(<BAM> "align bam from `dorado` "))
                         .arg(
@@ -233,6 +446,80 @@ pub fn cli() -> Command {
                         .arg_required_else_help(true),
         )
         .subcommand(
+            Command::new("cool2mcool")
+                .display_order(57)
+                .about("generate a normalized multi-resolution Cooler file from a fixed 1 kb COOL input")
+                .arg(
+                    Arg::new("INPUT")
+                        .value_name("INPUT.cool")
+                        .value_parser(value_parser!(PathBuf))
+                        .required(true)
+                        .help("input fixed-resolution, symmetric-upper COOL file at 1 kb"),
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .value_name("OUTPUT.mcool")
+                        .value_parser(value_parser!(PathBuf))
+                        .required(true)
+                        .help("destination MCOOL file"),
+                )
+                .arg(
+                    Arg::new("THREADS")
+                        .long("threads")
+                        .value_name("N")
+                        .value_parser(positive_usize)
+                        .help("Rust aggregation worker count (default: available cores, capped at 8)"),
+                )
+                .arg(
+                    Arg::new("LEVEL_PARALLELISM")
+                        .long("level-parallelism")
+                        .value_name("N")
+                        .value_parser(positive_usize)
+                        .default_value("2")
+                        .help("concurrent resolution levels (at most --threads)"),
+                )
+                .arg(
+                    Arg::new("AGGREGATION_MODE")
+                        .long("aggregation-mode")
+                        .value_name("MODE")
+                        .value_parser(["pyramid", "direct"])
+                        .default_value("pyramid")
+                        .help("reuse parent levels (pyramid), or aggregate every level from 1 kb (direct)"),
+                )
+                .arg(
+                    Arg::new("COMPRESSION_LEVEL")
+                        .long("compression-level")
+                        .value_name("LEVEL")
+                        .value_parser(cool2mcool_compression_level)
+                        .default_value("1")
+                        .help("gzip compression level for generated datasets (1-9)"),
+                )
+                .arg(
+                    Arg::new("RESOLUTIONS")
+                        .long("resolutions")
+                        .value_name("BP[,BP...]")
+                        .value_delimiter(',')
+                        .value_parser(cool2mcool_resolution)
+                        .default_value(COOL2MCOOL_DEFAULT_RESOLUTIONS)
+                        .help("comma-separated output resolutions in base pairs"),
+                )
+                .arg(
+                    Arg::new("KR_MIN_RESOLUTION")
+                        .long("kr-min-resolution")
+                        .value_name("BP")
+                        .value_parser(cool2mcool_resolution)
+                        .default_value(COOL2MCOOL_DEFAULT_KR_MIN_RESOLUTION)
+                        .help("compute and store KR at resolutions greater than or equal to this value"),
+                )
+                .arg(
+                    Arg::new("FORCE")
+                        .long("force")
+                        .action(ArgAction::SetTrue)
+                        .help("atomically replace an existing output after successful generation"),
+                )
+                .arg_required_else_help(true),
+        )
+        .subcommand(
             Command::new("alleles")
                 .alias("allele")
                 .hide(true)
@@ -304,6 +591,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("kprune")
+                .display_order(70)
                 .about("Identify the allelic and cross-allelic contig pairs by allele table")
                 .arg(arg!(<ALLELETABLE> "allele table"))
                 .arg(arg!(<CONTACTS> "contacts"))
@@ -421,6 +709,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("splitbam")
+                .display_order(69)
                 .about("split bam by record number")
                 .alias("split-bam")
                 .arg(arg!(<BAM> "align bam from `dorado`"))
@@ -440,6 +729,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("clm")
+                .display_order(71)
                 .about("Read, write, and convert CLM/CLMB files.")
                 .subcommand(
                     Command::new("convert")
@@ -466,6 +756,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("mergeclm")
+                .display_order(72)
                 .alias("clm-merge")
                 .alias("merge-clm")
                 .about("merge clm files")
@@ -489,6 +780,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("splitclm")
+                .display_order(73)
                 .alias("split-clm")
                 .alias("clm-split")
                 .about("Split CLM or CLMB by the cluster file.")
@@ -505,6 +797,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("splitcontacts")
+                .display_order(56)
                 .alias("split-contacts")
                 .about("Split contacts by the cluster file.")
                 .arg(arg!(<CONTACTS> "contacts file"))
@@ -521,6 +814,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("gfa")
+                .display_order(74)
                 .about("Process GFA-derived inputs for scaffolding.")
                 .subcommand(
                     Command::new("aggregate-contacts")
@@ -572,6 +866,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("splitfastq")
+                .display_order(80)
                 .about("split fastq by record number")
                 .alias("splitfq")
                 .arg(arg!(<FASTQ> "fastq"))
@@ -591,6 +886,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("extract-fasta")
+                .display_order(81)
                 .about("extract fasta by a cluster file")
                 .alias("split-fasta-by-cluster")
                 .alias("split-fasta-by-clusters")
@@ -606,6 +902,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("slidefastq")
+                .display_order(82)
                 .about("slide fastq")
                 .alias("slidefq")
                 .arg(arg!(<FASTQ> "fastq"))
@@ -654,6 +951,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("slidefasta")
+                .display_order(83)
                 .about("slide fasta")
                 .alias("slidefa")
                 .arg(arg!(<FASTA> "fasta"))
@@ -679,6 +977,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("slide2raw")
+                .display_order(84)
                 .about("Convert slided read id to raw in bam file")
                 .arg(arg!(<BAM> "slided read mapping bam"))
                 .arg(
@@ -697,6 +996,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("simulator")
+                .display_order(91)
                 .about("simulating test data")
                 .arg_required_else_help(true)
                 .allow_external_subcommands(true)
@@ -719,8 +1019,9 @@ pub fn cli() -> Command {
                         .help("output file, default is stdout"))
                         .arg_required_else_help(true),
                 ).subcommand(
-                    Command::new("porec")
+                    Command::new("concat")
                         .about("simulate pore-c reads")
+                        .alias("porec")
                         .arg(arg!(<FASTA> "fasta"))
                         .arg(arg!(<VCF> "vcf"))
                         .arg(arg!(<BED> "bed"))
@@ -765,6 +1066,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("kmer")
+                .display_order(85)
                 .hide(true)
                 .about("some kmer operations")
                 .arg_required_else_help(true)
@@ -842,6 +1144,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("digest")
+                .display_order(86)
                 .about("digest genome by restriction enzyme, output restriction sites")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(
@@ -868,6 +1171,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("count_re")
+                .display_order(87)
                 .alias("countre")
                 .about("count restriction enzyme sites, only support single enzyme")
                 .arg(arg!(<FASTA> "fasta"))
@@ -896,6 +1200,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("cutsite")
+                .display_order(88)
                 .about("cut restriction site on pore-c reads")
                 .arg(arg!(<FASTQ> "pore-c reads"))
                 .arg(
@@ -915,6 +1220,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("paf2depth")
+                .display_order(12)
                 .about("Calculate depth from paf file")
                 .arg(arg!(<PAF> "paf"))
                 .arg(arg!(<CHROMSIZES> "chromsizes"))
@@ -965,8 +1271,10 @@ pub fn cli() -> Command {
 
         )
         .subcommand(
-            Command::new("porec2depth")
+            Command::new("concat2depth")
+                .display_order(23)
                 .about("Calculate depth from pore-c table file")
+                .alias("porec2depth")
                 .alias("porec-depth")
                 .arg(arg!(<TABLE> "pore-c table"))
                 .arg(arg!(<CHROMSIZES> "chromsizes"))
@@ -1009,6 +1317,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("bam-chr2ctg")
+                .display_order(62)
                 .about("Convert a chromosome-level BAM file to contig-level BAM using a BED mapping")
                 .arg(
                     Arg::new("INPUT")
@@ -1045,10 +1354,11 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true)
         )
         .subcommand(
-            Command::new("paf2porec")
+            Command::new("paf2concat")
+                .display_order(11)
                 .about("convert PAF to text Pore-C or alignment-level concat PQS")
                 .alias("paf2concatemer")
-                .alias("paf2concat")
+                .alias("paf2porec")
                 .alias("paf2pcon")
                 .alias("paf2table")
                 .arg(arg!(<PAF> "paf"))
@@ -1124,8 +1434,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec2pqs")
+            Command::new("concat2pqs")
+                .display_order(21)
                 .about("convert an alignment-level Pore-C table to concat.pqs")
+                .alias("porec2pqs")
                 .alias("concatemer2pqs")
                 .alias("con2pqs")
                 .arg(arg!(<TABLE> "Pore-C alignment table, optionally gzip-compressed"))
@@ -1157,7 +1469,9 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec-split")
+            Command::new("concat-split")
+                .display_order(25)
+                .alias("porec-split")
                 .alias("split-porec")
                 .about("split a Pore-C table into complete-read concat.pqs shards")
                 .arg(arg!(<TABLE> "Pore-C table or concat.pqs directory"))
@@ -1194,8 +1508,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec2pairs")
-                .about("convert concatemers (con) table to pairs")
+            Command::new("concat2pairs")
+                .display_order(22)
+                .about("convert concatemer (con) table to pairs")
+                .alias("porec2pairs")
                 .alias("concatemer2pairs")
                 .alias("con2pairs")
                 .alias("pore2pairs")
@@ -1249,8 +1565,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec-break")
+            Command::new("concat-break")
+                .display_order(29)
                 .about("Break contigs at break points.")
+                .alias("porec-break")
                 .alias("concatemer-break")
                 .alias("con-break")
                 .arg(arg!(<TABLE> "pore-c table"))
@@ -1288,8 +1606,10 @@ pub fn cli() -> Command {
 
         )
         .subcommand(
-            Command::new("porec-dup")
+            Command::new("concat-dup")
+                .display_order(30)
                 .about("Break contigs at break points.")
+                .alias("porec-dup")
                 .alias("concatemer-dup")
                 .alias("con-dup")
                 .arg(arg!(<TABLE> "pore-c table"))
@@ -1325,8 +1645,10 @@ pub fn cli() -> Command {
 
         )
         .subcommand(
-            Command::new("porec-merge")
+            Command::new("concat-merge")
+                .display_order(26)
                 .about("merge Pore-C text tables or natively merge concat PQS directories")
+                .alias("porec-merge")
                 .alias("concatemer-merge")
                 .alias("con-merge")
                 .arg(
@@ -1353,7 +1675,9 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec2reads")
+            Command::new("concat2reads")
+                .display_order(24)
+                .alias("porec2reads")
                 .alias("concatemer2reads")
                 .alias("porec2read")
                 .about("Simulate PE reads from pore-c table and reference genome")
@@ -1431,8 +1755,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec-intersect")
+            Command::new("concat-intersect")
+                .display_order(27)
                 .about("According a bed file to intersection a concatemer (con) table.")
+                .alias("porec-intersect")
                 .alias("concatemer-intersect")
                 .alias("con-intersect")
                 .arg(arg!(<TABLE> "pore-c table"))
@@ -1465,6 +1791,7 @@ pub fn cli() -> Command {
 
         .subcommand(
             Command::new("paf-downsample")
+                .display_order(14)
                 .alias("down-paf")
                 .alias("downsample-paf")
                 .about("Downsample PAF by virtual pairs, reads, or fraction (random by query/read; VPC=order)")
@@ -1575,7 +1902,9 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec-downsample")
+            Command::new("concat-downsample")
+                .display_order(28)
+                .alias("porec-downsample")
                 .alias("down-porec")
                 .alias("downsample-porec")
                 .about("Downsample pore-c table by virtual pairs, reads, or fraction (random by read)")
@@ -1665,6 +1994,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("paf2pairs")
+                .display_order(13)
                 .about("convert paf to pairs")
                 .arg(arg!(<PAF> "paf"))
                 .arg(arg!(<CHROMSIZES> "chromsizes"))
@@ -1748,6 +2078,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-downsample")
+                .display_order(40)
                 .alias("down-pairs")
                 .alias("downsample-pairs")
                 .alias("downpairs")
@@ -1794,6 +2125,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-merge")
+                .display_order(41)
                 .alias("pairsmerge")
                 .alias("merge-pairs")
                 .about("merge multiple pairs to one")
@@ -1820,6 +2152,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-filter")
+                .display_order(42)
                 .alias("filterpairs")
                 .alias("filter-pairs")
                 .about("filter pairs by mapq")
@@ -1854,6 +2187,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-break")
+                .display_order(43)
                 .about("Break contigs at chimeric points follwed a bed")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<BREAK_BED> "break contigs with a bed format"))
@@ -1873,6 +2207,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-dup")
+                .display_order(44)
                 .about("dup collapsed contigs by collapsed rescue")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<COLLAPSED> "collapsed contigs with raw contig and duplicated contigs"))
@@ -1891,6 +2226,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-split")
+                .display_order(45)
                 .about("split pairs by chunksize")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
@@ -1910,6 +2246,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2contacts")
+                .display_order(46)
                 .alias("pairs2contact")
                 .about("calculate the contacts between contigs")
                 .arg(arg!(<PAIRS> "pairs"))
@@ -1946,6 +2283,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2clm")
+                .display_order(47)
                 .about("convert pairs to clm file, which is used for `allhic optimize`")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(Arg::new("MIN_CONTACTS")
@@ -2023,6 +2361,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2depth")
+                .display_order(48)
                 .about("convert pairs to depth file")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
@@ -2055,6 +2394,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2mnd")
+                .display_order(49)
                 .about("convert pairs to mnd file")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
@@ -2078,6 +2418,7 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         ).subcommand(
             Command::new("pairs2bam")
+                .display_order(50)
                 .about("convert pairs to pseudo bam file")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(
@@ -2103,6 +2444,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2pqs")
+                .display_order(51)
                 .hide(true)
                 .about("convert pairs to pairs.pqs file")
                 .arg(arg!(<PAIRS> "pairs"))
@@ -2125,6 +2467,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs2porec")
+                .display_order(52)
                 .about("convert pairs to pore-c table")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<ENZYME> "enzyme bed file"))
@@ -2175,8 +2518,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porec-chr2ctg")
+            Command::new("concat-chr2ctg")
+                .display_order(31)
                 .about("Convert a chromosome-level Pore-C table to contig-level Pore-C table using a BED mapping")
+                .alias("porec-chr2ctg")
                 .arg(
                     Arg::new("INPUT")
                         .long("input")
@@ -2212,7 +2557,8 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true)
         )
         .subcommand(
-        Command::new("pairs-chr2ctg")
+            Command::new("pairs-chr2ctg")
+                .display_order(53)
             .about("Convert a chromosome-level pairs PQS directory to contig-level pairs PQS; text .pairs/.pairs.gz inputs are not supported")
             .arg(
                 Arg::new("INPUT")
@@ -2258,6 +2604,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-prune")
+                .display_order(54)
                 .alias("pqs-prune")
                 .about("Prune contacts in pairs.pqs format based on a prune table")
                 .arg(
@@ -2296,6 +2643,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("bam-prune")
+                .display_order(63)
                 .about("Prune contacts in BAM format based on a prune table")
                 .arg(
                     Arg::new("BAM")
@@ -2333,6 +2681,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("bam2paf")
+                .display_order(60)
             .about("convert dorado align bam to paf")
             .arg(arg!(<BAM> "bam file should be sorted by read name, dont sort it by coordinate"))
             .arg(
@@ -2361,6 +2710,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("bam2fastq")
+                .display_order(64)
                 .about("convert bam to fastq file")
                 .arg(
                     Arg::new("BAM")
@@ -2387,6 +2737,7 @@ pub fn cli() -> Command {
 
         .subcommand(
             Command::new("bam2fasta")
+                .display_order(65)
                 .about("convert bam to fasta file")
                 .arg(arg!(<BAM> "bam"))
                 .arg(
@@ -2407,6 +2758,7 @@ pub fn cli() -> Command {
 
         .subcommand(
             Command::new("bamstat")
+                .display_order(67)
                 .about("stat the sequences in bam file")
                 .arg(
                     Arg::new("BAM")
@@ -2454,8 +2806,10 @@ pub fn cli() -> Command {
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("porecbamstat")
+            Command::new("concatbamstat")
+                .display_order(32)
                 .about("stat the porec bam")
+                .alias("porecbamstat")
                 .hide(true)
                 .arg(
                     Arg::new("BAM")
@@ -2479,6 +2833,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("bam2pairs")
+                .display_order(61)
                 .about("convert read align bam to pairs, bam should be sorted by read name, dont sort it by coordinate")
                 .arg(arg!(<BAM> "bam"))
                 .arg(
@@ -2504,6 +2859,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("pairs-intersect")
+                .display_order(55)
                 .about("According a bed file to intersection a pairs file.")
                 .arg(arg!(<PAIRS> "pairs"))
                 .arg(arg!(<BED> "3-columns bed file"))
@@ -2556,6 +2912,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("chromsizes")
+                .display_order(89)
                 .about("generate chromsizes file")
                 .alias("contigsizes")
                 .arg(arg!(<FASTA> "fasta"))
@@ -2587,6 +2944,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("phase-reads")
+                .display_order(76)
                 .alias("phasereads")
                 .about("Phase reads based on contig grouping information")
                 .arg(arg!(<INPUT> "alignment file (paf or name-sorted bam)"))
@@ -2627,6 +2985,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("modbam2fq")
+                .display_order(66)
                 .about("convert modified bam to fastq with modified base")
                 .arg(arg!(<BAM> "modified bam"))
                 .arg(
@@ -2646,6 +3005,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("modfa")
+                .display_order(90)
                 .about("modify fasta by bedMethy file")
                 .arg(arg!(<FASTA> "fasta"))
                 .arg(arg!(<BED> "bed"))
@@ -2666,6 +3026,7 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("optimize")
+                .display_order(75)
                 .about("optimize contigs order and orientation.")
                 .arg(arg!(<COUNTRE> "count RE file of single cluster"))
                 .arg(arg!(<CLMB> "CLMB contact-distance file for ALLHiC ordering and orientation"))
@@ -2775,5 +3136,10 @@ pub fn cli() -> Command {
                         .default_value("10")
                         .help("number of threads"))
                 .arg_required_else_help(true),
-        )
+        );
+
+    let grouped_help = grouped_subcommands_help(&command);
+    command
+        .help_template(ROOT_HELP_TEMPLATE)
+        .after_help(grouped_help)
 }

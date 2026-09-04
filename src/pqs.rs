@@ -3013,11 +3013,12 @@ impl PQS {
         assert!(binsize > 0, "pairs2depth binsize must be greater than zero");
 
         let min_mapq = min_quality as u32;
-        let files = if min_mapq == 0 {
+        let mut files = if min_mapq == 0 {
             collect_parquet_files(format!("{}/q0", self.file).as_str())
         } else {
             collect_parquet_files(format!("{}/q1", self.file).as_str())
         };
+        files.sort_unstable();
 
         let contigsize_file = format!("{}/_contigsizes", self.file);
         let reader = common_reader(&contigsize_file);
@@ -3044,11 +3045,6 @@ impl PQS {
         }
 
         let layout_by_name = Arc::new(layout_by_name);
-        let depth = Arc::new(
-            std::iter::repeat_with(|| AtomicU32::new(0))
-                .take(total_bins)
-                .collect::<Vec<_>>(),
-        );
         let projected_columns = if min_mapq > 1 {
             vec!["chrom1", "pos1", "chrom2", "pos2", "mapq"]
         } else {
@@ -3058,65 +3054,141 @@ impl PQS {
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-        files
-            .par_iter()
-            .try_for_each(|file| -> anyResult<()> {
-                let frame = ParquetReader::new(File::open(file)?)
-                    .with_columns(Some(projected_columns.clone()))
-                    .finish()
-                    .with_context(|| format!("failed to read pairs PQS shard {file:?}"))?;
-                let chrom1 = frame.column("chrom1")?.categorical()?;
-                let chrom2 = frame.column("chrom2")?.categorical()?;
-                let pos1 = frame.column("pos1")?.u32()?;
-                let pos2 = frame.column("pos2")?.u32()?;
-                let mapq = if min_mapq > 1 {
-                    Some(frame.column("mapq")?.u8()?)
-                } else {
-                    None
-                };
+        // Bound both the number of open Parquet frames and the number of full-sized
+        // depth accumulators. File-level parallelism can otherwise retain one frame
+        // per shard while Polars is decoding nested work in its own thread pool.
+        let worker_count = rayon::current_num_threads().min(files.len()).max(1);
+        let files_per_worker = files.len().div_ceil(worker_count).max(1);
+        let depth = files
+            .par_chunks(files_per_worker)
+            .map(|worker_files| -> anyResult<Vec<u32>> {
+                let mut local_depth = vec![0u32; total_bins];
+                for file in worker_files {
+                    let frame = ParquetReader::new(File::open(file)?)
+                        .with_columns(Some(projected_columns.clone()))
+                        .finish()
+                        .with_context(|| format!("failed to read pairs PQS shard {file:?}"))?;
+                    let chrom1 = frame.column("chrom1")?.categorical()?;
+                    let chrom2 = frame.column("chrom2")?.categorical()?;
+                    let pos1 = frame.column("pos1")?.u32()?;
+                    let pos2 = frame.column("pos2")?.u32()?;
+                    let mapq = if min_mapq > 1 {
+                        Some(frame.column("mapq")?.u8()?)
+                    } else {
+                        None
+                    };
 
-                let build_code_layout = |categorical: &CategoricalChunked| {
-                    let physical = categorical.physical();
-                    let rev_map = categorical.get_rev_map();
-                    let max_code = physical.max().unwrap_or(0) as usize;
-                    let mut code_layout = vec![None; max_code + 1];
-                    for code in 0..=max_code {
-                        let Some(name) = rev_map.get_optional(code as u32) else {
-                            continue;
-                        };
-                        code_layout[code] = layout_by_name.get(name).copied();
-                    }
-                    code_layout
-                };
-                let chrom1_layout = build_code_layout(chrom1);
-                let chrom2_layout = build_code_layout(chrom2);
-                let chrom1_codes = chrom1.physical();
-                let chrom2_codes = chrom2.physical();
-
-                for row in 0..frame.height() {
-                    if mapq.is_some_and(|values| values.get(row).unwrap_or(0) < min_quality) {
-                        continue;
-                    }
-                    for (code, position, code_layout) in [
-                        (chrom1_codes.get(row), pos1.get(row), &chrom1_layout),
-                        (chrom2_codes.get(row), pos2.get(row), &chrom2_layout),
-                    ] {
-                        let (Some(code), Some(position)) = (code, position) else {
-                            continue;
-                        };
-                        let Some((offset, num_bins)) =
-                            code_layout.get(code as usize).copied().flatten()
-                        else {
-                            continue;
-                        };
-                        let bin = (position / binsize) as usize;
-                        if bin < num_bins {
-                            depth[offset + bin].fetch_add(1, Ordering::Relaxed);
+                    let build_code_layout = |categorical: &CategoricalChunked| {
+                        let physical = categorical.physical();
+                        let rev_map = categorical.get_rev_map();
+                        let max_code = physical.max().unwrap_or(0) as usize;
+                        let mut code_layout = vec![None; max_code + 1];
+                        for code in 0..=max_code {
+                            let Some(name) = rev_map.get_optional(code as u32) else {
+                                continue;
+                            };
+                            code_layout[code] = layout_by_name.get(name).copied();
                         }
+                        code_layout
+                    };
+                    let chrom1_layout = build_code_layout(chrom1);
+                    let chrom2_layout = build_code_layout(chrom2);
+                    let chrom1_codes = chrom1.physical();
+                    let chrom2_codes = chrom2.physical();
+
+                    let mut add_endpoint =
+                        |code: u32, position: u32, code_layout: &[Option<(usize, usize)>]| {
+                            let Some((offset, num_bins)) =
+                                code_layout.get(code as usize).copied().flatten()
+                            else {
+                                return;
+                            };
+                            let bin = (position / binsize) as usize;
+                            if bin < num_bins {
+                                local_depth[offset + bin] =
+                                    local_depth[offset + bin].wrapping_add(1);
+                            }
+                        };
+
+                    if let Some(mapq) = mapq {
+                        if chrom1_codes.null_count() == 0
+                            && chrom2_codes.null_count() == 0
+                            && pos1.null_count() == 0
+                            && pos2.null_count() == 0
+                            && mapq.null_count() == 0
+                        {
+                            chrom1_codes
+                                .into_no_null_iter()
+                                .zip(chrom2_codes.into_no_null_iter())
+                                .zip(pos1.into_no_null_iter())
+                                .zip(pos2.into_no_null_iter())
+                                .zip(mapq.into_no_null_iter())
+                                .for_each(|((((code1, code2), position1), position2), quality)| {
+                                    if quality >= min_quality {
+                                        add_endpoint(code1, position1, &chrom1_layout);
+                                        add_endpoint(code2, position2, &chrom2_layout);
+                                    }
+                                });
+                        } else {
+                            chrom1_codes
+                                .into_iter()
+                                .zip(chrom2_codes.into_iter())
+                                .zip(pos1.into_iter())
+                                .zip(pos2.into_iter())
+                                .zip(mapq.into_iter())
+                                .for_each(|((((code1, code2), position1), position2), quality)| {
+                                    if quality.unwrap_or(0) < min_quality {
+                                        return;
+                                    }
+                                    if let (Some(code), Some(position)) = (code1, position1) {
+                                        add_endpoint(code, position, &chrom1_layout);
+                                    }
+                                    if let (Some(code), Some(position)) = (code2, position2) {
+                                        add_endpoint(code, position, &chrom2_layout);
+                                    }
+                                });
+                        }
+                    } else if chrom1_codes.null_count() == 0
+                        && chrom2_codes.null_count() == 0
+                        && pos1.null_count() == 0
+                        && pos2.null_count() == 0
+                    {
+                        chrom1_codes
+                            .into_no_null_iter()
+                            .zip(chrom2_codes.into_no_null_iter())
+                            .zip(pos1.into_no_null_iter())
+                            .zip(pos2.into_no_null_iter())
+                            .for_each(|(((code1, code2), position1), position2)| {
+                                add_endpoint(code1, position1, &chrom1_layout);
+                                add_endpoint(code2, position2, &chrom2_layout);
+                            });
+                    } else {
+                        chrom1_codes
+                            .into_iter()
+                            .zip(chrom2_codes.into_iter())
+                            .zip(pos1.into_iter())
+                            .zip(pos2.into_iter())
+                            .for_each(|(((code1, code2), position1), position2)| {
+                                if let (Some(code), Some(position)) = (code1, position1) {
+                                    add_endpoint(code, position, &chrom1_layout);
+                                }
+                                if let (Some(code), Some(position)) = (code2, position2) {
+                                    add_endpoint(code, position, &chrom2_layout);
+                                }
+                            });
                     }
                 }
-                Ok(())
+                Ok(local_depth)
             })
+            .try_reduce(
+                || vec![0u32; total_bins],
+                |mut left, right| {
+                    left.iter_mut()
+                        .zip(right)
+                        .for_each(|(left, right)| *left = left.wrapping_add(right));
+                    Ok(left)
+                },
+            )
             .unwrap_or_else(|error| panic!("pairs2depth failed: {error:#}"));
 
         log::info!("Formatting the depth of each contig");
@@ -3125,7 +3197,7 @@ impl PQS {
             .map(|(contig, size, offset, num_bins)| {
                 let mut buffer = Vec::with_capacity(*num_bins * 50);
                 for bin in 0..*num_bins {
-                    let count = depth[offset + bin].load(Ordering::Relaxed);
+                    let count = depth[offset + bin];
                     let bin_start = bin * binsize as usize;
                     let mut bin_end = bin_start + binsize as usize;
 

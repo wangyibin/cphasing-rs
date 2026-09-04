@@ -11,9 +11,11 @@ use indexmap::IndexMap;
 use rayon::ThreadPoolBuilder;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 // use cphasing::contacts::Contacts;
 use chrono::Local;
+use cool2mcool::mcool::{GenerationOptions, Progress, generate};
+use cool2mcool::zoomify::AggregationMode;
 use cphasing::cutsite::cut_site;
 use cphasing::fastx::{Fastx, split_fastq};
 use cphasing::gfa::{aggregate_gfa_end_contacts, contract_gfa_scaffolding_inputs};
@@ -46,6 +48,116 @@ use std::io::Write;
 use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
+fn run_cool2mcool(sub_matches: &clap::ArgMatches) {
+    let input = sub_matches.get_one::<PathBuf>("INPUT").expect("required");
+    let output = sub_matches.get_one::<PathBuf>("OUTPUT").expect("required");
+    let mut resolutions = sub_matches
+        .get_many::<u64>("RESOLUTIONS")
+        .expect("required")
+        .copied()
+        .collect::<Vec<_>>();
+    resolutions.sort_unstable();
+    if resolutions.windows(2).any(|pair| pair[0] == pair[1]) {
+        log::error!("--resolutions cannot contain duplicate values");
+        std::process::exit(1);
+    }
+
+    let aggregation_mode = match sub_matches
+        .get_one::<String>("AGGREGATION_MODE")
+        .expect("required")
+        .as_str()
+    {
+        "pyramid" => AggregationMode::Pyramid,
+        "direct" => AggregationMode::Direct,
+        _ => unreachable!("clap validates --aggregation-mode"),
+    };
+    let threads = sub_matches
+        .get_one::<usize>("THREADS")
+        .copied()
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .clamp(1, 8)
+        });
+    let options = GenerationOptions {
+        resolutions,
+        threads,
+        level_parallelism: *sub_matches
+            .get_one::<usize>("LEVEL_PARALLELISM")
+            .expect("required"),
+        aggregation_mode,
+        compression_level: *sub_matches
+            .get_one::<u8>("COMPRESSION_LEVEL")
+            .expect("required"),
+        kr_min_resolution: *sub_matches
+            .get_one::<u64>("KR_MIN_RESOLUTION")
+            .expect("required"),
+        force: *sub_matches.get_one::<bool>("FORCE").expect("required"),
+    };
+
+    match generate(input, output, &options, |event| match event {
+        Progress::ValidatingInput => {
+            log::info!("[cool2mcool] validating fixed symmetric-upper 1 kb input");
+        }
+        Progress::Zoomifying {
+            resolutions,
+            aggregation_mode,
+        } => {
+            let resolutions = resolutions
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            log::info!(
+                "[cool2mcool] running native Rust {} zoomify with gzip level {}, {} workers and {} level lane(s) for {} levels: {}",
+                aggregation_mode.as_str(),
+                options.compression_level,
+                options.threads,
+                options.level_parallelism,
+                options.resolutions.len(),
+                resolutions
+            );
+        }
+        Progress::Normalizing {
+            resolution,
+            normalization,
+        } => {
+            log::info!(
+                "[cool2mcool] {resolution} bp: computing {}",
+                normalization.as_str()
+            );
+        }
+        Progress::NormalizationFallback {
+            resolution,
+            normalization,
+            reason,
+        } => {
+            log::warn!(
+                "[cool2mcool] {resolution} bp: {} did not converge ({reason}); storing the annotated final iterate",
+                normalization.as_str()
+            );
+        }
+        Progress::Finalizing => {
+            log::info!("[cool2mcool] flushing and atomically installing output");
+        }
+        Progress::Complete => {}
+    }) {
+        Ok(report) => log::info!(
+            "[cool2mcool] wrote {} levels with available columns {}; KR stored at {} of {} levels (minimum {} bp) to {}",
+            report.resolutions.len(),
+            report.normalization_columns.join(","),
+            report.kr_resolutions.len(),
+            report.resolutions.len(),
+            report.kr_min_resolution,
+            report.output.display()
+        ),
+        Err(error) => {
+            log::error!("cool2mcool: {error}");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn main() {
     Builder::new()
@@ -160,6 +272,9 @@ fn main() {
                 &output_bam,
                 *threads,
             );
+        }
+        Some(("cool2mcool", sub_matches)) => {
+            run_cool2mcool(sub_matches);
         }
         Some(("alleles", sub_matches)) => {
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
@@ -725,7 +840,7 @@ fn main() {
                 let min_quality = sub_sub_matches.get_one::<u8>("MIN_QUALITY").expect("error");
                 simulation_from_split_read(&input_bam, &output, *min_quality);
             }
-            Some(("porec", sub_sub_matches)) => {
+            Some(("concat", sub_sub_matches)) => {
                 let fasta = sub_sub_matches
                     .get_one::<String>("FASTA")
                     .expect("required");
@@ -880,7 +995,7 @@ fn main() {
             )
             .unwrap();
         }
-        Some(("paf2porec", sub_matches)) => {
+        Some(("paf2concat", sub_matches)) => {
             let paf = sub_matches.get_one::<String>("PAF").expect("required");
             let empty_string = String::new();
             let bed = sub_matches
@@ -912,7 +1027,7 @@ fn main() {
             )
             .unwrap();
         }
-        Some(("porec2pqs", sub_matches)) => {
+        Some(("concat2pqs", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches
                 .get_one::<String>("CHROMSIZES")
@@ -962,7 +1077,7 @@ fn main() {
                 panic!("porec2pqs failed: {error}");
             }
         }
-        Some(("porec-split", sub_matches)) => {
+        Some(("concat-split", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("required");
             let chunksize = *sub_matches.get_one::<usize>("CHUNKSIZE").expect("error");
@@ -987,7 +1102,7 @@ fn main() {
                 .split_to_concat_pqs(&chromsizes.to_string(), output, chunksize, threads)
                 .unwrap_or_else(|error| panic!("porec-split failed: {error}"));
         }
-        Some(("porec2pairs", sub_matches)) => {
+        Some(("concat2pairs", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches
                 .get_one::<String>("CHROMSIZES")
@@ -1053,7 +1168,7 @@ fn main() {
                 .unwrap();
             }
         }
-        Some(("porec-break", sub_matches)) => {
+        Some(("concat-break", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let break_bed = sub_matches
                 .get_one::<String>("BREAK_BED")
@@ -1068,7 +1183,7 @@ fn main() {
                 .unwrap();
         }
 
-        Some(("porec-dup", sub_matches)) => {
+        Some(("concat-dup", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let collapsed_list = sub_matches
                 .get_one::<String>("COLLAPSED")
@@ -1094,7 +1209,7 @@ fn main() {
                     .unwrap_or_else(|error| panic!("porec-dup failed: {error}"));
             }
         }
-        Some(("porec-merge", sub_matches)) => {
+        Some(("concat-merge", sub_matches)) => {
             let tables: Vec<_> = sub_matches
                 .get_many::<String>("TABLES")
                 .expect("required")
@@ -1105,7 +1220,7 @@ fn main() {
             merge_porec_tables(tables, output, *threads)
                 .unwrap_or_else(|error| panic!("porec-merge failed: {error}"));
         }
-        Some(("porec2reads", m)) => {
+        Some(("concat2reads", m)) => {
             // let table = m.get_one::<String>("TABLE").unwrap();
             // let fasta = m.get_one::<String>("FASTA").unwrap();
             // let out_prefix = m.get_one::<String>("OUTPUT").unwrap();
@@ -1211,7 +1326,7 @@ fn main() {
                 std::fs::remove_file(tmp).ok();
             }
         }
-        Some(("porec-intersect", sub_matches)) => {
+        Some(("concat-intersect", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let bed = sub_matches.get_one::<String>("BED").expect("required");
             let invert = sub_matches.get_one::<bool>("INVERT").expect("error");
@@ -1322,7 +1437,7 @@ fn main() {
             )
             .unwrap();
         }
-        Some(("porec-downsample", sub_matches)) => {
+        Some(("concat-downsample", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let output = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
@@ -1396,7 +1511,7 @@ fn main() {
             .unwrap();
         }
 
-        Some(("porec2depth", sub_matches)) => {
+        Some(("concat2depth", sub_matches)) => {
             let table = sub_matches.get_one::<String>("TABLE").expect("required");
             let chromsizes = sub_matches
                 .get_one::<String>("CHROMSIZES")
@@ -1931,7 +2046,7 @@ fn main() {
 
             chr_to_ctg(input, bed, output, threads).unwrap();
         }
-        Some(("porec-chr2ctg", sub_m)) => {
+        Some(("concat-chr2ctg", sub_m)) => {
             let input = sub_m.get_one::<String>("INPUT").unwrap();
             let bed = sub_m.get_one::<String>("BED").unwrap();
             let output = sub_m.get_one::<String>("OUTPUT").unwrap();
@@ -2071,7 +2186,7 @@ fn main() {
 
             bamstat_hic(&bam, &output, *threads);
         }
-        Some(("porecbamstat", sub_matches)) => {
+        Some(("concatbamstat", sub_matches)) => {
             let bam: Vec<_> = sub_matches
                 .get_many::<String>("BAM")
                 .expect("required")
