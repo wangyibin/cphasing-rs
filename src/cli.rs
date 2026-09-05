@@ -53,6 +53,22 @@ fn positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn orientation_window(value: &str) -> Result<usize, String> {
+    let parsed = positive_usize(value)?;
+    if parsed > 16 {
+        return Err("orientation window must be between 1 and 16".to_string());
+    }
+    Ok(parsed)
+}
+
+fn disabled_or_block_span(value: &str) -> Result<usize, String> {
+    let parsed = value.parse::<usize>().map_err(|error| error.to_string())?;
+    if parsed == 1 {
+        return Err("block span must be 0 (disabled) or at least 2".to_string());
+    }
+    Ok(parsed)
+}
+
 fn cool2mcool_resolution(value: &str) -> Result<u64, String> {
     let resolution = value.parse::<u64>().map_err(|error| {
         format!("expected a positive resolution in base pairs, got {value:?}: {error}")
@@ -3127,6 +3143,116 @@ pub fn cli() -> Command {
                         .long("no-backbone")
                         .action(ArgAction::SetTrue)
                         .help("disable high-confidence path-block initialization")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_METHOD")
+                        .long("orientation-method")
+                        .value_parser(["banded-legacy", "robust", "banded", "banded-contact", "intervening", "legacy"])
+                        .default_value("banded-legacy")
+                        .help("orientation solver: historical banded DP and signed-block refinement (banded-legacy, default), conservative banded DP (banded), experimental endpoint evidence (robust), experimental contact-only margin (banded-contact), intervening-gap refinement, or legacy ALLHiC behavior")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_WINDOW")
+                        .long("orientation-window")
+                        .value_name("CONTIGS")
+                        .value_parser(orientation_window)
+                        .default_value("3")
+                        .help("local rank window for orientation evidence and signed block refinement (1-16)")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_PAIR_WEIGHT")
+                        .long("orientation-pair-weight")
+                        .value_parser(["links", "sqrt-links", "equal-pair"])
+                        .default_value("sqrt-links")
+                        .help("normalization applied to each contig-pair orientation score")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_MIN_LINKS")
+                        .long("orientation-min-links")
+                        .value_name("N")
+                        .value_parser(positive_usize)
+                        .default_value("3")
+                        .help("minimum retained links required for a contig pair to orient")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_TRUST_INPUT")
+                        .long("orientation-trust-input")
+                        .action(ArgAction::SetTrue)
+                        .requires("RESUME")
+                        .help("apply an input-sign prior to an explicitly trusted resumed tour in robust mode")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_AUDIT")
+                        .long("orientation-audit")
+                        .value_name("TSV")
+                        .help("write per-contig endpoint evidence diagnostics in robust mode (not calibrated probabilities)")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_PRIOR")
+                        .long("orientation-prior")
+                        .value_name("STRENGTH")
+                        .value_parser(non_negative_f64)
+                        .default_value("0.05")
+                        .help("dimensionless input-sign penalty in banded modes; in robust mode applied only with --orientation-trust-input")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_MIN_CONFIDENCE")
+                        .long("orientation-min-confidence")
+                        .value_name("FRACTION")
+                        .hide_default_value(true)
+                        .value_parser(unit_interval_f64)
+                        .default_value_if("ORIENTATION_METHOD", "banded-legacy", "0")
+                        .default_value_if("ORIENTATION_METHOD", "robust", "0.2")
+                        .default_value("0.95")
+                        .help("minimum normalized max-marginal effect (banded: 0.95) or endpoint effect (robust: 0.2); banded-legacy requires 0 (disabled); not a calibrated probability")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_MAX_FLIP_BP_FRACTION")
+                        .long("orientation-max-flip-bp-fraction")
+                        .value_name("FRACTION")
+                        .hide_default_value(true)
+                        .value_parser(positive_unit_interval_f64)
+                        .default_value_if("ORIENTATION_METHOD", "banded-legacy", "1")
+                        .default_value("0.05")
+                        .help("largest consecutive changed-sign run as a fraction of scaffold bp; banded-legacy requires 1 (unrestricted); other modes default to 0.05")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_SPAN")
+                        .long("orientation-block-span")
+                        .value_name("CONTIGS")
+                        .hide_default_value(true)
+                        .value_parser(disabled_or_block_span)
+                        .default_value_if("ORIENTATION_METHOD", "banded-legacy", "32")
+                        .default_value("0")
+                        .help("largest reverse-complement block; banded-legacy defaults to 32, other modes to 0 (disabled); robust tests blocks before single signs, banded modes afterwards")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_MAX_BP_FRACTION")
+                        .long("orientation-block-max-bp-fraction")
+                        .value_name("FRACTION")
+                        .hide_default_value(true)
+                        .value_parser(positive_unit_interval_f64)
+                        .default_value_if("ORIENTATION_METHOD", "banded-legacy", "1")
+                        .default_value("0.05")
+                        .help("largest reverse-complement block as a fraction of scaffold bp; banded-legacy requires 1 (unrestricted); conservative modes default to 0.05")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_PASSES")
+                        .long("orientation-block-passes")
+                        .value_name("N")
+                        .value_parser(positive_usize)
+                        .default_value("4")
+                        .help("maximum signed block-refinement sweeps")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_MIN_GAIN")
+                        .long("orientation-block-min-gain")
+                        .value_name("FRACTION")
+                        .hide_default_value(true)
+                        .value_parser(non_negative_f64)
+                        .default_value_if("ORIENTATION_METHOD", "banded-legacy", "0.0001")
+                        .default_value("0.05")
+                        .help("minimum relative local-band gain for banded-legacy (0.0001), or independent improvement at both boundaries for conservative banded modes (0.05)")
                 )
                 .arg(
                     Arg::new("THREADS")

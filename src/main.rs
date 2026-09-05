@@ -22,7 +22,8 @@ use cphasing::gfa::{aggregate_gfa_end_contacts, contract_gfa_scaffolding_inputs}
 use cphasing::kprune::*;
 use cphasing::methy::{modbam2fastq, modify_fasta};
 use cphasing::optimize::{
-    AllhicProblem, BackboneConfig, OptimizeConfig, OrderObjective, optimize_order,
+    AllhicProblem, BackboneConfig, BandedOrientationConfig, EvidenceOrientationConfig, OptimizeConfig, OrderObjective,
+    OrientationGapModel, OrientationPairWeight, OrientationProblem, SignedBlockRefineConfig, optimize_order,
     optimize_order_with_hierarchical_joins,
 };
 use cphasing::order::*;
@@ -2370,6 +2371,55 @@ fn main() {
                 .get_one::<bool>("ENDPOINT_MULTISCALE")
                 .expect("error");
             let no_backbone = sub_matches.get_one::<bool>("NO_BACKBONE").expect("error");
+            let orientation_method = sub_matches
+                .get_one::<String>("ORIENTATION_METHOD")
+                .expect("error");
+            if orientation_method != "robust" && (sub_matches.get_flag("ORIENTATION_TRUST_INPUT")
+                || sub_matches.get_one::<String>("ORIENTATION_AUDIT").is_some()) {
+                log::error!("--orientation-trust-input and --orientation-audit require --orientation-method robust");
+                std::process::exit(2);
+            }
+            let orientation_window = sub_matches
+                .get_one::<usize>("ORIENTATION_WINDOW")
+                .expect("error");
+            let orientation_pair_weight = sub_matches
+                .get_one::<String>("ORIENTATION_PAIR_WEIGHT")
+                .expect("error");
+            let orientation_min_links = sub_matches
+                .get_one::<usize>("ORIENTATION_MIN_LINKS")
+                .expect("error");
+            let orientation_prior = sub_matches
+                .get_one::<f64>("ORIENTATION_PRIOR")
+                .expect("error");
+            let orientation_min_confidence = sub_matches
+                .get_one::<f64>("ORIENTATION_MIN_CONFIDENCE")
+                .expect("error");
+            let orientation_max_flip_bp_fraction = sub_matches
+                .get_one::<f64>("ORIENTATION_MAX_FLIP_BP_FRACTION")
+                .expect("error");
+            let orientation_block_span = sub_matches
+                .get_one::<usize>("ORIENTATION_BLOCK_SPAN")
+                .expect("error");
+            let orientation_block_max_bp_fraction = sub_matches
+                .get_one::<f64>("ORIENTATION_BLOCK_MAX_BP_FRACTION")
+                .expect("error");
+            let orientation_block_passes = sub_matches
+                .get_one::<usize>("ORIENTATION_BLOCK_PASSES")
+                .expect("error");
+            let orientation_block_min_gain = sub_matches
+                .get_one::<f64>("ORIENTATION_BLOCK_MIN_GAIN")
+                .expect("error");
+
+            if orientation_method == "banded-legacy"
+                && (*orientation_min_confidence != 0.0
+                    || *orientation_max_flip_bp_fraction != 1.0
+                    || (*orientation_block_span >= 2 && *orientation_block_max_bp_fraction != 1.0))
+            {
+                log::error!(
+                    "--orientation-method banded-legacy requires --orientation-min-confidence 0, --orientation-max-flip-bp-fraction 1 and --orientation-block-max-bp-fraction 1 when blocks are enabled; use --orientation-method banded for confidence or bp limits"
+                );
+                std::process::exit(2);
+            }
 
             let _output = Path::new(&count_re).file_stem().unwrap().to_str().unwrap();
             let output = Path::new(_output).with_extension("tour");
@@ -2644,27 +2694,165 @@ fn main() {
             if initializer == "end-greedy" {
                 tour.signs.fill(true);
             }
-            if *endpoint_multiscale {
-                log::info!(
-                    "Endpoint multi-scale objective retains the signed initializer orientation (fitness {:.6})",
-                    orientation_problem.evaluate(&tour)
-                );
-            } else {
-                let result = if *resume
-                    || initializer == "end-tsp"
-                    || initializer == "end-hierarchical"
-                    || initializer == "end-beam"
-                {
-                    orientation_problem.refine(&mut tour)
-                } else {
-                    orientation_problem.optimize(&mut tour)
-                };
-                log::info!(
-                    "ALLHiC orientation fitness: {:.6} -> {:.6} ({} phases)",
-                    result.initial_score,
-                    result.final_score,
-                    result.phases
-                );
+            let has_oriented_seed = *resume
+                || *endpoint_multiscale
+                || initializer == "end-tsp"
+                || initializer == "end-hierarchical"
+                || initializer == "end-beam";
+            match orientation_method.as_str() {
+                "robust" => {
+                    log::warn!("Endpoint evidence is experimental; cross-dataset non-regression validation has not passed. Uncertain input signs are retained, not certified correct.");
+                    let trusted = sub_matches.get_flag("ORIENTATION_TRUST_INPUT");
+                    let result = orientation_problem.optimize_evidence(
+                        &mut tour,
+                        EvidenceOrientationConfig {
+                            rank_window: *orientation_window,
+                            min_links: *orientation_min_links,
+                            min_effect: *orientation_min_confidence,
+                            input_prior: if trusted { *orientation_prior } else { 0.0 },
+                            block_span: *orientation_block_span,
+                            passes: *orientation_block_passes,
+                        },
+                    ).unwrap_or_else(|error| panic!("endpoint evidence optimization failed: {error}"));
+                    if let Some(path) = sub_matches.get_one::<String>("ORIENTATION_AUDIT") {
+                        let mut audit = std::io::BufWriter::new(std::fs::File::create(path)
+                            .unwrap_or_else(|error| panic!("cannot create orientation audit {path}: {error}")));
+                        writeln!(audit, "contig\tlocal_effect\tcontext_effect\tleft_effect\tright_effect\tneighbours\tsupported").unwrap();
+                        for decision in &result.decisions {
+                            writeln!(audit, "{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}",
+                                idx2contig[&decision.contig], decision.local, decision.context,
+                                decision.left, decision.right, decision.neighbours, decision.supported).unwrap();
+                        }
+                        audit.flush().unwrap();
+                    }
+                    log::info!(
+                        "Endpoint evidence: changed signs={}, uncertain contigs={}, valid pairs={}, invalid quartets={}, accepted blocks={}, evaluated blocks={}, trusted input={}",
+                        result.changed_signs, result.uncertain_contigs, result.valid_pairs,
+                        result.invalid_pairs, result.accepted_blocks, result.evaluated_blocks, trusted,
+                    );
+                }
+                "legacy" if *endpoint_multiscale => {
+                    log::info!(
+                        "Legacy endpoint multi-scale mode retains the signed initializer orientation (fitness {:.6})",
+                        orientation_problem.evaluate(&tour)
+                    );
+                }
+                "legacy" => {
+                    let result = if has_oriented_seed {
+                        orientation_problem.refine(&mut tour)
+                    } else {
+                        orientation_problem.optimize(&mut tour)
+                    };
+                    log::info!(
+                        "Legacy ALLHiC orientation fitness: {:.6} -> {:.6} ({} phases)",
+                        result.initial_score,
+                        result.final_score,
+                        result.phases
+                    );
+                }
+                "intervening" => {
+                    if !has_oriented_seed {
+                        orientation_problem.initialize_spectral_with_gap_model(
+                            &mut tour,
+                            OrientationGapModel::Intervening,
+                        );
+                    }
+                    let result = orientation_problem
+                        .refine_with_gap_model(&mut tour, OrientationGapModel::Intervening);
+                    log::info!(
+                        "Intervening-gap orientation fitness: {:.6} -> {:.6} ({} phases)",
+                        result.initial_score,
+                        result.final_score,
+                        result.phases
+                    );
+                }
+                "banded-legacy" | "banded" | "banded-contact" => {
+                    if !has_oriented_seed {
+                        orientation_problem.initialize_spectral_with_gap_model(
+                            &mut tour,
+                            OrientationGapModel::Intervening,
+                        );
+                    }
+                    let source_orientation_tour = tour.clone();
+                    let pair_weight = match orientation_pair_weight.as_str() {
+                        "links" => OrientationPairWeight::Links,
+                        "sqrt-links" => OrientationPairWeight::SqrtLinks,
+                        "equal-pair" => OrientationPairWeight::EqualPair,
+                        _ => unreachable!("validated by clap"),
+                    };
+                    let orientation_config = BandedOrientationConfig {
+                        rank_window: *orientation_window,
+                        gap_model: OrientationGapModel::Intervening,
+                        pair_weight,
+                        min_links: *orientation_min_links,
+                        require_complete: true,
+                    };
+                    let solver = if orientation_method == "banded-contact" {
+                        log::warn!("Contact-only marginal is experimental; its normalized effect is not a probability of correctness.");
+                        OrientationProblem::optimize_banded_contact_evidence
+                    } else {
+                        OrientationProblem::optimize_banded_conservative
+                    };
+                    let result = solver(
+                            &orientation_problem,
+                            &mut tour,
+                            orientation_config,
+                            *orientation_prior,
+                            *orientation_min_confidence,
+                            *orientation_max_flip_bp_fraction,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("banded orientation optimization failed: {error}")
+                        });
+                    log::info!(
+                        "Banded orientation fitness: {:.6} -> {:.6}; changed signs={}, rejected low-confidence changes={}, rejected oversized changes={}, used pairs={}, skipped incomplete pairs={}",
+                        result.initial_score,
+                        result.final_score,
+                        result.changed_signs,
+                        result.rejected_low_confidence,
+                        result.rejected_oversized_changes,
+                        result.used_pairs,
+                        result.skipped_incomplete_pairs,
+                    );
+
+                    if *orientation_block_span >= 2 && tour.contigs.len() >= 2 {
+                        let block_config = SignedBlockRefineConfig {
+                            max_span: *orientation_block_span,
+                            max_bp_fraction: *orientation_block_max_bp_fraction,
+                            max_passes: *orientation_block_passes,
+                            min_relative_gain: *orientation_block_min_gain,
+                        };
+                        let block_result = if orientation_method == "banded-legacy" {
+                            log::info!("Using historical banded signed-block refinement");
+                            orientation_problem.refine_signed_blocks_legacy_objective(
+                                &mut tour,
+                                orientation_config,
+                                *orientation_prior,
+                                block_config,
+                            )
+                        } else {
+                            orientation_problem.refine_signed_blocks_conservative(
+                                &mut tour,
+                                &source_orientation_tour,
+                                orientation_config,
+                                *orientation_prior,
+                                block_config,
+                            )
+                        }
+                        .unwrap_or_else(|error| {
+                            panic!("signed block refinement failed: {error}")
+                        });
+                        log::info!(
+                            "Signed block refinement: {:.6} -> {:.6}; accepted moves={}, evaluated moves={}, passes={}",
+                            block_result.initial_score,
+                            block_result.final_score,
+                            block_result.accepted_moves,
+                            block_result.evaluated_moves,
+                            block_result.passes,
+                        );
+                    }
+                }
+                _ => unreachable!("validated by clap"),
             }
 
             let mut writer = common_writer(output.to_str().unwrap());

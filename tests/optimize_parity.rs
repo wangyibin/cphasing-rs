@@ -3,8 +3,8 @@ use cphasing::core::ContigPair;
 use cphasing::optimize::{
     AllhicProblem, BackboneConfig, BackbonePlan, BandedOrientationConfig, OptimizeConfig,
     OptimizeProblem, OrderObjective, OrientationGapModel, OrientationPairWeight,
-    OrientationProblem, OrientedDistanceRecord, UnitGene, mutate_allhic, optimize_order,
-    optimize_order_with_hierarchical_joins,
+    OrientationProblem, OrientedDistanceRecord, SignedBlockRefineConfig, UnitGene, mutate_allhic,
+    optimize_order, optimize_order_with_hierarchical_joins,
 };
 use cphasing::order::{
     HierarchicalJoinEvidence, Tour, run_beam_end_initializer, run_hierarchical_end_initializer,
@@ -1136,6 +1136,257 @@ fn orientation_banded_dp_matches_bruteforce_for_every_pair_weight() {
 }
 
 #[test]
+fn historical_block_refinement_rejects_bp_limits_without_mutation() {
+    let (problem, target) = exact_banded_orientation_problem();
+    let initial = Tour { contigs: (0..target.len()).collect(), signs: target };
+    for fraction in [0.0, 0.05, 1.1, f64::NAN] {
+        let mut tour = initial.clone();
+        let error = problem.refine_signed_blocks_legacy_objective(
+            &mut tour,
+            BandedOrientationConfig::default(),
+            0.05,
+            SignedBlockRefineConfig { max_bp_fraction: fraction, ..SignedBlockRefineConfig::default() },
+        ).unwrap_err();
+        assert!(error.contains("requires max_bp_fraction = 1"));
+        assert_eq!(tour.contigs, initial.contigs);
+        assert_eq!(tour.signs, initial.signs);
+    }
+}
+
+#[test]
+fn signed_block_refinement_repairs_a_reverse_complemented_internal_block() {
+    let target = [true, false, true, false];
+    let records = [(0, 1), (1, 2), (2, 3)]
+        .into_iter()
+        .flat_map(|(u, v)| {
+            let preferred = (usize::from(!target[u]) << 1) | usize::from(!target[v]);
+            let mut distances = [30_000, 90_000, 150_000, 270_000];
+            distances[preferred] = 3_000;
+            complete_orientation_pair(u, v, distances, 10)
+        })
+        .collect::<Vec<_>>();
+    let problem = OrientationProblem::from_oriented_distances(
+        vec![200_000_000, 10_000_000, 20_000_000, 150_000_000],
+        records,
+    )
+    .unwrap();
+    let orientation_config = BandedOrientationConfig {
+        rank_window: 1,
+        gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3,
+        require_complete: true,
+    };
+    let block_config = SignedBlockRefineConfig {
+        max_span: 3,
+        max_bp_fraction: 0.1,
+        max_passes: 4,
+        min_relative_gain: 1e-4,
+    };
+    let mut tour = Tour {
+        contigs: vec![0, 2, 1, 3],
+        signs: vec![true, false, true, false],
+    };
+    let source_tour = tour.clone();
+
+    problem
+        .optimize_banded_with_source_prior(&mut tour, orientation_config, 0.05)
+        .unwrap();
+    let result = problem
+        .refine_signed_blocks_conservative(
+            &mut tour,
+            &source_tour,
+            orientation_config,
+            0.05,
+            block_config,
+        )
+        .unwrap();
+
+    assert_eq!(tour.contigs, vec![0, 1, 2, 3]);
+    assert_eq!(tour.signs, target);
+    assert_eq!(result.accepted_moves, 1);
+    assert!(result.evaluated_moves > 0);
+    assert!(result.final_score > result.initial_score);
+}
+
+#[test]
+fn signed_block_refinement_requires_both_boundaries() {
+    let target = [true, false, true, false];
+    let records = [(0, 1)]
+        .into_iter()
+        .flat_map(|(u, v)| {
+            let preferred = (usize::from(!target[u]) << 1) | usize::from(!target[v]);
+            let mut distances = [30_000, 90_000, 150_000, 270_000];
+            distances[preferred] = 3_000;
+            complete_orientation_pair(u, v, distances, 10)
+        })
+        .collect::<Vec<_>>();
+    let problem = OrientationProblem::from_oriented_distances(
+        vec![200_000_000, 10_000_000, 20_000_000, 150_000_000],
+        records,
+    )
+    .unwrap();
+    let orientation_config = BandedOrientationConfig {
+        rank_window: 1,
+        gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3,
+        require_complete: true,
+    };
+    let block_config = SignedBlockRefineConfig {
+        max_span: 3,
+        max_bp_fraction: 0.1,
+        max_passes: 4,
+        min_relative_gain: 1e-4,
+    };
+    let source = Tour {
+        contigs: vec![0, 2, 1, 3],
+        signs: vec![true, false, true, false],
+    };
+    let mut tour = source.clone();
+
+    let result = problem
+        .refine_signed_blocks_conservative(
+            &mut tour,
+            &source,
+            orientation_config,
+            0.05,
+            block_config,
+        )
+        .unwrap();
+
+    assert_eq!(tour.contigs, source.contigs);
+    assert_eq!(tour.signs, source.signs);
+    assert_eq!(result.accepted_moves, 0);
+}
+
+#[test]
+fn signed_block_refinement_respects_bp_fraction() {
+    let target = [true, false, true, false];
+    let records = [(0, 1), (1, 2), (2, 3)]
+        .into_iter()
+        .flat_map(|(u, v)| {
+            let preferred = (usize::from(!target[u]) << 1) | usize::from(!target[v]);
+            let mut distances = [30_000, 90_000, 150_000, 270_000];
+            distances[preferred] = 3_000;
+            complete_orientation_pair(u, v, distances, 10)
+        })
+        .collect::<Vec<_>>();
+    let problem = OrientationProblem::from_oriented_distances(
+        vec![200_000_000, 10_000_000, 20_000_000, 150_000_000],
+        records,
+    )
+    .unwrap();
+    let orientation_config = BandedOrientationConfig {
+        rank_window: 1,
+        gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3,
+        require_complete: true,
+    };
+    let block_config = SignedBlockRefineConfig {
+        max_span: 3,
+        max_bp_fraction: 0.05,
+        max_passes: 4,
+        min_relative_gain: 1e-4,
+    };
+    let source = Tour {
+        contigs: vec![0, 2, 1, 3],
+        signs: vec![true, false, true, false],
+    };
+    let mut tour = source.clone();
+
+    let result = problem
+        .refine_signed_blocks_conservative(
+            &mut tour,
+            &source,
+            orientation_config,
+            0.05,
+            block_config,
+        )
+        .unwrap();
+
+    assert_eq!(tour.contigs, source.contigs);
+    assert_eq!(tour.signs, source.signs);
+    assert_eq!(result.accepted_moves, 0);
+}
+
+#[test]
+fn signed_block_refinement_is_reverse_complement_covariant() {
+    let target = [true, false, true, false];
+    let records = [(0, 1), (1, 2), (2, 3)]
+        .into_iter()
+        .flat_map(|(u, v)| {
+            let preferred = (usize::from(!target[u]) << 1) | usize::from(!target[v]);
+            let mut distances = [30_000, 90_000, 150_000, 270_000];
+            distances[preferred] = 3_000;
+            complete_orientation_pair(u, v, distances, 10)
+        })
+        .collect::<Vec<_>>();
+    let problem = OrientationProblem::from_oriented_distances(
+        vec![200_000_000, 10_000_000, 20_000_000, 150_000_000],
+        records,
+    )
+    .unwrap();
+    let orientation_config = BandedOrientationConfig {
+        rank_window: 1,
+        gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3,
+        require_complete: true,
+    };
+    let block_config = SignedBlockRefineConfig {
+        max_span: 3,
+        max_bp_fraction: 0.1,
+        max_passes: 4,
+        min_relative_gain: 1e-4,
+    };
+    let mut direct = Tour {
+        contigs: vec![0, 2, 1, 3],
+        signs: vec![true, false, true, false],
+    };
+    let mut reverse_complement = Tour {
+        contigs: direct.contigs.iter().rev().copied().collect(),
+        signs: direct.signs.iter().rev().map(|sign| !*sign).collect(),
+    };
+
+    let direct_source = direct.clone();
+    let reverse_source = reverse_complement.clone();
+    problem
+        .refine_signed_blocks_conservative(
+            &mut direct,
+            &direct_source,
+            orientation_config,
+            0.05,
+            block_config,
+        )
+        .unwrap();
+    problem
+        .refine_signed_blocks_conservative(
+            &mut reverse_complement,
+            &reverse_source,
+            orientation_config,
+            0.05,
+            block_config,
+        )
+        .unwrap();
+
+    assert_eq!(
+        reverse_complement.contigs,
+        direct.contigs.iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reverse_complement.signs,
+        direct
+            .signs
+            .iter()
+            .rev()
+            .map(|sign| !*sign)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn orientation_banded_skips_missing_and_unequal_four_cell_pairs() {
     let mut records = complete_orientation_pair(0, 1, [3_000, 4_000, 5_000, 6_000], 2);
     records.pop();
@@ -1402,6 +1653,93 @@ fn orientation_banded_source_prior_controls_changes_and_is_strictly_rc_covariant
         reverse_result.final_score.to_bits()
     );
     assert_eq!(direct_result.changed_signs, reverse_result.changed_signs);
+}
+
+#[test]
+fn orientation_banded_confidence_does_not_charge_the_source_prior_twice() {
+    let problem = OrientationProblem::from_oriented_distances(
+        vec![100_000; 2],
+        complete_orientation_pair(0, 1, [3_000, 3_000, 270_000, 270_000], 64),
+    ).unwrap();
+    let mut tour = Tour { contigs: vec![0, 1], signs: vec![false, false] };
+    let result = problem.optimize_banded_contact_evidence(
+        &mut tour,
+        BandedOrientationConfig {
+            rank_window: 1, gap_model: OrientationGapModel::Intervening,
+            pair_weight: OrientationPairWeight::EqualPair, min_links: 1, require_complete: true,
+        },
+        0.05, 0.95, 1.0,
+    ).unwrap();
+    // The contact-only margin is maximal; the 0.05 optimization prior must
+    // not cap its reported effect at 0.95 and make the >0.95 gate unreachable.
+    assert_eq!(tour.signs, vec![true, false]);
+    assert_eq!(result.changed_signs, 1);
+    assert_eq!(result.rejected_low_confidence, 0);
+}
+
+#[test]
+fn orientation_banded_max_marginal_gate_rejects_uncertain_changes() {
+    let (_, _, problem) = source_prior_orientation_fixture();
+    let initial = Tour {
+        contigs: vec![0, 1, 2],
+        signs: vec![false, false, false],
+    };
+    let config = BandedOrientationConfig {
+        rank_window: 2,
+        gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::EqualPair,
+        min_links: 1,
+        require_complete: true,
+    };
+    let mut ungated = initial.clone();
+    let mut zero_gate = initial.clone();
+    let mut fully_guarded = initial.clone();
+    let mut bp_guarded = initial.clone();
+
+    let ungated_result = problem
+        .optimize_banded_with_source_prior(&mut ungated, config, 0.05)
+        .unwrap();
+    let zero_gate_result = problem
+        .optimize_banded_with_source_prior_and_confidence(&mut zero_gate, config, 0.05, 0.0)
+        .unwrap();
+    let guarded_result = problem
+        .optimize_banded_with_source_prior_and_confidence(&mut fully_guarded, config, 0.05, 1.0)
+        .unwrap();
+    let bp_guarded_result = problem
+        .optimize_banded_conservative(&mut bp_guarded, config, 0.05, 0.0, 0.01)
+        .unwrap();
+
+    assert_eq!(ungated.signs, zero_gate.signs);
+    assert_eq!(ungated_result, zero_gate_result);
+    assert_eq!(fully_guarded.signs, initial.signs);
+    assert_eq!(guarded_result.changed_signs, 0);
+    assert_eq!(
+        guarded_result.rejected_low_confidence,
+        ungated_result.changed_signs
+    );
+    assert_eq!(bp_guarded.signs, initial.signs);
+    assert_eq!(bp_guarded_result.changed_signs, 0);
+    assert_eq!(
+        bp_guarded_result.rejected_oversized_changes,
+        ungated_result.changed_signs
+    );
+
+    for invalid in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+        let mut rejected = initial.clone();
+        let error = problem
+            .optimize_banded_with_source_prior_and_confidence(&mut rejected, config, 0.05, invalid)
+            .unwrap_err();
+        assert!(error.contains("between 0 and 1"));
+        assert_eq!(rejected.signs, initial.signs);
+    }
+    for invalid in [-0.1, 0.0, 1.1, f64::NAN, f64::INFINITY] {
+        let mut rejected = initial.clone();
+        let error = problem
+            .optimize_banded_conservative(&mut rejected, config, 0.05, 0.0, invalid)
+            .unwrap_err();
+        assert!(error.contains("in (0, 1]"));
+        assert_eq!(rejected.signs, initial.signs);
+    }
 }
 
 #[test]

@@ -1392,6 +1392,7 @@ struct OrientationSummary {
     bins: GoldenArray,
     links: usize,
     sum_log_distance: f64,
+    sum_distance: f64,
     present: bool,
 }
 
@@ -1401,6 +1402,7 @@ impl Default for OrientationSummary {
             bins: [0; GOLDEN_BINS],
             links: 0,
             sum_log_distance: 0.0,
+            sum_distance: 0.0,
             present: false,
         }
     }
@@ -1464,14 +1466,73 @@ pub struct BandedOrientationResult {
     pub initial_score: f64,
     pub final_score: f64,
     pub changed_signs: usize,
+    pub rejected_low_confidence: usize,
+    pub rejected_oversized_changes: usize,
     pub used_pairs: usize,
     pub skipped_incomplete_pairs: usize,
+}
+
+/// Configuration for post-order signed block refinement. Each accepted move
+/// reverse-complements one contiguous block: the order is reversed and every
+/// sign in the block is flipped atomically.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedBlockRefineConfig {
+    /// Largest block, in contigs, considered by one refinement move.
+    pub max_span: usize,
+    /// Largest block as a fraction of the scaffold length in base pairs.
+    pub max_bp_fraction: f64,
+    /// Maximum number of accepted best-improvement sweeps.
+    pub max_passes: usize,
+    /// Required normalized improvement at each of the two block boundaries.
+    pub min_relative_gain: f64,
+}
+
+impl Default for SignedBlockRefineConfig {
+    fn default() -> Self {
+        Self {
+            max_span: 32,
+            max_bp_fraction: 0.05,
+            max_passes: 4,
+            min_relative_gain: 0.05,
+        }
+    }
+}
+
+/// Audit summary returned by signed block refinement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedBlockRefineResult {
+    pub initial_score: f64,
+    pub final_score: f64,
+    pub accepted_moves: usize,
+    pub evaluated_moves: usize,
+    pub passes: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct BandedOrientationEdge {
     left_rank: usize,
     potentials: [f64; 4],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SignedBoundaryEvidence {
+    reward: f64,
+    support: usize,
+    confidence: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SignedBlockMove {
+    start: usize,
+    end: usize,
+    block_bp: u64,
+    old_left: SignedBoundaryEvidence,
+    new_left: SignedBoundaryEvidence,
+    old_right: SignedBoundaryEvidence,
+    new_right: SignedBoundaryEvidence,
+    left_gain: f64,
+    right_gain: f64,
+    total_gain: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1636,6 +1697,7 @@ impl OrientationProblem {
                 return Err("orientation contact distance must be greater than zero".into());
             }
             entry.sum_log_distance += (distance as f64).ln();
+            entry.sum_distance += distance as f64;
             entry.bins[golden_bin(distance)] += 1;
         }
         Ok(())
@@ -1727,9 +1789,77 @@ impl OrientationProblem {
         config: BandedOrientationConfig,
         prior_strength: f64,
     ) -> Result<BandedOrientationResult, String> {
+        self.optimize_banded_with_source_prior_and_confidence(tour, config, prior_strength, 0.0)
+    }
+
+    /// Exactly maximize the banded objective, then retain only sign changes
+    /// whose global max-marginal advantage is sufficiently decisive. The
+    /// margin is normalized by all retained evidence incident on that contig,
+    /// so one threshold is comparable across contact protocols and depths.
+    pub fn optimize_banded_with_source_prior_and_confidence(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+        prior_strength: f64,
+        min_confidence: f64,
+    ) -> Result<BandedOrientationResult, String> {
+        self.optimize_banded_conservative(tour, config, prior_strength, min_confidence, 1.0)
+    }
+
+    /// Apply max-marginal confidence and physical-span safety gates after the
+    /// exact banded optimization. Consecutive changed signs whose aggregate
+    /// length exceeds `max_flip_bp_fraction` of the scaffold are restored to
+    /// their input signs.
+    pub fn optimize_banded_conservative(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+        prior_strength: f64,
+        min_confidence: f64,
+        max_flip_bp_fraction: f64,
+    ) -> Result<BandedOrientationResult, String> {
+        self.optimize_banded_margin(tour, config, prior_strength, min_confidence, max_flip_bp_fraction, false)
+    }
+
+    /// Experimental contact-margin variant. Remove the queried node's input
+    /// prior from its max-marginal contrast; other nodes retain their priors.
+    /// The resulting normalized effect is not a probability of correctness.
+    pub fn optimize_banded_contact_evidence(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+        prior_strength: f64,
+        min_confidence: f64,
+        max_flip_bp_fraction: f64,
+    ) -> Result<BandedOrientationResult, String> {
+        self.optimize_banded_margin(tour, config, prior_strength, min_confidence, max_flip_bp_fraction, true)
+    }
+
+    fn optimize_banded_margin(
+        &self,
+        tour: &mut Tour<usize>,
+        config: BandedOrientationConfig,
+        prior_strength: f64,
+        min_confidence: f64,
+        max_flip_bp_fraction: f64,
+        contact_margin: bool,
+    ) -> Result<BandedOrientationResult, String> {
         if !prior_strength.is_finite() || prior_strength < 0.0 {
             return Err(format!(
                 "banded orientation prior_strength must be finite and non-negative, got {prior_strength}"
+            ));
+        }
+        if !min_confidence.is_finite() || !(0.0..=1.0).contains(&min_confidence) {
+            return Err(format!(
+                "banded orientation min_confidence must be between 0 and 1, got {min_confidence}"
+            ));
+        }
+        if !max_flip_bp_fraction.is_finite()
+            || max_flip_bp_fraction <= 0.0
+            || max_flip_bp_fraction > 1.0
+        {
+            return Err(format!(
+                "banded orientation max_flip_bp_fraction must be in (0, 1], got {max_flip_bp_fraction}"
             ));
         }
         if config.rank_window == 0 || config.rank_window > MAX_BANDED_ORIENTATION_WINDOW {
@@ -1853,6 +1983,8 @@ impl OrientationProblem {
                 initial_score: 0.0,
                 final_score: 0.0,
                 changed_signs: 0,
+                rejected_low_confidence: 0,
+                rejected_oversized_changes: 0,
                 used_pairs,
                 skipped_incomplete_pairs,
             });
@@ -1897,7 +2029,28 @@ impl OrientationProblem {
             score: 0.0,
             changed_signs: 0,
         };
+        let transition_score = |right_rank: usize, state: usize, right_bit: usize| -> f64 {
+            let added_score = edges_by_right[right_rank]
+                .iter()
+                .map(|edge| {
+                    let distance = right_rank - edge.left_rank;
+                    let left_bit = (state >> (distance - 1)) & 1;
+                    edge.potentials[(left_bit << 1) | right_bit]
+                })
+                .sum::<f64>();
+            let sign_changed = (right_bit != 0) != input_signs[right_rank];
+            if prior_strength == 0.0 || !sign_changed {
+                added_score
+            } else {
+                added_score - prior_strength * node_scale[right_rank]
+            }
+        };
         let mut parents = vec![vec![u32::MAX; state_count]; n];
+        let mut forward_scores = (min_confidence > 0.0).then(|| {
+            let mut scores = Vec::with_capacity(n + 1);
+            scores.push(current.iter().map(|cell| cell.score).collect::<Vec<_>>());
+            scores
+        });
         let state_mask = state_count - 1;
         for right_rank in 0..n {
             next.fill(unreachable);
@@ -1906,22 +2059,10 @@ impl OrientationProblem {
                     continue;
                 }
                 for right_bit in 0..2 {
-                    let mut added_score = 0.0;
-                    for edge in &edges_by_right[right_rank] {
-                        let distance = right_rank - edge.left_rank;
-                        let left_bit = (state >> (distance - 1)) & 1;
-                        added_score += edge.potentials[(left_bit << 1) | right_bit];
-                    }
                     let next_state = ((state << 1) | right_bit) & state_mask;
                     let sign_changed = (right_bit != 0) != input_signs[right_rank];
-                    let raw_candidate_score = cell.score + added_score;
-                    let objective_score = if prior_strength == 0.0 || !sign_changed {
-                        raw_candidate_score
-                    } else {
-                        raw_candidate_score - prior_strength * node_scale[right_rank]
-                    };
                     let candidate = BandedOrientationCell {
-                        score: objective_score,
+                        score: cell.score + transition_score(right_rank, state, right_bit),
                         changed_signs: cell.changed_signs + usize::from(sign_changed),
                     };
                     let incumbent_parent = parents[right_rank][next_state] as usize;
@@ -1937,6 +2078,9 @@ impl OrientationProblem {
                 }
             }
             std::mem::swap(&mut current, &mut next);
+            if let Some(scores) = &mut forward_scores {
+                scores.push(current.iter().map(|cell| cell.score).collect());
+            }
         }
 
         let mut best_state = 0usize;
@@ -1955,13 +2099,93 @@ impl OrientationProblem {
             debug_assert_ne!(parent, u32::MAX);
             state = parent as usize;
         }
+        let unconstrained_changed_signs = optimized_signs
+            .iter()
+            .zip(&input_signs)
+            .filter(|(optimized, input)| optimized != input)
+            .count();
+        debug_assert_eq!(unconstrained_changed_signs, best.changed_signs);
+
+        let mut rejected_low_confidence = 0usize;
+        if let Some(forward_scores) = forward_scores {
+            let mut backward_next = vec![0.0_f64; state_count];
+            let mut backward_current = vec![f64::NEG_INFINITY; state_count];
+            for right_rank in (0..n).rev() {
+                let mut marginal = [f64::NEG_INFINITY; 2];
+                backward_current.fill(f64::NEG_INFINITY);
+                for state in 0..state_count {
+                    let forward = forward_scores[right_rank][state];
+                    if !forward.is_finite() {
+                        continue;
+                    }
+                    for right_bit in 0..2 {
+                        let next_state = ((state << 1) | right_bit) & state_mask;
+                        let suffix = backward_next[next_state];
+                        if !suffix.is_finite() {
+                            continue;
+                        }
+                        let transition = transition_score(right_rank, state, right_bit);
+                        marginal[right_bit] =
+                            marginal[right_bit].max(forward + transition + suffix);
+                        backward_current[state] = backward_current[state].max(transition + suffix);
+                    }
+                }
+
+                if optimized_signs[right_rank] != input_signs[right_rank] {
+                    let optimized_bit = usize::from(optimized_signs[right_rank]);
+                    let input_bit = usize::from(input_signs[right_rank]);
+                    let scale = node_scale[right_rank];
+                    let confidence = if scale > f64::EPSILON {
+                        // Remove this node's own input-sign penalty before
+                        // measuring evidence. Otherwise the maximum margin is
+                        // 1 - prior_strength, making a 0.95 gate with a 0.05
+                        // prior impossible to pass in exact arithmetic.
+                        let raw = (marginal[optimized_bit] - marginal[input_bit]) / scale;
+                        if contact_margin { (raw + prior_strength).clamp(0.0, 1.0) }
+                        else { raw.clamp(0.0, 1.0) }
+                    } else {
+                        0.0
+                    };
+                    if confidence <= min_confidence {
+                        optimized_signs[right_rank] = input_signs[right_rank];
+                        rejected_low_confidence += 1;
+                    }
+                }
+                std::mem::swap(&mut backward_current, &mut backward_next);
+            }
+        }
+
+        let total_bp = working_tour
+            .contigs
+            .iter()
+            .fold(0u64, |total, &id| total.saturating_add(self.lengths[id]));
+        let max_changed_bp = ((total_bp as f64) * max_flip_bp_fraction).ceil() as u64;
+        let mut rejected_oversized_changes = 0usize;
+        let mut run_start = 0usize;
+        while run_start < n {
+            if optimized_signs[run_start] == input_signs[run_start] {
+                run_start += 1;
+                continue;
+            }
+            let mut run_end = run_start + 1;
+            let mut run_bp = self.lengths[working_tour.contigs[run_start]];
+            while run_end < n && optimized_signs[run_end] != input_signs[run_end] {
+                run_bp = run_bp.saturating_add(self.lengths[working_tour.contigs[run_end]]);
+                run_end += 1;
+            }
+            if run_bp > max_changed_bp {
+                optimized_signs[run_start..run_end]
+                    .copy_from_slice(&input_signs[run_start..run_end]);
+                rejected_oversized_changes += run_end - run_start;
+            }
+            run_start = run_end;
+        }
         let final_score = score_signs(&optimized_signs);
         let changed_signs = optimized_signs
             .iter()
             .zip(&input_signs)
             .filter(|(optimized, input)| optimized != input)
             .count();
-        debug_assert_eq!(changed_signs, best.changed_signs);
         if reverse_axis {
             optimized_signs.reverse();
             for sign in &mut optimized_signs {
@@ -1973,9 +2197,631 @@ impl OrientationProblem {
             initial_score,
             final_score,
             changed_signs,
+            rejected_low_confidence,
+            rejected_oversized_changes,
             used_pairs,
             skipped_incomplete_pairs,
         })
+    }
+
+    /// Historical local-band block objective used by `optimize --orientation-method
+    /// banded-legacy`. Reverse-complement blocks are scored using all affected
+    /// banded pairs; each accepted move is followed by ungated banded orientation
+    /// with a prior on the current signs. Terminal blocks are included.
+    ///
+    /// `max_bp_fraction` must be 1: the historical method has no physical-span
+    /// limit. Use [`Self::refine_signed_blocks_conservative`] for that policy.
+    pub fn refine_signed_blocks_legacy_objective(
+        &self,
+        tour: &mut Tour<usize>,
+        orientation_config: BandedOrientationConfig,
+        prior_strength: f64,
+        config: SignedBlockRefineConfig,
+    ) -> Result<SignedBlockRefineResult, String> {
+        if orientation_config.gap_model != OrientationGapModel::Intervening {
+            return Err(
+                "signed block refinement requires the reverse-complement-invariant intervening gap model"
+                    .into(),
+            );
+        }
+        if orientation_config.rank_window == 0
+            || orientation_config.rank_window > MAX_BANDED_ORIENTATION_WINDOW
+        {
+            return Err(format!(
+                "signed block refinement rank_window must be in 1..={MAX_BANDED_ORIENTATION_WINDOW}, got {}",
+                orientation_config.rank_window
+            ));
+        }
+        if config.max_span < 2 {
+            return Err("signed block refinement max_span must be at least 2".into());
+        }
+        if config.max_bp_fraction != 1.0 {
+            return Err(
+                "historical signed block refinement requires max_bp_fraction = 1; use conservative refinement for a physical-span limit".into(),
+            );
+        }
+        if config.max_passes == 0 {
+            return Err("signed block refinement max_passes must be greater than zero".into());
+        }
+        if !config.min_relative_gain.is_finite() || config.min_relative_gain < 0.0 {
+            return Err(format!(
+                "signed block refinement min_relative_gain must be finite and non-negative, got {}",
+                config.min_relative_gain
+            ));
+        }
+        if !prior_strength.is_finite() || prior_strength < 0.0 {
+            return Err(format!(
+                "signed block refinement prior_strength must be finite and non-negative, got {prior_strength}"
+            ));
+        }
+
+        let Some((mut positions, mut signs_by_id, mut starts)) = self.layout(tour) else {
+            return Err(
+                "signed block refinement requires a complete tour without duplicate contigs".into(),
+            );
+        };
+        if positions.iter().any(|&position| position == usize::MAX) {
+            return Err(
+                "signed block refinement tour does not contain every problem contig".into(),
+            );
+        }
+
+        let mut pair_rewards = self
+            .pairs
+            .iter()
+            .map(|pair| {
+                self.banded_signed_pair_reward(
+                    pair,
+                    &positions,
+                    &signs_by_id,
+                    &starts,
+                    orientation_config,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut current_score = pair_rewards.iter().sum::<f64>();
+        let initial_score = current_score;
+        let mut accepted_moves = 0usize;
+        let mut evaluated_moves = 0usize;
+        let mut passes = 0usize;
+        let mut pair_marks = vec![0u32; self.pairs.len()];
+        let mut mark = 0u32;
+        let mut affected_pairs = Vec::new();
+
+        let max_span = config.max_span.min(tour.contigs.len());
+        for _ in 0..config.max_passes {
+            passes += 1;
+            let mut best_move = None;
+            let mut best_score = current_score;
+
+            for span in 2..=max_span {
+                for start in 0..=tour.contigs.len() - span {
+                    let end = start + span - 1;
+                    mark = mark.wrapping_add(1);
+                    if mark == 0 {
+                        pair_marks.fill(0);
+                        mark = 1;
+                    }
+                    affected_pairs.clear();
+                    for &id in &tour.contigs[start..=end] {
+                        for &pair_index in &self.incident_pairs[id] {
+                            if pair_marks[pair_index] == mark {
+                                continue;
+                            }
+                            pair_marks[pair_index] = mark;
+                            let pair = &self.pairs[pair_index];
+                            let u_inside = (start..=end).contains(&positions[pair.u]);
+                            let v_inside = (start..=end).contains(&positions[pair.v]);
+                            if u_inside != v_inside {
+                                affected_pairs.push(pair_index);
+                            }
+                        }
+                    }
+
+                    reverse_complement_range(tour, start, end);
+                    self.refresh_layout_range(
+                        tour,
+                        &mut positions,
+                        &mut signs_by_id,
+                        &mut starts,
+                        start,
+                        end,
+                    );
+                    let old_local = affected_pairs
+                        .iter()
+                        .map(|&pair_index| pair_rewards[pair_index])
+                        .sum::<f64>();
+                    let new_local = affected_pairs
+                        .iter()
+                        .map(|&pair_index| {
+                            self.banded_signed_pair_reward(
+                                &self.pairs[pair_index],
+                                &positions,
+                                &signs_by_id,
+                                &starts,
+                                orientation_config,
+                            )
+                        })
+                        .sum::<f64>();
+                    let candidate_score = current_score - old_local + new_local;
+                    evaluated_moves += 1;
+                    reverse_complement_range(tour, start, end);
+                    self.refresh_layout_range(
+                        tour,
+                        &mut positions,
+                        &mut signs_by_id,
+                        &mut starts,
+                        start,
+                        end,
+                    );
+
+                    let local_scale = old_local.abs().max(new_local.abs()).max(1.0);
+                    let sufficient_gain =
+                        candidate_score - current_score > config.min_relative_gain * local_scale;
+                    let better_than_best = candidate_score > best_score
+                        || (candidate_score == best_score
+                            && best_move.is_some_and(|(best_start, best_end)| {
+                                span < best_end - best_start + 1
+                                    || (span == best_end - best_start + 1 && start < best_start)
+                            }));
+                    if sufficient_gain && better_than_best {
+                        best_score = candidate_score;
+                        best_move = Some((start, end));
+                    }
+                }
+            }
+
+            let Some((start, end)) = best_move else {
+                break;
+            };
+            reverse_complement_range(tour, start, end);
+            self.optimize_banded_with_source_prior(tour, orientation_config, prior_strength)?;
+            let Some(layout) = self.layout(tour) else {
+                return Err("signed block refinement produced an invalid optimized tour".into());
+            };
+            (positions, signs_by_id, starts) = layout;
+            for (pair_index, pair) in self.pairs.iter().enumerate() {
+                pair_rewards[pair_index] = self.banded_signed_pair_reward(
+                    pair,
+                    &positions,
+                    &signs_by_id,
+                    &starts,
+                    orientation_config,
+                );
+            }
+            current_score = pair_rewards.iter().sum();
+            accepted_moves += 1;
+        }
+
+        Ok(SignedBlockRefineResult {
+            initial_score,
+            final_score: current_score,
+            accepted_moves,
+            evaluated_moves,
+            passes,
+        })
+    }
+
+    fn banded_signed_pair_reward(
+        &self,
+        pair: &PairOrientationData,
+        positions: &[usize],
+        signs_by_id: &[bool],
+        starts: &[u64],
+        config: BandedOrientationConfig,
+    ) -> f64 {
+        let pu = positions[pair.u];
+        let pv = positions[pair.v];
+        if pu == usize::MAX || pv == usize::MAX {
+            return 0.0;
+        }
+        let span = pu.abs_diff(pv);
+        if span == 0 || span > config.rank_window {
+            return 0.0;
+        }
+
+        let first_links = pair.orientations[0].links;
+        let complete = pair
+            .orientations
+            .iter()
+            .all(|summary| summary.present && summary.links == first_links);
+        let support = if complete {
+            first_links
+        } else {
+            pair.orientations
+                .iter()
+                .map(|summary| summary.links)
+                .max()
+                .unwrap_or(0)
+        };
+        if (config.require_complete && !complete) || support == 0 || support < config.min_links {
+            return 0.0;
+        }
+
+        let (left, right, orientation) = if pu < pv {
+            (
+                pu,
+                pv,
+                orientation_index(signs_by_id[pair.u], signs_by_id[pair.v]),
+            )
+        } else {
+            (
+                pv,
+                pu,
+                orientation_index(!signs_by_id[pair.u], !signs_by_id[pair.v]),
+            )
+        };
+        let gap = orientation_gap(starts, left, right, config.gap_model);
+        if gap > MAX_ORIENTATION_DISTANCE {
+            return 0.0;
+        }
+        let divisor = match config.pair_weight {
+            OrientationPairWeight::Links => 1.0,
+            OrientationPairWeight::SqrtLinks => (support as f64).sqrt(),
+            OrientationPairWeight::EqualPair => support as f64,
+        };
+        let pair_scores = pair
+            .orientations
+            .each_ref()
+            .map(|summary| self.evaluate_summary(summary, gap) / divisor);
+        let pair_min = pair_scores.iter().copied().fold(f64::INFINITY, f64::min);
+        (pair_scores[orientation] - pair_min).max(0.0)
+    }
+
+    /// Conservative signed-block refinement shared by all contact protocols.
+    /// A block is accepted only when both of its replacement adjacencies improve
+    /// independently, its physical span is bounded, and the gain overcomes a
+    /// sign prior anchored to the immutable source tour.
+    pub fn refine_signed_blocks_conservative(
+        &self,
+        tour: &mut Tour<usize>,
+        source_tour: &Tour<usize>,
+        orientation_config: BandedOrientationConfig,
+        prior_strength: f64,
+        config: SignedBlockRefineConfig,
+    ) -> Result<SignedBlockRefineResult, String> {
+        if orientation_config.gap_model != OrientationGapModel::Intervening {
+            return Err(
+                "conservative signed block refinement requires the reverse-complement-invariant intervening gap model"
+                    .into(),
+            );
+        }
+        if config.max_span < 2 {
+            return Err("signed block refinement max_span must be at least 2".into());
+        }
+        if !config.max_bp_fraction.is_finite()
+            || config.max_bp_fraction <= 0.0
+            || config.max_bp_fraction > 1.0
+        {
+            return Err(format!(
+                "signed block refinement max_bp_fraction must be in (0, 1], got {}",
+                config.max_bp_fraction
+            ));
+        }
+        if config.max_passes == 0 {
+            return Err("signed block refinement max_passes must be greater than zero".into());
+        }
+        if !config.min_relative_gain.is_finite() || config.min_relative_gain < 0.0 {
+            return Err(format!(
+                "signed block refinement min_relative_gain must be finite and non-negative, got {}",
+                config.min_relative_gain
+            ));
+        }
+        if !prior_strength.is_finite() || prior_strength < 0.0 {
+            return Err(format!(
+                "signed block refinement prior_strength must be finite and non-negative, got {prior_strength}"
+            ));
+        }
+
+        let Some((source_positions, source_signs_by_id, _)) = self.layout(source_tour) else {
+            return Err(
+                "signed block refinement source tour must be complete without duplicate contigs"
+                    .into(),
+            );
+        };
+        if source_positions
+            .iter()
+            .any(|&position| position == usize::MAX)
+        {
+            return Err("signed block refinement source tour is incomplete".into());
+        }
+        let Some((positions, _, _)) = self.layout(tour) else {
+            return Err(
+                "signed block refinement requires a complete tour without duplicate contigs".into(),
+            );
+        };
+        if positions.iter().any(|&position| position == usize::MAX) {
+            return Err(
+                "signed block refinement tour does not contain every problem contig".into(),
+            );
+        }
+
+        let mismatch_count = |candidate: &Tour<usize>| -> usize {
+            candidate
+                .contigs
+                .iter()
+                .zip(&candidate.signs)
+                .filter(|(id, sign)| source_signs_by_id[**id] != **sign)
+                .count()
+        };
+        let objective = |candidate: &Tour<usize>| -> f64 {
+            self.signed_adjacency_score(candidate, orientation_config)
+                - prior_strength * mismatch_count(candidate) as f64
+        };
+        let total_bp = tour.contigs.iter().map(|&id| self.lengths[id]).sum::<u64>();
+        let max_block_bp = ((total_bp as f64) * config.max_bp_fraction).ceil() as u64;
+        let mut current_score = objective(tour);
+        let initial_score = current_score;
+        let mut accepted_moves = 0usize;
+        let mut evaluated_moves = 0usize;
+        let mut passes = 0usize;
+
+        // Terminal blocks expose only one changed boundary, so they cannot pass
+        // the same two-sided evidence rule as internal blocks.
+        let max_span = config.max_span.min(tour.contigs.len().saturating_sub(2));
+        for _ in 0..config.max_passes {
+            passes += 1;
+            let mut best_move: Option<SignedBlockMove> = None;
+            let mut best_score = current_score;
+
+            for span in 2..=max_span {
+                for start in 1..tour.contigs.len() - span {
+                    let end = start + span - 1;
+                    let block_bp = tour.contigs[start..=end]
+                        .iter()
+                        .map(|&id| self.lengths[id])
+                        .sum::<u64>();
+                    if block_bp > max_block_bp {
+                        continue;
+                    }
+
+                    let old_left = self
+                        .signed_boundary_evidence(
+                            tour.contigs[start - 1],
+                            tour.signs[start - 1],
+                            tour.contigs[start],
+                            tour.signs[start],
+                            orientation_config,
+                        )
+                        .unwrap_or(SignedBoundaryEvidence {
+                            reward: 0.0,
+                            support: 0,
+                            confidence: 0.0,
+                        });
+                    let old_right = self
+                        .signed_boundary_evidence(
+                            tour.contigs[end],
+                            tour.signs[end],
+                            tour.contigs[end + 1],
+                            tour.signs[end + 1],
+                            orientation_config,
+                        )
+                        .unwrap_or(SignedBoundaryEvidence {
+                            reward: 0.0,
+                            support: 0,
+                            confidence: 0.0,
+                        });
+                    let old_mismatches = tour.contigs[start..=end]
+                        .iter()
+                        .zip(&tour.signs[start..=end])
+                        .filter(|(id, sign)| source_signs_by_id[**id] != **sign)
+                        .count();
+
+                    reverse_complement_range(tour, start, end);
+                    let new_left = self.signed_boundary_evidence(
+                        tour.contigs[start - 1],
+                        tour.signs[start - 1],
+                        tour.contigs[start],
+                        tour.signs[start],
+                        orientation_config,
+                    );
+                    let new_right = self.signed_boundary_evidence(
+                        tour.contigs[end],
+                        tour.signs[end],
+                        tour.contigs[end + 1],
+                        tour.signs[end + 1],
+                        orientation_config,
+                    );
+                    let new_mismatches = tour.contigs[start..=end]
+                        .iter()
+                        .zip(&tour.signs[start..=end])
+                        .filter(|(id, sign)| source_signs_by_id[**id] != **sign)
+                        .count();
+                    let candidate = match (new_left, new_right) {
+                        (Some(new_left), Some(new_right)) => {
+                            let support_not_weaker = new_left.support >= old_left.support
+                                && new_right.support >= old_right.support;
+                            let confidence_improves = new_left.confidence - old_left.confidence
+                                > config.min_relative_gain
+                                && new_right.confidence - old_right.confidence
+                                    > config.min_relative_gain;
+                            if !support_not_weaker || !confidence_improves {
+                                reverse_complement_range(tour, start, end);
+                                evaluated_moves += 1;
+                                continue;
+                            }
+                            let left_gain = new_left.reward - old_left.reward;
+                            let right_gain = new_right.reward - old_right.reward;
+                            let prior_delta =
+                                prior_strength * (new_mismatches as f64 - old_mismatches as f64);
+                            let total_gain = left_gain + right_gain - prior_delta;
+                            Some((left_gain, right_gain, total_gain))
+                        }
+                        _ => None,
+                    };
+                    reverse_complement_range(tour, start, end);
+                    evaluated_moves += 1;
+
+                    let Some((left_gain, right_gain, total_gain)) = candidate else {
+                        continue;
+                    };
+                    let candidate_score = current_score + total_gain;
+                    let both_boundaries_improve = left_gain > config.min_relative_gain
+                        && right_gain > config.min_relative_gain;
+                    let sufficient_total_gain = total_gain > config.min_relative_gain;
+                    let better_than_best = candidate_score > best_score
+                        || (candidate_score == best_score
+                            && best_move.is_some_and(|best| {
+                                span < best.end - best.start + 1
+                                    || (span == best.end - best.start + 1 && start < best.start)
+                            }));
+                    if both_boundaries_improve && sufficient_total_gain && better_than_best {
+                        best_score = candidate_score;
+                        best_move = Some(SignedBlockMove {
+                            start,
+                            end,
+                            block_bp,
+                            old_left,
+                            new_left: new_left.unwrap(),
+                            old_right,
+                            new_right: new_right.unwrap(),
+                            left_gain,
+                            right_gain,
+                            total_gain,
+                        });
+                    }
+                }
+            }
+
+            let Some(best) = best_move else {
+                break;
+            };
+            reverse_complement_range(tour, best.start, best.end);
+            current_score = objective(tour);
+            debug_assert!((current_score - best_score).abs() <= 1e-9);
+            accepted_moves += 1;
+            log::info!(
+                "Accepted signed block: start={}, end={}, contigs={}, bp={}, left_support={}->{}, right_support={}->{}, left_confidence={:.6}->{:.6}, right_confidence={:.6}->{:.6}, left_gain={:.6}, right_gain={:.6}, total_gain={:.6}",
+                best.start + 1,
+                best.end + 1,
+                best.end - best.start + 1,
+                best.block_bp,
+                best.old_left.support,
+                best.new_left.support,
+                best.old_right.support,
+                best.new_right.support,
+                best.old_left.confidence,
+                best.new_left.confidence,
+                best.old_right.confidence,
+                best.new_right.confidence,
+                best.left_gain,
+                best.right_gain,
+                best.total_gain,
+            );
+        }
+
+        Ok(SignedBlockRefineResult {
+            initial_score,
+            final_score: current_score,
+            accepted_moves,
+            evaluated_moves,
+            passes,
+        })
+    }
+
+    fn signed_adjacency_score(&self, tour: &Tour<usize>, config: BandedOrientationConfig) -> f64 {
+        tour.contigs
+            .windows(2)
+            .zip(tour.signs.windows(2))
+            .filter_map(|(ids, signs)| {
+                self.signed_boundary_evidence(ids[0], signs[0], ids[1], signs[1], config)
+            })
+            .map(|evidence| evidence.reward)
+            .sum()
+    }
+
+    /// Return a bounded, support-saturated orientation compatibility score for
+    /// one proposed signed adjacency. Normalizing each pair to [0, 1] avoids
+    /// comparing arbitrary pair-specific likelihood offsets when a block move
+    /// replaces one boundary pair with another.
+    fn signed_boundary_evidence(
+        &self,
+        left_id: usize,
+        left_sign: bool,
+        right_id: usize,
+        right_sign: bool,
+        config: BandedOrientationConfig,
+    ) -> Option<SignedBoundaryEvidence> {
+        let (u, v) = if left_id < right_id {
+            (left_id, right_id)
+        } else {
+            (right_id, left_id)
+        };
+        let pair_index = self
+            .pairs
+            .binary_search_by_key(&(u, v), |pair| (pair.u, pair.v))
+            .ok()?;
+        let pair = &self.pairs[pair_index];
+        let first_links = pair.orientations[0].links;
+        let complete = pair
+            .orientations
+            .iter()
+            .all(|summary| summary.present && summary.links == first_links);
+        let support = if complete {
+            first_links
+        } else {
+            pair.orientations
+                .iter()
+                .map(|summary| summary.links)
+                .max()
+                .unwrap_or(0)
+        };
+        if (config.require_complete && !complete) || support < config.min_links {
+            return None;
+        }
+
+        let divisor = match config.pair_weight {
+            OrientationPairWeight::Links => 1.0,
+            OrientationPairWeight::SqrtLinks => (support as f64).sqrt(),
+            OrientationPairWeight::EqualPair => support as f64,
+        };
+        let scores = pair
+            .orientations
+            .each_ref()
+            .map(|summary| self.evaluate_summary(summary, 0) / divisor);
+        let minimum = scores.iter().copied().fold(f64::INFINITY, f64::min);
+        let maximum = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let range = maximum - minimum;
+        if !range.is_finite() || range <= f64::EPSILON {
+            return None;
+        }
+        let orientation = if pair.u == left_id {
+            orientation_index(left_sign, right_sign)
+        } else {
+            orientation_index(!right_sign, !left_sign)
+        };
+        let runner_up = scores
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != orientation)
+            .map(|(_, score)| *score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let confidence = ((scores[orientation] - runner_up) / range).clamp(0.0, 1.0);
+        Some(SignedBoundaryEvidence {
+            reward: confidence * (support as f64).ln_1p(),
+            support,
+            confidence,
+        })
+    }
+
+    fn refresh_layout_range(
+        &self,
+        tour: &Tour<usize>,
+        positions: &mut [usize],
+        signs_by_id: &mut [bool],
+        starts: &mut [u64],
+        start: usize,
+        end: usize,
+    ) {
+        let mut cumulative = starts[start];
+        for position in start..=end {
+            let id = tour.contigs[position];
+            positions[id] = position;
+            signs_by_id[id] = tour.signs[position];
+            starts[position] = cumulative;
+            cumulative = cumulative.saturating_add(self.lengths[id]);
+        }
+        debug_assert!(end + 1 == starts.len() || cumulative == starts[end + 1]);
     }
 
     fn layout(&self, tour: &Tour<usize>) -> Option<(Vec<usize>, Vec<bool>, Vec<u64>)> {
@@ -2083,6 +2929,29 @@ impl OrientationProblem {
         self.flip_all(tour)
     }
 
+    /// Spectral orientation initialization evaluated with an explicit gap
+    /// convention. This avoids accepting a legacy-asymmetric initialization
+    /// before intervening-gap refinement.
+    pub fn initialize_spectral_with_gap_model(
+        &self,
+        tour: &mut Tour<usize>,
+        gap_model: OrientationGapModel,
+    ) -> bool {
+        let old_signs = tour.signs.clone();
+        let old_score = self.evaluate_with_gap_model(tour, gap_model);
+        let spectral = self.spectral_signs();
+        for (position, &id) in tour.contigs.iter().enumerate() {
+            tour.signs[position] = spectral[id];
+        }
+        let new_score = self.evaluate_with_gap_model(tour, gap_model);
+        if new_score < old_score {
+            tour.signs = old_signs;
+            false
+        } else {
+            true
+        }
+    }
+
     /// Repeated ALLHiC `flipWhole` + `flipOne` refinement. This is also the
     /// orientation entry point for an already oriented/resumed tour.
     pub fn refine(&self, tour: &mut Tour<usize>) -> OrientationResult {
@@ -2153,19 +3022,7 @@ impl OrientationProblem {
     }
 
     fn flip_all(&self, tour: &mut Tour<usize>) -> bool {
-        let old_signs = tour.signs.clone();
-        let old_score = self.evaluate(tour);
-        let spectral = self.spectral_signs();
-        for (position, &id) in tour.contigs.iter().enumerate() {
-            tour.signs[position] = spectral[id];
-        }
-        let new_score = self.evaluate(tour);
-        if new_score < old_score {
-            tour.signs = old_signs;
-            false
-        } else {
-            true
-        }
+        self.initialize_spectral_with_gap_model(tour, OrientationGapModel::AllhicLegacy)
     }
 
     fn flip_whole(&self, tour: &mut Tour<usize>) -> bool {
@@ -2330,6 +3187,390 @@ impl OrientationProblem {
     }
 }
 
+/// Protocol-independent endpoint evidence recovered from complete CLM quartets.
+/// The four mean distances identify each endpoint's mean mapped coordinate;
+/// unlike log-distance potentials this is independent of the other contig's
+/// length and of the chosen orientation of that contig. Link counts are capped
+/// when weighting evidence: CLM does not retain independent molecule IDs.
+
+#[derive(Clone, Copy, Debug)]
+pub struct EvidenceOrientationConfig {
+    pub rank_window: usize,
+    pub min_links: usize,
+    /// Minimum endpoint effect, not a probability of correctness.
+    pub min_effect: f64,
+    /// Only supplied for an explicitly trusted input tour.
+    pub input_prior: f64,
+    pub block_span: usize,
+    pub passes: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EvidenceOrientationResult {
+    pub changed_signs: usize,
+    pub uncertain_contigs: usize,
+    pub valid_pairs: usize,
+    pub invalid_pairs: usize,
+    pub accepted_blocks: usize,
+    pub evaluated_blocks: usize,
+    pub decisions: Vec<EvidenceOrientationDecision>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EvidenceOrientationDecision {
+    pub contig: usize,
+    pub local: f64,
+    pub context: f64,
+    pub left: f64,
+    pub right: f64,
+    pub neighbours: usize,
+    pub supported: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EndpointPair {
+    u: usize,
+    v: usize,
+    /// Mean coordinate scaled to [-1, 1]; +1 is the forward tail.
+    u_bias: f64,
+    v_bias: f64,
+    links: usize,
+    weight: f64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Vote {
+    score: f64,
+    weight: f64,
+}
+
+impl Vote {
+    fn add(&mut self, effect: f64, weight: f64) {
+        self.score += effect * weight;
+        self.weight += weight;
+    }
+
+    fn mean(self) -> f64 {
+        if self.weight == 0.0 {
+            0.0
+        } else {
+            self.score / self.weight
+        }
+    }
+}
+
+impl OrientationProblem {
+    /// Infer signs and signed blocks with the same evidence policy for every
+    /// protocol and for resumed and de-novo orders. Unknown signs keep their
+    /// input value, but this fallback is not treated as evidence.
+    pub fn optimize_evidence(
+        &self,
+        tour: &mut Tour<usize>,
+        config: EvidenceOrientationConfig,
+    ) -> Result<EvidenceOrientationResult, String> {
+        if config.rank_window == 0
+            || config.rank_window > 16
+            || config.min_links == 0
+            || config.passes == 0
+            || !config.min_effect.is_finite()
+            || !(0.0..=1.0).contains(&config.min_effect)
+            || !config.input_prior.is_finite()
+            || config.input_prior < 0.0
+        {
+            return Err("invalid endpoint-evidence configuration".into());
+        }
+        let n = self.lengths.len();
+        if tour.contigs.len() != n || self.layout(tour).is_none() {
+            return Err("endpoint evidence requires a complete, unique signed tour".into());
+        }
+        let reverse_axis =
+            tour.contigs.iter().rev().cmp(tour.contigs.iter()) == std::cmp::Ordering::Less;
+        if reverse_axis {
+            reverse_complement_range(tour, 0, n - 1);
+        }
+        let initial = tour.clone();
+        let mut original_signs = vec![false; n];
+        for (&id, &sign) in initial.contigs.iter().zip(&initial.signs) {
+            original_signs[id] = sign;
+        }
+        let mut result = EvidenceOrientationResult::default();
+        let mut pairs = Vec::new();
+        for pair in &self.pairs {
+            let links = pair.orientations[0].links;
+            if links < config.min_links {
+                continue;
+            }
+            if !pair
+                .orientations
+                .iter()
+                .all(|s| s.present && s.links == links)
+            {
+                result.invalid_pairs += 1;
+                continue;
+            }
+            let means = pair
+                .orientations
+                .each_ref()
+                .map(|s| s.sum_distance / links as f64);
+            let lu = self.lengths[pair.u] as f64;
+            let lv = self.lengths[pair.v] as f64;
+            // D++ = Lu-x+y, D+- = Lu-x+Lv-y, D-+ = x+y,
+            // D-- = x+Lv-y. Reject quartets from incompatible coordinates.
+            let tolerance = (lu + lv) * 1e-8 + 2.0;
+            if lu == 0.0
+                || lv == 0.0
+                || (means[0] + means[3] - lu - lv).abs() > tolerance
+                || (means[1] + means[2] - lu - lv).abs() > tolerance
+            {
+                result.invalid_pairs += 1;
+                continue;
+            }
+            let x = (means[2] + means[3] - lv) * 0.5;
+            let y = (means[0] + means[2] - lu) * 0.5;
+            if x < -tolerance || x > lu + tolerance || y < -tolerance || y > lv + tolerance {
+                result.invalid_pairs += 1;
+                continue;
+            }
+            // A deliberately bounded support shrinkage, not an independence
+            // assumption or a molecule-level confidence interval.
+            let allowance = 1.0 / (links.min(64) as f64).sqrt();
+            let shrink = |bias: f64| bias.signum() * (bias.abs() - allowance).max(0.0);
+            pairs.push(EndpointPair {
+                u: pair.u,
+                v: pair.v,
+                u_bias: shrink((2.0 * x / lu - 1.0).clamp(-1.0, 1.0)),
+                v_bias: shrink((2.0 * y / lv - 1.0).clamp(-1.0, 1.0)),
+                links,
+                weight: (links.min(64) as f64).ln_1p(),
+            });
+        }
+        result.valid_pairs = pairs.len();
+        let mut sorted_lengths = self.lengths.clone();
+        sorted_lengths.sort_unstable();
+        let physical_window = sorted_lengths
+            .get(n / 2)
+            .copied()
+            .unwrap_or(0)
+            .saturating_mul(config.rank_window as u64);
+
+        for pass in 0..=config.passes {
+            let (positions, _, starts) = self.layout(tour).unwrap();
+            let mut near = vec![[Vote::default(); 2]; n];
+            let mut wide = vec![[Vote::default(); 2]; n];
+            let mut individual = vec![Vec::new(); n];
+            for pair in &pairs {
+                let pu = positions[pair.u];
+                let pv = positions[pair.v];
+                let (lo, hi) = if pu < pv { (pu, pv) } else { (pv, pu) };
+                let gap = starts[hi] - starts[lo] - self.lengths[tour.contigs[lo]];
+                let radius = physical_window
+                    .max(self.lengths[pair.u])
+                    .max(self.lengths[pair.v]);
+                if hi - lo > config.rank_window * 4 || gap > radius {
+                    continue;
+                }
+                for (id, bias, right) in [
+                    (pair.u, pair.u_bias, pu < pv),
+                    (pair.v, pair.v_bias, pv < pu),
+                ] {
+                    let side = usize::from(right);
+                    let effect = if right { bias } else { -bias };
+                    wide[id][side].add(effect, pair.weight);
+                    if hi - lo <= config.rank_window {
+                        near[id][side].add(effect, pair.weight);
+                        individual[id].push((effect, pair.weight));
+                    }
+                }
+            }
+            let mut uncertain = 0;
+            let mut proposed_signs = tour.signs.clone();
+            result.decisions.clear();
+            for rank in 0..n {
+                let id = tour.contigs[rank];
+                let local = combine_sides(near[id]);
+                let context = combine_sides(wide[id]);
+                let proposed = local > 0.0;
+                let direction = if proposed { 1.0 } else { -1.0 };
+                let threshold = config.min_effect
+                    + if proposed != original_signs[id] {
+                        config.input_prior
+                    } else {
+                        0.0
+                    };
+                let sides_agree = near[id]
+                    .iter()
+                    .chain(wide[id].iter())
+                    .all(|v| v.weight == 0.0 || direction * v.mean() >= 0.0);
+                let total =
+                    individual[id]
+                        .iter()
+                        .fold(Vote::default(), |mut v, &(effect, weight)| {
+                            v.add(effect, weight);
+                            v
+                        });
+                let stable = individual[id].len() < 3
+                    || individual[id].iter().all(|&(effect, weight)| {
+                        let remaining = total.weight - weight;
+                        remaining <= f64::EPSILON
+                            || direction * (total.score - effect * weight) / remaining > 0.0
+                    });
+                let supported = local.abs() > threshold
+                    && direction * context > config.min_effect * 0.5
+                    && sides_agree
+                    && stable;
+                result.decisions.push(EvidenceOrientationDecision {
+                    contig: id,
+                    local,
+                    context,
+                    left: near[id][0].mean(),
+                    right: near[id][1].mean(),
+                    neighbours: individual[id].len(),
+                    supported,
+                });
+                if supported {
+                    proposed_signs[rank] = proposed;
+                } else {
+                    uncertain += 1;
+                }
+            }
+            result.uncertain_contigs = uncertain;
+            if config.block_span < 2 || n < 3 || pass == config.passes {
+                tour.signs = proposed_signs;
+                break;
+            }
+            let mut best = None;
+            let mut best_gain = 0.0;
+            for span in 2..=config.block_span.min(n - 1) {
+                for start in 0..=n - span {
+                    let end = start + span - 1;
+                    let cuts = [start, end + 1];
+                    let old = cuts.map(|cut| boundary_evidence(tour, cut, &pairs));
+                    let old_context =
+                        cuts.map(|cut| boundary_context(tour, cut, &pairs, config.rank_window));
+                    reverse_complement_range(tour, start, end);
+                    let new = cuts.map(|cut| boundary_evidence(tour, cut, &pairs));
+                    let new_context =
+                        cuts.map(|cut| boundary_context(tour, cut, &pairs, config.rank_window));
+                    let mut gain = 0.0;
+                    let mut valid = true;
+                    for boundary in 0..2 {
+                        if cuts[boundary] == 0 || cuts[boundary] == n {
+                            continue;
+                        }
+                        match new[boundary] {
+                            Some((reward, links)) => {
+                                let (old_reward, old_links) = old[boundary].unwrap_or((-1.0, 0));
+                                let delta = reward - old_reward;
+                                valid &= reward > config.min_effect
+                                    && delta > config.min_effect
+                                    && links.saturating_mul(2) >= old_links
+                                    && new_context[boundary]
+                                        > old_context[boundary] + config.min_effect * 0.25;
+                                gain += delta;
+                            }
+                            None => valid = false,
+                        }
+                    }
+                    reverse_complement_range(tour, start, end);
+                    result.evaluated_blocks += 1;
+                    if valid && gain > best_gain + 1e-12 {
+                        best_gain = gain;
+                        best = Some((start, end));
+                    }
+                }
+            }
+            if let Some((start, end)) = best {
+                // Keep a signed block atomic: independently fixing its signs
+                // before testing the reversal can destroy the candidate.
+                reverse_complement_range(tour, start, end);
+                result.accepted_blocks += 1;
+                log::info!(
+                    "Evidence block accepted: start={}, end={}, gain={:.6}",
+                    start + 1,
+                    end + 1,
+                    best_gain
+                );
+            } else {
+                tour.signs = proposed_signs;
+                break;
+            }
+        }
+        result.changed_signs = tour
+            .contigs
+            .iter()
+            .zip(&tour.signs)
+            .filter(|(id, sign)| original_signs[**id] != **sign)
+            .count();
+        if reverse_axis {
+            reverse_complement_range(tour, 0, n - 1);
+            for decision in &mut result.decisions {
+                decision.local = -decision.local;
+                decision.context = -decision.context;
+                let old_left = decision.left;
+                decision.left = -decision.right;
+                decision.right = -old_left;
+            }
+            result.decisions.reverse();
+        }
+        Ok(result)
+    }
+}
+
+fn combine_sides(sides: [Vote; 2]) -> f64 {
+    let count = sides.iter().filter(|v| v.weight > 0.0).count();
+    if count == 0 {
+        0.0
+    } else {
+        sides.iter().map(|v| v.mean()).sum::<f64>() / count as f64
+    }
+}
+
+fn pair_evidence(
+    tour: &Tour<usize>,
+    left: usize,
+    right: usize,
+    pairs: &[EndpointPair],
+) -> Option<(f64, usize)> {
+    let a = tour.contigs[left];
+    let b = tour.contigs[right];
+    let key = (a.min(b), a.max(b));
+    let pair = &pairs[pairs.binary_search_by_key(&key, |p| (p.u, p.v)).ok()?];
+    let (a_bias, b_bias) = if a == pair.u {
+        (pair.u_bias, pair.v_bias)
+    } else {
+        (pair.v_bias, pair.u_bias)
+    };
+    let left_effect = if tour.signs[left] { a_bias } else { -a_bias };
+    let right_effect = if tour.signs[right] { -b_bias } else { b_bias };
+    Some(((left_effect + right_effect) * 0.5, pair.links))
+}
+
+fn boundary_evidence(
+    tour: &Tour<usize>,
+    cut: usize,
+    pairs: &[EndpointPair],
+) -> Option<(f64, usize)> {
+    if cut == 0 || cut == tour.contigs.len() {
+        return None;
+    }
+    pair_evidence(tour, cut - 1, cut, pairs)
+}
+
+fn boundary_context(tour: &Tour<usize>, cut: usize, pairs: &[EndpointPair], window: usize) -> f64 {
+    let mut vote = Vote::default();
+    for left in cut.saturating_sub(window)..cut {
+        for right in cut..(cut + window).min(tour.contigs.len()) {
+            if let Some((effect, links)) = pair_evidence(tour, left, right, pairs) {
+                vote.add(
+                    effect,
+                    (links.min(64) as f64).ln_1p() / (right - left) as f64,
+                );
+            }
+        }
+    }
+    vote.mean()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct OrientationResult {
     pub initial_score: f64,
@@ -2347,6 +3588,14 @@ fn orientation_local_improves(old_contribution: f64, new_contribution: f64) -> b
 
 fn orientation_index(a_forward: bool, b_forward: bool) -> usize {
     (usize::from(!a_forward) << 1) | usize::from(!b_forward)
+}
+
+fn reverse_complement_range(tour: &mut Tour<usize>, start: usize, end: usize) {
+    tour.contigs[start..=end].reverse();
+    tour.signs[start..=end].reverse();
+    for sign in &mut tour.signs[start..=end] {
+        *sign = !*sign;
+    }
 }
 
 #[inline]
