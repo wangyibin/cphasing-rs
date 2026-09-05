@@ -38,12 +38,27 @@ accepted block is followed by another orientation pass.
 
 Use `--orientation-block-span 0` to disable blocks, or
 `--orientation-block-passes 2` to reduce the refinement budget. To select the
-previous conservative policy, use `--orientation-method banded`; its defaults
+conservative policy, use `--orientation-method banded`; its defaults
 remain a 0.95 confidence threshold, a 0.05 flip-bp fraction, and disabled blocks.
+The confidence margin excludes the queried contig's own input-sign penalty,
+so the 0.05 prior no longer makes the 0.95 threshold unreachable. After filtering,
+the remaining changes are checked together against the input's regularized
+score; a worse combination is rolled back and reported as `rejected joint changes`.
+`banded-contact` remains a compatibility alias for this corrected solver.
 `banded-legacy` rejects confidence or bp limits because its internal orientation
 passes do not implement those gates. `--orientation-method legacy` selects the
 older ALLHiC orientation algorithm, which is distinct from `banded-legacy`.
 
 The restored defaults reproduce the 2026-09-04 n500k alfalfa Hi-C result; this
 does not establish optimal settings for other datasets. The experimental
-`robust` and `banded-contact` modes remain opt-in.
+`robust` mode remains opt-in.
+
+`--resume` requires an existing tour containing every input contig exactly once.
+It reads the last nonempty line and retains unsigned names as forward-oriented
+for compatibility. Missing, empty, incomplete, duplicate, or unknown-contig
+tours are rejected before optimization. The original tour remains in place
+until a complete result has been written successfully to a temporary file in
+the same directory. Publication uses an atomic replacement, with the previous
+contents saved to `.tour.sav`, then `.tour.sav.1`, `.tour.sav.2`, etc. Existing
+backups are never overwritten. Failed input validation or optimization preserves
+both the original tour and its backups.

@@ -1468,6 +1468,8 @@ pub struct BandedOrientationResult {
     pub changed_signs: usize,
     pub rejected_low_confidence: usize,
     pub rejected_oversized_changes: usize,
+    /// Remaining changes rolled back when the gated joint objective regressed.
+    pub rejected_joint_changes: usize,
     pub used_pairs: usize,
     pub skipped_incomplete_pairs: usize,
 }
@@ -1794,8 +1796,8 @@ impl OrientationProblem {
 
     /// Exactly maximize the banded objective, then retain only sign changes
     /// whose global max-marginal advantage is sufficiently decisive. The
-    /// margin is normalized by all retained evidence incident on that contig,
-    /// so one threshold is comparable across contact protocols and depths.
+    /// margin excludes this node's own input-sign penalty and is normalized
+    /// by its retained incident evidence. It is not a calibrated probability.
     pub fn optimize_banded_with_source_prior_and_confidence(
         &self,
         tour: &mut Tour<usize>,
@@ -1809,7 +1811,8 @@ impl OrientationProblem {
     /// Apply max-marginal confidence and physical-span safety gates after the
     /// exact banded optimization. Consecutive changed signs whose aggregate
     /// length exceeds `max_flip_bp_fraction` of the scaffold are restored to
-    /// their input signs.
+    /// their input signs. If filtering breaks the joint solution and lowers
+    /// its regularized objective, all remaining changes are rolled back.
     pub fn optimize_banded_conservative(
         &self,
         tour: &mut Tour<usize>,
@@ -1818,12 +1821,11 @@ impl OrientationProblem {
         min_confidence: f64,
         max_flip_bp_fraction: f64,
     ) -> Result<BandedOrientationResult, String> {
-        self.optimize_banded_margin(tour, config, prior_strength, min_confidence, max_flip_bp_fraction, false)
+        self.optimize_banded_margin(tour, config, prior_strength, min_confidence, max_flip_bp_fraction)
     }
 
-    /// Experimental contact-margin variant. Remove the queried node's input
-    /// prior from its max-marginal contrast; other nodes retain their priors.
-    /// The resulting normalized effect is not a probability of correctness.
+    /// Compatibility alias for the corrected conservative solver, which
+    /// excludes the queried node's prior from its max-marginal contrast.
     pub fn optimize_banded_contact_evidence(
         &self,
         tour: &mut Tour<usize>,
@@ -1832,7 +1834,7 @@ impl OrientationProblem {
         min_confidence: f64,
         max_flip_bp_fraction: f64,
     ) -> Result<BandedOrientationResult, String> {
-        self.optimize_banded_margin(tour, config, prior_strength, min_confidence, max_flip_bp_fraction, true)
+        self.optimize_banded_conservative(tour, config, prior_strength, min_confidence, max_flip_bp_fraction)
     }
 
     fn optimize_banded_margin(
@@ -1842,7 +1844,6 @@ impl OrientationProblem {
         prior_strength: f64,
         min_confidence: f64,
         max_flip_bp_fraction: f64,
-        contact_margin: bool,
     ) -> Result<BandedOrientationResult, String> {
         if !prior_strength.is_finite() || prior_strength < 0.0 {
             return Err(format!(
@@ -1985,6 +1986,7 @@ impl OrientationProblem {
                 changed_signs: 0,
                 rejected_low_confidence: 0,
                 rejected_oversized_changes: 0,
+                rejected_joint_changes: 0,
                 used_pairs,
                 skipped_incomplete_pairs,
             });
@@ -2141,8 +2143,7 @@ impl OrientationProblem {
                         // 1 - prior_strength, making a 0.95 gate with a 0.05
                         // prior impossible to pass in exact arithmetic.
                         let raw = (marginal[optimized_bit] - marginal[input_bit]) / scale;
-                        if contact_margin { (raw + prior_strength).clamp(0.0, 1.0) }
-                        else { raw.clamp(0.0, 1.0) }
+                        (raw + prior_strength).clamp(0.0, 1.0)
                     } else {
                         0.0
                     };
@@ -2180,12 +2181,29 @@ impl OrientationProblem {
             }
             run_start = run_end;
         }
-        let final_score = score_signs(&optimized_signs);
-        let changed_signs = optimized_signs
+        let mut final_score = score_signs(&optimized_signs);
+        let mut changed_signs = optimized_signs
             .iter()
             .zip(&input_signs)
             .filter(|(optimized, input)| optimized != input)
             .count();
+        let mut rejected_joint_changes = 0;
+        if changed_signs > 0 && (rejected_low_confidence > 0 || rejected_oversized_changes > 0) {
+            // Max-marginals refer to the joint DP solution. Reverting a subset
+            // can invalidate the evidence supporting the remaining changes.
+            // The input is always feasible under both gates; retain it if the
+            // filtered combination fails the same objective used by the DP.
+            let penalty = optimized_signs.iter().zip(&input_signs).zip(&node_scale)
+                .filter(|((optimized, input), _)| optimized != input)
+                .map(|(_, scale)| prior_strength * scale)
+                .sum::<f64>();
+            if final_score - penalty < initial_score {
+                rejected_joint_changes = changed_signs;
+                optimized_signs.copy_from_slice(&input_signs);
+                final_score = initial_score;
+                changed_signs = 0;
+            }
+        }
         if reverse_axis {
             optimized_signs.reverse();
             for sign in &mut optimized_signs {
@@ -2199,6 +2217,7 @@ impl OrientationProblem {
             changed_signs,
             rejected_low_confidence,
             rejected_oversized_changes,
+            rejected_joint_changes,
             used_pairs,
             skipped_incomplete_pairs,
         })

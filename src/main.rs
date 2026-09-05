@@ -50,6 +50,96 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+fn read_optimize_resume(
+    output: &Path,
+    contig2idx: &hashbrown::HashMap<String, usize>,
+) -> Result<(Tour<usize>, String), String> {
+    let contents = std::fs::read_to_string(output).map_err(|error| {
+        format!("cannot resume from {}: {error}; provide an existing tour or omit --resume", output.display())
+    })?;
+    let last_line = contents.lines().rev().find(|line| !line.trim().is_empty())
+        .ok_or_else(|| format!("cannot resume from {}: tour is empty", output.display()))?;
+    let mut tour = Tour { contigs: Vec::new(), signs: Vec::new() };
+    let mut seen = HashSet::new();
+    for token in last_line.split_whitespace() {
+        let (name, sign) = if let Some(name) = token.strip_suffix('+') {
+            (name, true)
+        } else if let Some(name) = token.strip_suffix('-') {
+            (name, false)
+        } else {
+            (token, true)
+        };
+        let &id = contig2idx.get(name).ok_or_else(|| {
+            format!("invalid resume tour {}: unknown contig {name:?}", output.display())
+        })?;
+        if !seen.insert(id) {
+            return Err(format!("invalid resume tour {}: duplicate contig {name:?}", output.display()));
+        }
+        tour.contigs.push(id);
+        tour.signs.push(sign);
+    }
+    if tour.contigs.len() != contig2idx.len() {
+        return Err(format!(
+            "invalid resume tour {}: expected all {} contigs, found {}; use a complete tour matching the count table",
+            output.display(), contig2idx.len(), tour.contigs.len(),
+        ));
+    }
+    Ok((tour, contents))
+}
+
+/// Stage the complete output beside its destination. A resumed input remains
+/// in place until publication succeeds; existing backups are never replaced.
+fn save_optimize_tour(output: &Path, contents: &[u8], resumed: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let parent = output.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let stage = |bytes: &[u8]| -> std::io::Result<tempfile::NamedTempFile> {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Match ordinary file creation (including the process umask),
+            // instead of publishing NamedTempFile's private 0600 default.
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let mut file = builder.tempfile_in(parent)?;
+        if let Ok(metadata) = std::fs::metadata(output) {
+            file.as_file().set_permissions(metadata.permissions())?;
+        }
+        file.write_all(bytes)?;
+        file.as_file().sync_all()?;
+        Ok(file)
+    };
+    let pending = stage(contents).map_err(|error| format!("cannot stage {}: {error}", output.display()))?;
+    let mut backup_path = None;
+    if let Some(original) = resumed {
+        let current = std::fs::read(output).map_err(|error| format!("cannot recheck resume tour {}: {error}", output.display()))?;
+        if current != original.as_bytes() {
+            return Err(format!("resume tour {} changed during optimization; refusing to overwrite it", output.display()));
+        }
+        let mut backup = stage(original.as_bytes()).map_err(|error| format!("cannot stage resume backup: {error}"))?;
+        let mut index = 0usize;
+        loop {
+            let path = if index == 0 {
+                PathBuf::from(format!("{}.sav", output.display()))
+            } else {
+                PathBuf::from(format!("{}.sav.{index}", output.display()))
+            };
+            match backup.persist_noclobber(&path) {
+                Ok(_) => {
+                    backup_path = Some(path);
+                    break;
+                }
+                Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    backup = error.file;
+                    index += 1;
+                }
+                Err(error) => return Err(format!("cannot save resume backup {}: {}", path.display(), error.error)),
+            }
+        }
+    }
+    pending.persist(output).map_err(|error| format!("cannot publish {}: {}", output.display(), error.error))?;
+    Ok(backup_path)
+}
+
 fn run_cool2mcool(sub_matches: &clap::ArgMatches) {
     let input = sub_matches.get_one::<PathBuf>("INPUT").expect("required");
     let output = sub_matches.get_one::<PathBuf>("OUTPUT").expect("required");
@@ -2452,46 +2542,20 @@ fn main() {
                 signs: signs,
             };
             let mut hierarchical_joins = None;
+            let mut resumed_contents = None;
 
-            if *resume && Path::new(&output).exists() {
+            if *resume {
                 log::info!(
-                    "Resume optimization from existing output directory: {}",
+                    "Resume optimization from existing tour: {}",
                     output.display()
                 );
-                // mv output to output.sav
-
-                let input_tour = common_reader(&output.to_str().unwrap());
-                // read the last line of the file
-                let reader = BufReader::new(input_tour);
-                let last_line = reader.lines().last().unwrap().unwrap();
-                let _tour: Vec<String> = last_line
-                    .split_whitespace()
-                    .map(|x| x.parse::<String>().unwrap())
-                    .collect();
-
-                // get signs and contigs from tour : tig1+, tig2-, ...
-                let mut initial_tour: Vec<usize> = Vec::new();
-                let mut signs = Vec::new();
-                for contig in _tour.iter() {
-                    let (contig, sign) = if contig.ends_with('+') {
-                        (&contig[..contig.len() - 1], true)
-                    } else if contig.ends_with('-') {
-                        (&contig[..contig.len() - 1], false)
-                    } else {
-                        (contig.as_str(), true)
-                    };
-                    let contig_idx = contig2idx.get(contig).unwrap();
-                    initial_tour.push(*contig_idx);
-                    signs.push(sign);
-                }
-
-                log::info!("Backup previous to {}.sav", output.display());
-                std::fs::rename(&output, format!("{}.sav", output.display())).unwrap();
-
-                tour = Tour {
-                    contigs: initial_tour,
-                    signs,
-                };
+                let (input_tour, contents) = read_optimize_resume(&output, &contig2idx)
+                    .unwrap_or_else(|error| {
+                        log::error!("{error}");
+                        std::process::exit(2);
+                    });
+                tour = input_tour;
+                resumed_contents = Some(contents);
             } else {
                 log::info!("Starting optimization with random tour.");
                 let mut rng = SmallRng::seed_from_u64(*seed);
@@ -2518,7 +2582,10 @@ fn main() {
             };
             let allhic = AllhicProblem::from_clmb(clmb, &initial_contigs, &lengths)
                 .map(|problem| problem.with_objective(construction_objective))
-                .unwrap_or_else(|error| panic!("invalid CLMB optimize input: {error}"));
+                .unwrap_or_else(|error| {
+                    log::error!("invalid CLMB optimize input: {error}");
+                    std::process::exit(2);
+                });
             let mut problem = allhic.ordering;
             let orientation_problem = allhic.orientation;
             if !*resume && initializer == "seriation" {
@@ -2691,7 +2758,7 @@ fn main() {
             //     10,
             //     *seed,
             // );
-            if initializer == "end-greedy" {
+            if !*resume && initializer == "end-greedy" {
                 tour.signs.fill(true);
             }
             let has_oriented_seed = *resume
@@ -2788,7 +2855,7 @@ fn main() {
                         require_complete: true,
                     };
                     let solver = if orientation_method == "banded-contact" {
-                        log::warn!("Contact-only marginal is experimental; its normalized effect is not a probability of correctness.");
+                        log::info!("banded-contact uses the corrected banded confidence filter; its normalized effect is not a probability of correctness.");
                         OrientationProblem::optimize_banded_contact_evidence
                     } else {
                         OrientationProblem::optimize_banded_conservative
@@ -2805,12 +2872,13 @@ fn main() {
                             panic!("banded orientation optimization failed: {error}")
                         });
                     log::info!(
-                        "Banded orientation fitness: {:.6} -> {:.6}; changed signs={}, rejected low-confidence changes={}, rejected oversized changes={}, used pairs={}, skipped incomplete pairs={}",
+                        "Banded orientation fitness: {:.6} -> {:.6}; changed signs={}, rejected low-confidence changes={}, rejected oversized changes={}, rejected joint changes={}, used pairs={}, skipped incomplete pairs={}",
                         result.initial_score,
                         result.final_score,
                         result.changed_signs,
                         result.rejected_low_confidence,
                         result.rejected_oversized_changes,
+                        result.rejected_joint_changes,
                         result.used_pairs,
                         result.skipped_incomplete_pairs,
                     );
@@ -2855,7 +2923,7 @@ fn main() {
                 _ => unreachable!("validated by clap"),
             }
 
-            let mut writer = common_writer(output.to_str().unwrap());
+            let mut writer = Vec::new();
 
             for (i, &idx) in tour.contigs.iter().enumerate() {
                 let name = &idx2contig[&idx];
@@ -2863,6 +2931,14 @@ fn main() {
                 write!(writer, "{}{} ", name, sign).unwrap();
             }
             writeln!(writer).unwrap();
+            match save_optimize_tour(&output, &writer, resumed_contents.as_deref()) {
+                Ok(Some(backup)) => log::info!("Saved previous tour to {}", backup.display()),
+                Ok(None) => {},
+                Err(error) => {
+                    log::error!("{error}");
+                    std::process::exit(1);
+                }
+            }
         }
 
         _ => {

@@ -1662,7 +1662,7 @@ fn orientation_banded_confidence_does_not_charge_the_source_prior_twice() {
         complete_orientation_pair(0, 1, [3_000, 3_000, 270_000, 270_000], 64),
     ).unwrap();
     let mut tour = Tour { contigs: vec![0, 1], signs: vec![false, false] };
-    let result = problem.optimize_banded_contact_evidence(
+    let result = problem.optimize_banded_conservative(
         &mut tour,
         BandedOrientationConfig {
             rank_window: 1, gap_model: OrientationGapModel::Intervening,
@@ -1675,6 +1675,82 @@ fn orientation_banded_confidence_does_not_charge_the_source_prior_twice() {
     assert_eq!(tour.signs, vec![true, false]);
     assert_eq!(result.changed_signs, 1);
     assert_eq!(result.rejected_low_confidence, 0);
+}
+
+#[test]
+fn orientation_banded_gates_preserve_the_joint_objective_on_physical_contacts() {
+    use rand::Rng;
+    let mut rng = SmallRng::seed_from_u64(20260905);
+    let config = BandedOrientationConfig {
+        rank_window: 3, gap_model: OrientationGapModel::Intervening,
+        pair_weight: OrientationPairWeight::SqrtLinks, min_links: 3, require_complete: true,
+    };
+    let mut confidence_rollbacks = 0;
+    let mut bp_rollbacks = 0;
+    // Small fixed-seed cases cover interacting sign changes with unequal bp
+    // lengths. Every quartet comes from valid positions on its two contigs.
+    for case in 0..256 {
+        let lengths = (0..5).map(|_| rng.gen_range(10_000..100_000u64)).collect::<Vec<_>>();
+        let input = Tour {
+            contigs: (0..5).collect(),
+            signs: (0..5).map(|_| rng.gen_bool(0.5)).collect(),
+        };
+        let mut records = Vec::new();
+        let mut scales = [0.0; 5];
+        for u in 0..5 {
+            for v in u + 1..5 {
+                let x = rng.gen_range(0..=lengths[u]);
+                let y = rng.gen_range(0..=lengths[v]);
+                let pair = complete_orientation_pair(u, v, [
+                    lengths[u] - x + y, lengths[u] - x + lengths[v] - y,
+                    x + y, x + lengths[v] - y,
+                ], rng.gen_range(3..=64));
+                let pair_problem = OrientationProblem::from_oriented_distances(lengths.clone(), pair.clone()).unwrap();
+                let mut minimum = f64::INFINITY;
+                let mut maximum = f64::NEG_INFINITY;
+                for bits in 0..4 {
+                    let mut candidate = input.clone();
+                    candidate.signs[u] = bits & 1 != 0;
+                    candidate.signs[v] = bits & 2 != 0;
+                    let score = pair_problem.optimize_banded(&mut candidate, config).unwrap().initial_score;
+                    minimum = minimum.min(score);
+                    maximum = maximum.max(score);
+                }
+                scales[u] += maximum - minimum;
+                scales[v] += maximum - minimum;
+                records.extend(pair);
+            }
+        }
+        let problem = OrientationProblem::from_oriented_distances(lengths, records).unwrap();
+        for (confidence, cap) in [(0.1, 1.0), (0.25, 1.0), (0.4, 1.0), (0.0, 0.25), (0.2, 0.25)] {
+            let mut candidate = input.clone();
+            let result = problem.optimize_banded_conservative(&mut candidate, config, 0.05, confidence, cap).unwrap();
+            let mut measured = candidate.clone();
+            let final_score = problem.optimize_banded(&mut measured, config).unwrap().initial_score;
+            let penalty = candidate.signs.iter().zip(&input.signs).zip(&scales)
+                .filter(|((candidate, input), _)| candidate != input)
+                .map(|(_, scale)| 0.05 * scale).sum::<f64>();
+            assert!((result.final_score - final_score).abs() < 1e-10);
+            assert!(final_score - penalty >= result.initial_score - 1e-10,
+                "case {case}, confidence {confidence}, cap {cap}: {} -> {}", result.initial_score, final_score - penalty);
+            assert_eq!(result.changed_signs, candidate.signs.iter().zip(&input.signs).filter(|(a, b)| a != b).count());
+            if result.rejected_joint_changes > 0 {
+                assert_eq!(candidate.signs, input.signs);
+                assert_eq!(result.initial_score.to_bits(), result.final_score.to_bits());
+                if cap == 1.0 { confidence_rollbacks += 1; }
+                if confidence == 0.0 { bp_rollbacks += 1; }
+            }
+            let mut reverse = Tour {
+                contigs: input.contigs.iter().rev().copied().collect(),
+                signs: input.signs.iter().rev().map(|sign| !*sign).collect(),
+            };
+            let reverse_result = problem.optimize_banded_contact_evidence(&mut reverse, config, 0.05, confidence, cap).unwrap();
+            assert_eq!(reverse.signs, candidate.signs.iter().rev().map(|sign| !*sign).collect::<Vec<_>>());
+            assert_eq!(reverse_result, result);
+        }
+    }
+    assert!(confidence_rollbacks > 0, "fixture must exercise joint regressions caused by confidence filtering");
+    assert!(bp_rollbacks > 0, "fixture must exercise joint regressions caused by bp filtering");
 }
 
 #[test]

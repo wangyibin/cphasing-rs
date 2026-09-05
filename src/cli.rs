@@ -3076,7 +3076,7 @@ pub fn cli() -> Command {
                         .long("resume")
                         .short('r')
                         .action(ArgAction::SetTrue)
-                        .help("resume from previous run")
+                        .help("resume from an existing complete tour; preserve it until success and keep numbered .sav backups")
                         .value_parser(value_parser!(bool))
                         .default_value("false")
                 )
@@ -3149,7 +3149,7 @@ pub fn cli() -> Command {
                         .long("orientation-method")
                         .value_parser(["banded-legacy", "robust", "banded", "banded-contact", "intervening", "legacy"])
                         .default_value("banded-legacy")
-                        .help("orientation solver: historical banded DP and signed-block refinement (banded-legacy, default), conservative banded DP (banded), experimental endpoint evidence (robust), experimental contact-only margin (banded-contact), intervening-gap refinement, or legacy ALLHiC behavior")
+                        .help("orientation solver: historical banded DP and signed-block refinement (banded-legacy, default), conservative banded DP (banded; banded-contact is a compatibility alias), experimental endpoint evidence (robust), intervening-gap refinement, or legacy ALLHiC behavior")
                 )
                 .arg(
                     Arg::new("ORIENTATION_WINDOW")
@@ -3204,7 +3204,7 @@ pub fn cli() -> Command {
                         .default_value_if("ORIENTATION_METHOD", "banded-legacy", "0")
                         .default_value_if("ORIENTATION_METHOD", "robust", "0.2")
                         .default_value("0.95")
-                        .help("minimum normalized max-marginal effect (banded: 0.95) or endpoint effect (robust: 0.2); banded-legacy requires 0 (disabled); not a calibrated probability")
+                        .help("minimum normalized max-marginal effect excluding the queried node's own prior (banded: 0.95), or endpoint effect (robust: 0.2); banded-legacy requires 0 (disabled); not a calibrated probability")
                 )
                 .arg(
                     Arg::new("ORIENTATION_MAX_FLIP_BP_FRACTION")
