@@ -69,6 +69,14 @@ fn disabled_or_block_span(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn block_candidates(value: &str) -> Result<usize, String> {
+    let parsed = value.parse::<usize>().map_err(|error| error.to_string())?;
+    if parsed > 16 {
+        return Err("block candidates must be between 0 and 16 (0 disables joint comparison)".into());
+    }
+    Ok(parsed)
+}
+
 fn cool2mcool_resolution(value: &str) -> Result<u64, String> {
     let resolution = value.parse::<u64>().map_err(|error| {
         format!("expected a positive resolution in base pairs, got {value:?}: {error}")
@@ -3235,6 +3243,22 @@ pub fn cli() -> Command {
                         .default_value_if("ORIENTATION_METHOD", "banded-legacy", "1")
                         .default_value("0.05")
                         .help("largest reverse-complement block as a fraction of scaffold bp; banded-legacy requires 1 (unrestricted); conservative modes default to 0.05")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_CONTEXT_WEIGHT")
+                        .long("orientation-block-context-weight")
+                        .value_name("WEIGHT")
+                        .value_parser(unit_interval_f64)
+                        .default_value("0")
+                        .help("experimental weight (0-1) of fixed long-range midpoint contacts in block selection; 0 disables it; requires banded-legacy with blocks enabled")
+                )
+                .arg(
+                    Arg::new("ORIENTATION_BLOCK_CANDIDATES")
+                        .long("orientation-block-candidates")
+                        .value_name("K")
+                        .value_parser(block_candidates)
+                        .default_value("0")
+                        .help("experimental joint comparison: independently reorient the top K improving blocks before selection (1-16); 0 preserves historical selection; requires banded-legacy with blocks enabled")
                 )
                 .arg(
                     Arg::new("ORIENTATION_BLOCK_PASSES")

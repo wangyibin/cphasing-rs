@@ -1510,6 +1510,31 @@ pub struct SignedBlockRefineResult {
     pub passes: usize,
 }
 
+/// Experimental block refinement checked against a fixed set of contacts
+/// outside the initial orientation window. Context scores are weighted
+/// negative log midpoint distances; larger values are better.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContextBlockRefineResult {
+    pub refinement: SignedBlockRefineResult,
+    pub initial_context_score: f64,
+    pub final_context_score: f64,
+    pub context_pairs: usize,
+    /// Local-improving candidates rejected by the combined score.
+    pub rejected_context_moves: usize,
+    /// Candidates independently reoriented before selection (zero when disabled).
+    pub reoriented_candidates: usize,
+    /// Accepted moves that differed from the preliminary best candidate.
+    pub reranked_moves: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RankedBlockCandidate {
+    start: usize,
+    end: usize,
+    score: f64,
+    local_scale: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BandedOrientationEdge {
     left_rank: usize,
@@ -2237,6 +2262,74 @@ impl OrientationProblem {
         prior_strength: f64,
         config: SignedBlockRefineConfig,
     ) -> Result<SignedBlockRefineResult, String> {
+        self.refine_signed_blocks_with_context_check(
+            tour, orientation_config, prior_strength, config, 0.0, 0,
+        ).map(|result| result.refinement)
+    }
+
+    /// Add `context_weight` times a fixed long-range contact score to the
+    /// historical block objective. Candidates must improve both the local
+    /// objective and this combined objective, and are ranked by combined gain.
+    /// The evidence set and pair weights stay fixed for the entire call;
+    /// changing ranks never removes an inconvenient pair from the context.
+    /// Midpoint distances are sign-independent, so subsequent orientation DP
+    /// cannot invalidate the context contribution. No context pairs means an exact
+    /// fallback to historical refinement. Errors leave the input unchanged.
+    pub fn refine_signed_blocks_with_context(
+        &self,
+        tour: &mut Tour<usize>,
+        orientation_config: BandedOrientationConfig,
+        prior_strength: f64,
+        config: SignedBlockRefineConfig,
+        context_weight: f64,
+    ) -> Result<ContextBlockRefineResult, String> {
+        let mut candidate = tour.clone();
+        let result = self.refine_signed_blocks_with_context_check(
+            &mut candidate, orientation_config, prior_strength, config, context_weight, 0,
+        )?;
+        *tour = candidate;
+        Ok(result)
+    }
+
+    /// Reorient up to `candidates` preliminary improving blocks independently
+    /// from the same pass input, then select by full post-orientation band score
+    /// plus the optional fixed context contribution. The source-sign prior guides
+    /// each DP exactly as in historical refinement; it is not added to the ranking
+    /// score. Zero preserves historical/context selection; 1..=16 enables reranking.
+    /// Candidates failing the preliminary gain gates are not reconsidered.
+    /// Errors leave the input tour unchanged.
+    pub fn refine_signed_blocks_joint(
+        &self,
+        tour: &mut Tour<usize>,
+        orientation_config: BandedOrientationConfig,
+        prior_strength: f64,
+        config: SignedBlockRefineConfig,
+        context_weight: f64,
+        candidates: usize,
+    ) -> Result<ContextBlockRefineResult, String> {
+        let mut candidate = tour.clone();
+        let result = self.refine_signed_blocks_with_context_check(
+            &mut candidate, orientation_config, prior_strength, config, context_weight, candidates,
+        )?;
+        *tour = candidate;
+        Ok(result)
+    }
+
+    fn refine_signed_blocks_with_context_check(
+        &self,
+        tour: &mut Tour<usize>,
+        orientation_config: BandedOrientationConfig,
+        prior_strength: f64,
+        config: SignedBlockRefineConfig,
+        context_weight: f64,
+        candidates: usize,
+    ) -> Result<ContextBlockRefineResult, String> {
+        if candidates > 16 {
+            return Err("signed block candidates must be between 0 and 16".into());
+        }
+        if !context_weight.is_finite() || !(0.0..=1.0).contains(&context_weight) {
+            return Err("signed block context_weight must be between 0 and 1".into());
+        }
         if orientation_config.gap_model != OrientationGapModel::Intervening {
             return Err(
                 "signed block refinement requires the reverse-complement-invariant intervening gap model"
@@ -2285,6 +2378,44 @@ impl OrientationProblem {
             );
         }
 
+        let context_weights = if context_weight > 0.0 {
+            self.pairs.iter().map(|pair| {
+                let links = pair.orientations[0].links;
+                if positions[pair.u].abs_diff(positions[pair.v]) <= orientation_config.rank_window
+                    || links == 0 || links < orientation_config.min_links
+                    || !pair.orientations.iter().all(|s| s.present && s.links == links)
+                {
+                    return 0.0;
+                }
+                match orientation_config.pair_weight {
+                    OrientationPairWeight::Links => links as f64,
+                    OrientationPairWeight::SqrtLinks => (links as f64).sqrt(),
+                    OrientationPairWeight::EqualPair => 1.0,
+                }
+            }).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let context_pairs = context_weights.iter().filter(|&&weight| weight > 0.0).count();
+        // With real context evidence, make candidate tie-breaking strictly
+        // covariant under a whole-scaffold reverse complement. Preserve the
+        // historical path exactly when the context is absent or disabled.
+        let reverse_axis = context_pairs > 0
+            && tour.contigs.iter().rev().cmp(tour.contigs.iter()) == std::cmp::Ordering::Less;
+        if reverse_axis {
+            reverse_complement_range(tour, 0, tour.contigs.len() - 1);
+            (positions, signs_by_id, starts) = self.layout(tour).unwrap();
+        }
+        let mut context_distances = context_weights.iter().enumerate().map(|(index, &weight)| {
+            if weight > 0.0 { self.midpoint_pair_distance(&self.pairs[index], &positions, &starts) }
+            else { 1.0 }
+        }).collect::<Vec<_>>();
+        let context_score = |distances: &[f64]| -> f64 {
+            distances.iter().zip(&context_weights).map(|(&distance, &weight)| -weight * distance.ln()).sum()
+        };
+        let initial_context_score = context_score(&context_distances);
+        let mut rejected_context_moves = 0;
+
         let mut pair_rewards = self
             .pairs
             .iter()
@@ -2303,6 +2434,8 @@ impl OrientationProblem {
         let mut accepted_moves = 0usize;
         let mut evaluated_moves = 0usize;
         let mut passes = 0usize;
+        let mut reoriented_candidates = 0usize;
+        let mut reranked_moves = 0usize;
         let mut pair_marks = vec![0u32; self.pairs.len()];
         let mut mark = 0u32;
         let mut affected_pairs = Vec::new();
@@ -2312,6 +2445,7 @@ impl OrientationProblem {
             passes += 1;
             let mut best_move = None;
             let mut best_score = current_score;
+            let mut shortlist: Vec<RankedBlockCandidate> = Vec::with_capacity(candidates + 1);
 
             for span in 2..=max_span {
                 for start in 0..=tour.contigs.len() - span {
@@ -2363,6 +2497,18 @@ impl OrientationProblem {
                         })
                         .sum::<f64>();
                     let candidate_score = current_score - old_local + new_local;
+                    let local_scale = old_local.abs().max(new_local.abs()).max(1.0);
+                    let sufficient_gain =
+                        candidate_score - current_score > config.min_relative_gain * local_scale;
+                    let mut context_gain = 0.0;
+                    if sufficient_gain && context_pairs > 0 {
+                        for &pair_index in &affected_pairs {
+                            let weight = context_weights[pair_index];
+                            if weight == 0.0 { continue; }
+                            let distance = self.midpoint_pair_distance(&self.pairs[pair_index], &positions, &starts);
+                            context_gain += weight * (context_distances[pair_index] / distance).ln();
+                        }
+                    }
                     evaluated_moves += 1;
                     reverse_complement_range(tour, start, end);
                     self.refresh_layout_range(
@@ -2374,17 +2520,28 @@ impl OrientationProblem {
                         end,
                     );
 
-                    let local_scale = old_local.abs().max(new_local.abs()).max(1.0);
-                    let sufficient_gain =
-                        candidate_score - current_score > config.min_relative_gain * local_scale;
-                    let better_than_best = candidate_score > best_score
-                        || (candidate_score == best_score
+                    let selection_score = candidate_score + context_weight * context_gain;
+                    if sufficient_gain && selection_score - current_score <= config.min_relative_gain * local_scale {
+                        rejected_context_moves += 1;
+                        continue;
+                    }
+                    if sufficient_gain && candidates > 0 {
+                        shortlist.push(RankedBlockCandidate { start, end, score: selection_score, local_scale });
+                        shortlist.sort_by(|a, b| {
+                            b.score.total_cmp(&a.score)
+                                .then_with(|| (a.end - a.start).cmp(&(b.end - b.start)))
+                                .then_with(|| a.start.cmp(&b.start))
+                        });
+                        shortlist.truncate(candidates);
+                    }
+                    let better_than_best = selection_score > best_score
+                        || (selection_score == best_score
                             && best_move.is_some_and(|(best_start, best_end)| {
                                 span < best_end - best_start + 1
                                     || (span == best_end - best_start + 1 && start < best_start)
                             }));
                     if sufficient_gain && better_than_best {
-                        best_score = candidate_score;
+                        best_score = selection_score;
                         best_move = Some((start, end));
                     }
                 }
@@ -2393,8 +2550,51 @@ impl OrientationProblem {
             let Some((start, end)) = best_move else {
                 break;
             };
-            reverse_complement_range(tour, start, end);
-            self.optimize_banded_with_source_prior(tour, orientation_config, prior_strength)?;
+            if candidates > 0 {
+                let mut selected = None;
+                let mut selected_score = current_score;
+                let current_context_score = context_score(&context_distances);
+                for candidate in shortlist {
+                    // Every DP gets its own unchanged starting state. Reuse the
+                    // winner's resulting signs instead of re-running DP afterwards.
+                    let mut trial = tour.clone();
+                    reverse_complement_range(&mut trial, candidate.start, candidate.end);
+                    self.optimize_banded_with_source_prior(&mut trial, orientation_config, prior_strength)?;
+                    reoriented_candidates += 1;
+                    let (trial_positions, trial_signs, trial_starts) = self.layout(&trial)
+                        .ok_or("signed block refinement produced an invalid candidate tour")?;
+                    let local_score = self.pairs.iter().map(|pair| {
+                        self.banded_signed_pair_reward(pair, &trial_positions, &trial_signs, &trial_starts, orientation_config)
+                    }).sum::<f64>();
+                    let trial_context_score = context_weights.iter().enumerate().filter(|(_, weight)| **weight > 0.0)
+                        .map(|(index, &weight)| -weight * self.midpoint_pair_distance(&self.pairs[index], &trial_positions, &trial_starts).ln())
+                        .sum::<f64>();
+                    let final_score = local_score + context_weight * (trial_context_score - current_context_score);
+                    let threshold = config.min_relative_gain * candidate.local_scale;
+                    if local_score - current_score <= threshold || final_score - current_score <= threshold {
+                        continue;
+                    }
+                    let better = final_score > selected_score
+                        || (final_score == selected_score && selected.as_ref().is_some_and(
+                            |(previous, _): &(RankedBlockCandidate, Tour<usize>)| {
+                                (candidate.end - candidate.start, candidate.start)
+                                    < (previous.end - previous.start, previous.start)
+                            }
+                        ));
+                    if better {
+                        selected_score = final_score;
+                        selected = Some((candidate, trial));
+                    }
+                }
+                let Some((candidate, trial)) = selected else { break; };
+                if (candidate.start, candidate.end) != (start, end) {
+                    reranked_moves += 1;
+                }
+                *tour = trial;
+            } else {
+                reverse_complement_range(tour, start, end);
+                self.optimize_banded_with_source_prior(tour, orientation_config, prior_strength)?;
+            }
             let Some(layout) = self.layout(tour) else {
                 return Err("signed block refinement produced an invalid optimized tour".into());
             };
@@ -2409,16 +2609,45 @@ impl OrientationProblem {
                 );
             }
             current_score = pair_rewards.iter().sum();
+            for (index, distance) in context_distances.iter_mut().enumerate() {
+                if context_weights[index] > 0.0 {
+                    *distance = self.midpoint_pair_distance(&self.pairs[index], &positions, &starts);
+                }
+            }
             accepted_moves += 1;
         }
 
-        Ok(SignedBlockRefineResult {
-            initial_score,
-            final_score: current_score,
-            accepted_moves,
-            evaluated_moves,
-            passes,
+        if reverse_axis {
+            reverse_complement_range(tour, 0, tour.contigs.len() - 1);
+        }
+        Ok(ContextBlockRefineResult {
+            refinement: SignedBlockRefineResult {
+                initial_score,
+                final_score: current_score,
+                accepted_moves,
+                evaluated_moves,
+                passes,
+            },
+            initial_context_score,
+            final_context_score: context_score(&context_distances),
+            context_pairs,
+            rejected_context_moves,
+            reoriented_candidates,
+            reranked_moves,
         })
+    }
+
+    fn midpoint_pair_distance(
+        &self,
+        pair: &PairOrientationData,
+        positions: &[usize],
+        starts: &[u64],
+    ) -> f64 {
+        // Integer doubled midpoints avoid axis-dependent rounding for odd
+        // contig lengths and overflowing u64 for long assemblies.
+        let u = u128::from(starts[positions[pair.u]]) * 2 + u128::from(self.lengths[pair.u]);
+        let v = u128::from(starts[positions[pair.v]]) * 2 + u128::from(self.lengths[pair.v]);
+        (u.abs_diff(v) as f64 * 0.5).max(1.0)
     }
 
     fn banded_signed_pair_reward(

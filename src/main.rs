@@ -2499,6 +2499,18 @@ fn main() {
             let orientation_block_min_gain = sub_matches
                 .get_one::<f64>("ORIENTATION_BLOCK_MIN_GAIN")
                 .expect("error");
+            let orientation_block_context = *sub_matches.get_one::<f64>("ORIENTATION_BLOCK_CONTEXT_WEIGHT").expect("defaulted by clap");
+            let orientation_block_candidates = *sub_matches.get_one::<usize>("ORIENTATION_BLOCK_CANDIDATES").expect("defaulted by clap");
+
+            if orientation_block_candidates > 0 && (orientation_method != "banded-legacy" || *orientation_block_span < 2) {
+                log::error!("--orientation-block-candidates requires --orientation-method banded-legacy and --orientation-block-span at least 2");
+                std::process::exit(2);
+            }
+
+            if orientation_block_context > 0.0 && (orientation_method != "banded-legacy" || *orientation_block_span < 2) {
+                log::error!("--orientation-block-context-weight requires --orientation-method banded-legacy and --orientation-block-span at least 2");
+                std::process::exit(2);
+            }
 
             if orientation_method == "banded-legacy"
                 && (*orientation_min_confidence != 0.0
@@ -2890,7 +2902,31 @@ fn main() {
                             max_passes: *orientation_block_passes,
                             min_relative_gain: *orientation_block_min_gain,
                         };
-                        let block_result = if orientation_method == "banded-legacy" {
+                        let block_result = if orientation_block_context > 0.0 || orientation_block_candidates > 0 {
+                            if orientation_block_context > 0.0 {
+                                log::warn!("Long-range block context is experimental; midpoint-contact agreement is not a guarantee of assembly correctness.");
+                            }
+                            orientation_problem.refine_signed_blocks_joint(
+                                &mut tour, orientation_config, *orientation_prior, block_config, orientation_block_context,
+                                orientation_block_candidates,
+                            ).map(|result| {
+                                if orientation_block_context > 0.0 {
+                                    log::info!(
+                                        "Signed block context: {:.6} -> {:.6}; fixed pairs={}, rejected candidates={}, weight={}",
+                                        result.initial_context_score, result.final_context_score,
+                                        result.context_pairs, result.rejected_context_moves,
+                                        orientation_block_context,
+                                    );
+                                }
+                                if orientation_block_candidates > 0 {
+                                    log::info!(
+                                        "Signed block joint comparison: candidates per pass={}, reoriented candidates={}, reranked moves={}",
+                                        orientation_block_candidates, result.reoriented_candidates, result.reranked_moves,
+                                    );
+                                }
+                                result.refinement
+                            })
+                        } else if orientation_method == "banded-legacy" {
                             log::info!("Using historical banded signed-block refinement");
                             orientation_problem.refine_signed_blocks_legacy_objective(
                                 &mut tour,

@@ -1209,6 +1209,297 @@ fn signed_block_refinement_repairs_a_reverse_complemented_internal_block() {
     assert!(result.final_score > result.initial_score);
 }
 
+fn block_context_fixture(misleading_local: bool) -> (OrientationProblem, Tour<usize>, Tour<usize>) {
+    let lengths = (0..12).map(|id| 100_001 + id * 7).collect::<Vec<u64>>();
+    let truth = Tour { contigs: (0..12).collect(), signs: vec![true; 12] };
+    let mut inverted = truth.clone();
+    inverted.contigs[4..=6].reverse();
+    inverted.signs[4..=6].fill(false);
+    let local_target = if misleading_local { &inverted } else { &truth };
+    let mut records = Vec::new();
+    for rank in 0..11 {
+        let left = local_target.contigs[rank];
+        let right = local_target.contigs[rank + 1];
+        let (u, v, u_sign, v_sign) = if left < right {
+            (left, right, local_target.signs[rank], local_target.signs[rank + 1])
+        } else {
+            (right, left, !local_target.signs[rank + 1], !local_target.signs[rank])
+        };
+        let x = lengths[u] * if u_sign { 9 } else { 1 } / 10;
+        let y = lengths[v] * if v_sign { 1 } else { 9 } / 10;
+        records.extend(complete_orientation_pair(u, v, [
+            lengths[u] - x + y, lengths[u] - x + lengths[v] - y,
+            x + y, x + lengths[v] - y,
+        ], 64));
+    }
+    // Non-directional contacts outside the rank-3 window favor the true
+    // arrangement. They cannot contribute a local orientation reward.
+    for (u, v) in [(0, 4), (6, 11)] {
+        let x = lengths[u] / 2;
+        let y = lengths[v] / 2;
+        records.extend(complete_orientation_pair(u, v, [
+            lengths[u] - x + y, lengths[u] - x + lengths[v] - y,
+            x + y, x + lengths[v] - y,
+        ], 4096));
+    }
+    (OrientationProblem::from_oriented_distances(lengths, records).unwrap(), truth, inverted)
+}
+
+fn reference_block_context(tour: &Tour<usize>) -> f64 {
+    let mut centres = [0.0; 12];
+    let mut offset = 0.0;
+    for &id in &tour.contigs {
+        let length = (100_001 + id * 7) as f64;
+        centres[id] = offset + length / 2.0;
+        offset += length;
+    }
+    [(0, 4), (6, 11)].into_iter()
+        .map(|(u, v)| -64.0 * (centres[u] - centres[v]).abs().ln()).sum()
+}
+
+#[test]
+fn block_context_vetoes_local_gains_that_damage_distant_contacts() {
+    let (problem, truth, _) = block_context_fixture(true);
+    let orientation = BandedOrientationConfig {
+        rank_window: 3, pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3, ..BandedOrientationConfig::default()
+    };
+    let config = SignedBlockRefineConfig { max_span: 3, max_bp_fraction: 1.0, max_passes: 1, min_relative_gain: 1e-4 };
+    let mut local = truth.clone();
+    let local_result = problem.refine_signed_blocks_legacy_objective(&mut local, orientation, 0.05, config).unwrap();
+    assert_eq!(local_result.accepted_moves, 1);
+    assert!(local_result.final_score > local_result.initial_score);
+    assert!(reference_block_context(&local) < reference_block_context(&truth));
+
+    let mut checked = truth.clone();
+    let result = problem.refine_signed_blocks_with_context(&mut checked, orientation, 0.05, config, 1.0).unwrap();
+    assert_eq!(result.context_pairs, 2);
+    assert!(result.rejected_context_moves > 0);
+    assert!(reference_block_context(&checked) >= reference_block_context(&truth) - 1e-10);
+    assert!((result.initial_context_score - reference_block_context(&truth)).abs() < 1e-10);
+    assert!((result.final_context_score - reference_block_context(&checked)).abs() < 1e-10);
+}
+
+#[test]
+fn block_context_retains_supported_inversion_repairs_and_is_rc_covariant() {
+    let (problem, truth, inverted) = block_context_fixture(false);
+    let orientation = BandedOrientationConfig {
+        rank_window: 4, pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3, ..BandedOrientationConfig::default()
+    };
+    let config = SignedBlockRefineConfig { max_span: 3, max_bp_fraction: 1.0, max_passes: 4, min_relative_gain: 1e-4 };
+    let mut direct = inverted.clone();
+    let result = problem.refine_signed_blocks_with_context(&mut direct, orientation, 0.05, config, 1.0).unwrap();
+    assert!(result.refinement.accepted_moves > 0);
+    assert_eq!(direct.contigs, truth.contigs);
+    assert_eq!(direct.signs, truth.signs);
+    assert_eq!(result.context_pairs, 2);
+    assert!(result.final_context_score > result.initial_context_score);
+    // Pair (0,4) moves inside the rank-4 window after the repair, but remains
+    // part of the fixed context through all passes.
+    assert!((result.final_context_score - reference_block_context(&direct)).abs() < 1e-10);
+    let mut reverse = Tour {
+        contigs: inverted.contigs.iter().rev().copied().collect(),
+        signs: inverted.signs.iter().rev().map(|sign| !*sign).collect(),
+    };
+    let reverse_result = problem.refine_signed_blocks_with_context(&mut reverse, orientation, 0.05, config, 1.0).unwrap();
+    assert_eq!(reverse.contigs, direct.contigs.iter().rev().copied().collect::<Vec<_>>());
+    assert_eq!(reverse.signs, direct.signs.iter().rev().map(|sign| !*sign).collect::<Vec<_>>());
+    assert_eq!(result, reverse_result);
+}
+
+#[test]
+fn block_context_without_distant_evidence_matches_historical_refinement_exactly() {
+    let (problem, _, mut input) = block_context_fixture(false);
+    // Exercise the noncanonical axis as well as the absence of context.
+    input.contigs.reverse();
+    input.signs.reverse();
+    input.signs.iter_mut().for_each(|sign| *sign = !*sign);
+    let orientation = BandedOrientationConfig { rank_window: 16, ..BandedOrientationConfig::default() };
+    let config = SignedBlockRefineConfig { max_bp_fraction: 1.0, min_relative_gain: 1e-4, ..SignedBlockRefineConfig::default() };
+    let mut old = input.clone();
+    let old_result = problem.refine_signed_blocks_legacy_objective(&mut old, orientation, 0.05, config).unwrap();
+    let mut checked = input.clone();
+    let result = problem.refine_signed_blocks_with_context(&mut checked, orientation, 0.05, config, 1.0).unwrap();
+    assert_eq!(checked.contigs, old.contigs);
+    assert_eq!(checked.signs, old.signs);
+    assert_eq!(result.refinement, old_result);
+    assert_eq!(result.context_pairs, 0);
+    assert_eq!(result.rejected_context_moves, 0);
+    for prior in [-1.0, f64::NAN, f64::INFINITY] {
+        let mut rejected = input.clone();
+        assert!(problem.refine_signed_blocks_with_context(&mut rejected, orientation, prior, config, 1.0).is_err());
+        assert_eq!(rejected.contigs, input.contigs);
+        assert_eq!(rejected.signs, input.signs);
+    }
+}
+
+#[test]
+fn block_context_weights_preserve_the_combined_objective_and_zero_is_exact() {
+    let orientation = BandedOrientationConfig {
+        rank_window: 3, pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3, ..BandedOrientationConfig::default()
+    };
+    let config = SignedBlockRefineConfig { max_bp_fraction: 1.0, min_relative_gain: 1e-4, ..SignedBlockRefineConfig::default() };
+    for misleading in [false, true] {
+        let (problem, truth, inverted) = block_context_fixture(misleading);
+        let input = if misleading { truth } else { inverted };
+        let mut old = input.clone();
+        let old_result = problem.refine_signed_blocks_legacy_objective(&mut old, orientation, 0.05, config).unwrap();
+        for weight in [0.0, 0.001, 0.01, 0.1, 1.0] {
+            let mut candidate = input.clone();
+            let result = problem.refine_signed_blocks_with_context(&mut candidate, orientation, 0.05, config, weight).unwrap();
+            let initial = result.refinement.initial_score + weight * result.initial_context_score;
+            let final_score = result.refinement.final_score + weight * result.final_context_score;
+            assert!(final_score >= initial - 1e-9);
+            assert!(result.refinement.final_score >= result.refinement.initial_score - 1e-9);
+            if weight == 0.0 {
+                assert_eq!(candidate.contigs, old.contigs);
+                assert_eq!(candidate.signs, old.signs);
+                assert_eq!(result.refinement, old_result);
+            }
+        }
+        for weight in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let mut rejected = input.clone();
+            assert!(problem.refine_signed_blocks_with_context(&mut rejected, orientation, 0.05, config, weight).is_err());
+            assert_eq!(rejected.contigs, input.contigs);
+            assert_eq!(rejected.signs, input.signs);
+        }
+    }
+}
+
+#[test]
+fn joint_block_comparison_matches_independent_candidate_scores() {
+    use rand::Rng;
+    let mut rng = SmallRng::seed_from_u64(20260906);
+    let orientation = BandedOrientationConfig {
+        rank_window: 3, pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3, ..BandedOrientationConfig::default()
+    };
+    let config = SignedBlockRefineConfig { max_span: 5, max_bp_fraction: 1.0, max_passes: 1, min_relative_gain: 1e-4 };
+    let mut reranked = 0;
+    for _ in 0..128 {
+        let lengths = (0..5).map(|_| rng.gen_range(10_000..100_000u64)).collect::<Vec<_>>();
+        let mut contacts = Vec::new();
+        let mut records = Vec::new();
+        for u in 0..5 {
+            for v in u + 1..5 {
+                let x = rng.gen_range(1..lengths[u]);
+                let y = rng.gen_range(1..lengths[v]);
+                let distances = [lengths[u] - x + y, lengths[u] - x + lengths[v] - y, x + y, x + lengths[v] - y];
+                let links = rng.gen_range(3..=64);
+                contacts.push((u, v, distances, links));
+                records.extend(complete_orientation_pair(u, v, distances, links));
+            }
+        }
+        let problem = OrientationProblem::from_oriented_distances(lengths.clone(), records).unwrap();
+        // Independent, direct evaluation of the stored log-distance model.
+        let rewards = |tour: &Tour<usize>| -> Vec<f64> {
+            contacts.iter().map(|&(u, v, distances, links)| {
+                let pu = tour.contigs.iter().position(|&id| id == u).unwrap();
+                let pv = tour.contigs.iter().position(|&id| id == v).unwrap();
+                if pu.abs_diff(pv) > orientation.rank_window { return 0.0; }
+                let gap: u64 = tour.contigs[pu.min(pv) + 1..pu.max(pv)].iter().map(|&id| lengths[id]).sum();
+                let scores = distances.map(|distance| {
+                    let log_phi = 0.481_211_825_059_668_4;
+                    let exponent = ((distance as f64).ln() / log_phi).round().clamp(16.0, 50.0);
+                    let representative = ((log_phi * exponent).exp().round() as u64).clamp(2048, 1u64 << 32);
+                    -(links as f64) * ((representative + gap) as f64).ln() / (links as f64).sqrt()
+                });
+                let forward_u = tour.signs[pu] == (pu < pv);
+                let forward_v = tour.signs[pv] == (pu < pv);
+                let index = (usize::from(!forward_u) << 1) | usize::from(!forward_v);
+                scores[index] - scores.into_iter().fold(f64::INFINITY, f64::min)
+            }).collect()
+        };
+        let mut input = Tour { contigs: (0..5).collect(), signs: (0..5).map(|_| rng.gen_bool(0.5)).collect() };
+        problem.optimize_banded_with_source_prior(&mut input, orientation, 0.05).unwrap();
+        let old_rewards = rewards(&input);
+        let initial: f64 = old_rewards.iter().sum();
+        let mut candidates = Vec::new();
+        for span in 2..=5 {
+            for start in 0..=5 - span {
+                let end = start + span - 1;
+                let mut trial = input.clone();
+                trial.contigs[start..=end].reverse();
+                trial.signs[start..=end].reverse();
+                trial.signs[start..=end].iter_mut().for_each(|sign| *sign = !*sign);
+                let new_rewards = rewards(&trial);
+                let crossing = contacts.iter().enumerate().filter(|(_, (u, v, _, _))| {
+                    (start..=end).contains(u) != (start..=end).contains(v)
+                }).map(|(index, _)| index).collect::<Vec<_>>();
+                let old_local: f64 = crossing.iter().map(|&index| old_rewards[index]).sum();
+                let new_local: f64 = crossing.iter().map(|&index| new_rewards[index]).sum();
+                let threshold = config.min_relative_gain * old_local.max(new_local).max(1.0);
+                let preliminary = initial - old_local + new_local;
+                if preliminary - initial <= threshold { continue; }
+                problem.optimize_banded_with_source_prior(&mut trial, orientation, 0.05).unwrap();
+                let final_score: f64 = rewards(&trial).iter().sum();
+                candidates.push((preliminary, span, start, final_score));
+            }
+        }
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| (a.1, a.2).cmp(&(b.1, b.2))));
+        let mut previous = initial;
+        let mut legacy = input.clone();
+        let legacy_result = problem.refine_signed_blocks_legacy_objective(&mut legacy, orientation, 0.05, config).unwrap();
+        for k in [0, 1, 2, 4, 16] {
+            let mut actual = input.clone();
+            let result = problem.refine_signed_blocks_joint(&mut actual, orientation, 0.05, config, 0.0, k).unwrap();
+            assert!((result.refinement.final_score - rewards(&actual).iter().sum::<f64>()).abs() < 1e-9);
+            if k <= 1 {
+                assert_eq!(actual.contigs, legacy.contigs);
+                assert_eq!(actual.signs, legacy.signs);
+                assert_eq!(result.refinement, legacy_result);
+            }
+            if k > 0 {
+                let expected = candidates.iter().take(k).map(|entry| entry.3).fold(initial, f64::max);
+                assert!((result.refinement.final_score - expected).abs() < 1e-9);
+                assert_eq!(result.reoriented_candidates, k.min(candidates.len()));
+                assert!(result.refinement.final_score >= previous - 1e-9);
+                previous = result.refinement.final_score;
+                reranked += result.reranked_moves;
+            }
+        }
+    }
+    assert!(reranked > 0, "must exercise a preliminary winner losing after independent reorientation");
+}
+
+#[test]
+fn joint_block_comparison_preserves_context_gain_and_rolls_back_errors() {
+    let orientation = BandedOrientationConfig {
+        rank_window: 3, pair_weight: OrientationPairWeight::SqrtLinks,
+        min_links: 3, ..BandedOrientationConfig::default()
+    };
+    let config = SignedBlockRefineConfig { max_bp_fraction: 1.0, min_relative_gain: 1e-4, ..SignedBlockRefineConfig::default() };
+    for misleading in [false, true] {
+        let (problem, truth, inverted) = block_context_fixture(misleading);
+        let input = if misleading { truth } else { inverted };
+        for weight in [0.0, 0.01, 1.0] {
+            for k in [0, 1, 4, 16] {
+                let mut actual = input.clone();
+                let result = problem.refine_signed_blocks_joint(&mut actual, orientation, 0.05, config, weight, k).unwrap();
+                assert!(result.refinement.final_score >= result.refinement.initial_score - 1e-9);
+                assert!(result.refinement.final_score + weight * result.final_context_score
+                    >= result.refinement.initial_score + weight * result.initial_context_score - 1e-9);
+                assert!(result.reoriented_candidates <= k * config.max_passes);
+                if k == 0 {
+                    let mut historical = input.clone();
+                    let expected = problem.refine_signed_blocks_with_context(&mut historical, orientation, 0.05, config, weight).unwrap();
+                    assert_eq!(result, expected);
+                    assert_eq!(actual.contigs, historical.contigs);
+                    assert_eq!(actual.signs, historical.signs);
+                }
+            }
+        }
+        for (prior, weight, k) in [(0.05, 0.0, 17), (-1.0, 0.0, 4), (0.05, f64::NAN, 4)] {
+            let mut rejected = input.clone();
+            assert!(problem.refine_signed_blocks_joint(&mut rejected, orientation, prior, config, weight, k).is_err());
+            assert_eq!(rejected.contigs, input.contigs);
+            assert_eq!(rejected.signs, input.signs);
+        }
+    }
+}
+
 #[test]
 fn signed_block_refinement_requires_both_boundaries() {
     let target = [true, false, true, false];

@@ -195,6 +195,52 @@ fn default_solver_repairs_a_signed_block_and_block_span_zero_disables_it() {
 }
 
 #[test]
+fn block_context_is_opt_in_and_rejects_incompatible_modes() {
+    let matches = cli::cli().try_get_matches_from(["cphasing", "optimize", "group.txt", "group.clmb"]).unwrap();
+    assert_eq!(matches.subcommand_matches("optimize").unwrap().get_one::<f64>("ORIENTATION_BLOCK_CONTEXT_WEIGHT"), Some(&0.0));
+    for extra in [vec!["--orientation-method", "banded"], vec!["--orientation-block-span", "0"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
+            .args(["optimize", "missing.txt", "missing.clmb", "--orientation-block-context-weight", "0.01"])
+            .args(extra).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8(output.stderr).unwrap().contains("--orientation-block-context-weight requires"));
+    }
+    let input = "ctg0+ ctg1+ ctg5- ctg4- ctg3- ctg2- ctg6+ ctg7+";
+    let (_, stderr) = run_resumed_orientation_fixture(8, input, &["--orientation-block-context-weight", "0.01"]);
+    assert!(stderr.contains("Signed block context:"), "{stderr}");
+}
+
+#[test]
+fn joint_block_comparison_is_bounded_opt_in_and_checks_modes_before_inputs() {
+    let matches = cli::cli().try_get_matches_from(["cphasing", "optimize", "group.txt", "group.clmb"]).unwrap();
+    assert_eq!(matches.subcommand_matches("optimize").unwrap().get_one::<usize>("ORIENTATION_BLOCK_CANDIDATES"), Some(&0));
+    for value in ["-1", "17", "1.5", "NaN"] {
+        assert!(cli::cli().try_get_matches_from([
+            "cphasing", "optimize", "group.txt", "group.clmb", "--orientation-block-candidates", value,
+        ]).is_err());
+    }
+    for extra in [vec!["--orientation-method", "banded"], vec!["--orientation-method", "robust"], vec!["--orientation-block-span", "0"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cphasing-rs"))
+            .args(["optimize", "missing.txt", "missing.clmb", "--orientation-block-candidates", "4"])
+            .args(extra).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8(output.stderr).unwrap().contains("--orientation-block-candidates requires"));
+    }
+    let input = "ctg0+ ctg1+ ctg5- ctg4- ctg3- ctg2- ctg6+ ctg7+";
+    let (expected, _) = run_resumed_orientation_fixture(8, input, &[]);
+    for k in ["0", "1", "4", "16"] {
+        let (tour, stderr) = run_resumed_orientation_fixture(8, input, &["--orientation-block-candidates", k]);
+        assert_eq!(tour, expected);
+        assert_eq!(stderr.contains("Signed block joint comparison:"), k != "0");
+    }
+    let (_, stderr) = run_resumed_orientation_fixture(8, input, &[
+        "--orientation-block-candidates", "4", "--orientation-block-context-weight", "0.01",
+    ]);
+    assert!(stderr.contains("Signed block joint comparison:"));
+    assert!(stderr.contains("Signed block context:"));
+}
+
+#[test]
 fn historical_mode_rejects_unsupported_gates_before_opening_inputs() {
     for (option, value) in [
         ("--orientation-min-confidence", "0.2"),
