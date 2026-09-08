@@ -1,6 +1,6 @@
 [package]
 name = "cphasing"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
