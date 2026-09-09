@@ -809,7 +809,11 @@ fn main() {
             let output_dir = sub_matches.get_one::<String>("OUTPUT").expect("error");
 
             let clm = Clm::new(&input_clm);
-            clm.split_clm(&cluster_file, &output_dir).unwrap();
+            let output_format = sub_matches.get_one::<String>("OUTPUT_FORMAT").expect("defaulted");
+            if let Err(error) = clm.split_clm_with_format(cluster_file, output_dir, output_format) {
+                log::error!("Failed to split CLM: {:#}", error);
+                std::process::exit(1);
+            }
         }
         Some(("splitcontacts", sub_matches)) => {
             let input_contacts = sub_matches.get_one::<String>("CONTACTS").expect("required");

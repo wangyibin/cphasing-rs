@@ -33,6 +33,34 @@ pub const CLMB_UNKNOWN_COUNT: u64 = u64::MAX;
 const SPLIT_CLMB_BLOCK_SIZE: usize = 256 * 1024;
 const SPLIT_CLM_WORKERS: usize = 8;
 
+enum SplitClmWriter {
+    Binary(ClmbWriter),
+    Text(Box<dyn Write + Send>),
+}
+
+impl SplitClmWriter {
+    fn write_record(&mut self, record: &ClmbRecord, contigs: &[String]) -> anyResult<()> {
+        match self {
+            Self::Binary(writer) => writer.write_record(
+                record.endpoint1, record.endpoint2, &record.distances,
+            ),
+            Self::Text(writer) => write_text_clm_record(
+                writer.as_mut(),
+                &contigs[record.contig1() as usize], record.orientation1(),
+                &contigs[record.contig2() as usize], record.orientation2(),
+                &record.distances,
+            ),
+        }
+    }
+
+    fn finish(self) -> anyResult<()> {
+        match self {
+            Self::Binary(writer) => writer.finish(),
+            Self::Text(mut writer) => { writer.flush()?; Ok(()) },
+        }
+    }
+}
+
 pub fn clm_output_prefix(output: &str) -> &str {
     if let Some(prefix) = output.strip_suffix(".clmb") {
         return prefix;
@@ -146,6 +174,23 @@ impl Clm {
     //     Ok(())
     // }
     pub fn split_clm(&self, cluster_file: &String, output_dir: &String) -> anyResult<()> {
+        self.split_clm_with_format(cluster_file, output_dir, "auto")
+    }
+
+    pub fn split_clm_with_format(
+        &self,
+        cluster_file: &str,
+        output_dir: &str,
+        output_format: &str,
+    ) -> anyResult<()> {
+        let input_is_clmb = is_clmb_file(&self.file)?;
+        let output_format = match output_format {
+            "auto" if input_is_clmb => "clmb",
+            "auto" if self.file.ends_with(".gz") => "clm.gz",
+            "auto" => "clm",
+            "clm" | "clm.gz" | "clmb" => output_format,
+            _ => bail!("Invalid CLM output format `{output_format}`; expected auto, clm, clm.gz, or clmb"),
+        };
         let mut cluster_map: HashMap<String, Vec<String>> = HashMap::new();
         std::fs::create_dir_all(output_dir)?;
 
@@ -162,8 +207,11 @@ impl Clm {
             line.clear();
         }
 
-        if is_clmb_file(&self.file)? {
-            return self.split_clmb(cluster_map, output_dir);
+        if input_is_clmb {
+            return self.split_clmb(cluster_map, output_dir, output_format);
+        }
+        if output_format == "clmb" {
+            return self.split_text_to_clmb(cluster_map, output_dir);
         }
 
         let mut contig_to_cids: FxHashMap<String, Vec<usize>> = FxHashMap::default();
@@ -174,7 +222,7 @@ impl Clm {
             for c in contigs {
                 contig_to_cids.entry(c).or_default().push(cid);
             }
-            let file_path = format!("{}/{}.clm", output_dir, cluster);
+            let file_path = format!("{}/{}.{}", output_dir, cluster, output_format);
             let writer = Arc::new(Mutex::new(BufWriter::new(common_writer(&file_path))));
             writers.push(writer);
         }
@@ -268,6 +316,7 @@ impl Clm {
         &self,
         cluster_map: HashMap<String, Vec<String>>,
         output_dir: &str,
+        output_format: &str,
     ) -> anyResult<()> {
         let mut reader = ClmbReader::open(&self.file)?;
         let contigs = reader.header.contigs.clone();
@@ -279,13 +328,15 @@ impl Clm {
             for contig in cluster_contigs {
                 contig_to_cids.entry(contig).or_default().push(cid);
             }
-            writers.push(Mutex::new(ClmbWriter::create_synchronous(
-                Path::new(output_dir).join(format!("{cluster}.clmb")),
-                &contigs,
-                SPLIT_CLMB_BLOCK_SIZE,
-                None,
-                None,
-            )?));
+            let path = Path::new(output_dir).join(format!("{cluster}.{output_format}"));
+            let writer = if output_format == "clmb" {
+                SplitClmWriter::Binary(ClmbWriter::create_synchronous(
+                    path, &contigs, SPLIT_CLMB_BLOCK_SIZE, None, None,
+                )?)
+            } else {
+                SplitClmWriter::Text(common_writer(&path.to_string_lossy()))
+            };
+            writers.push(Mutex::new(writer));
         }
 
         let contigs = Arc::new(contigs);
@@ -316,9 +367,8 @@ impl Clm {
                                         anyhow::anyhow!("CLMB split writer lock poisoned")
                                     })?
                                     .write_record(
-                                        record.endpoint1,
-                                        record.endpoint2,
-                                        &record.distances,
+                                        &record,
+                                        &contigs,
                                     )?;
                             }
                         }
@@ -361,6 +411,51 @@ impl Clm {
                 .into_inner()
                 .map_err(|_| anyhow::anyhow!("CLMB split writer lock poisoned"))?
                 .finish()?;
+        }
+        Ok(())
+    }
+
+    fn split_text_to_clmb(
+        &self,
+        cluster_map: HashMap<String, Vec<String>>,
+        output_dir: &str,
+    ) -> anyResult<()> {
+        let mut contigs: Vec<String> = cluster_map.values().flatten().cloned().collect();
+        contigs.sort();
+        contigs.dedup();
+        let contig_ids: HashMap<_, _> = contigs.iter().enumerate()
+            .map(|(index, name)| Ok((name.as_str(), u32::try_from(index)?)))
+            .collect::<anyResult<_>>()?;
+        let mut membership: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut writers = Vec::new();
+        for (group, members) in &cluster_map {
+            let index = writers.len();
+            for name in members {
+                membership.entry(name).or_default().push(index);
+            }
+            writers.push(ClmbWriter::create_synchronous(
+                Path::new(output_dir).join(format!("{group}.clmb")),
+                &contigs, SPLIT_CLMB_BLOCK_SIZE, None, None,
+            )?);
+        }
+        for line in common_reader(&self.file).lines() {
+            let Some(record) = parse_text_clm_record(&line?)? else { continue };
+            let (Some(groups1), Some(groups2)) = (
+                membership.get(record.contig1.as_str()),
+                membership.get(record.contig2.as_str()),
+            ) else { continue };
+            for &index in groups1 {
+                if groups2.contains(&index) {
+                    writers[index].write_record(
+                        encode_endpoint(contig_ids[record.contig1.as_str()], record.orientation1)?,
+                        encode_endpoint(contig_ids[record.contig2.as_str()], record.orientation2)?,
+                        &record.distances,
+                    )?;
+                }
+            }
+        }
+        for writer in writers {
+            writer.finish()?;
         }
         Ok(())
     }

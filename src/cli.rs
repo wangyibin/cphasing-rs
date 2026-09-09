@@ -808,6 +808,13 @@ pub fn cli() -> Command {
                 .alias("split-clm")
                 .alias("clm-split")
                 .about("Split CLM or CLMB by the cluster file.")
+                .arg(
+                    Arg::new("OUTPUT_FORMAT")
+                        .long("output-format")
+                        .value_parser(["auto", "clm", "clm.gz", "clmb"])
+                        .default_value("auto")
+                        .help("Output format; auto preserves the input format, including gzip"),
+                )
                 .arg(arg!(<CLM> "input CLM, CLM.GZ, or CLMB"))
                 .arg(arg!(<CLUSTER> "cluster"))
                 .arg(
