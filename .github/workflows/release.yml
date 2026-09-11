@@ -144,6 +144,22 @@ jobs:
           echo "CXX_x86_64_unknown_linux_musl=musl-gcc" >> $GITHUB_ENV
           echo "RUSTFLAGS=-C target-feature=-crt-static" >> $GITHUB_ENV
 
+      - name: Enable HDF5 cross-compilation probes
+        if: ${{ contains(join(matrix.targets, ','), 'linux-musl') }}
+        env:
+          DIST_TARGETS: ${{ join(matrix.targets, ',') }}
+        run: |
+          # CMake >= 3.28 reads this environment variable for try_run() and
+          # generated executables such as HDF5's H5detect/H5make_libsettings.
+          sudo apt-get install -y cmake qemu-user-static
+          case "$DIST_TARGETS" in
+            x86_64-unknown-linux-musl) emulator=/usr/bin/qemu-x86_64-static ;;
+            aarch64-unknown-linux-musl) emulator=/usr/bin/qemu-aarch64-static ;;
+            *) echo "Unsupported HDF5 cross-compilation target: $DIST_TARGETS" >&2; exit 1 ;;
+          esac
+          test -x "$emulator"
+          echo "CMAKE_CROSSCOMPILING_EMULATOR=$emulator" >> "$GITHUB_ENV"
+
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
