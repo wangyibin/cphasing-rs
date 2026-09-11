@@ -1,4 +1,5 @@
 #![allow(unused_variables, unused_imports)]
+pub mod align;
 pub mod aligner;
 pub mod alleles;
 pub mod bam;

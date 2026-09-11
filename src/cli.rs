@@ -119,6 +119,7 @@ const HELP_GROUPS: &[HelpGroup] = &[
     HelpGroup {
         heading: "PAF",
         commands: &[
+            "align",
             "methalign",
             "paf2concat",
             "paf2depth",
@@ -300,6 +301,7 @@ pub fn cli() -> Command {
         .styles(STYLES)
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
+        .subcommand(crate::align::cli::cli())
         .subcommand(
             Command::new("aligner")
                 .hide(true)

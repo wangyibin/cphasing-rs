@@ -266,6 +266,12 @@ fn main() {
 
     let matches = cli().get_matches();
     match matches.subcommand() {
+        Some(("align", sub_matches)) => {
+            if let Err(error) = cphasing::align::run(sub_matches) {
+                log::error!("align: {error:#}");
+                std::process::exit(1);
+            }
+        }
         Some(("aligner", sub_matches)) => {
             let fasta = sub_matches.get_one::<String>("FASTA").expect("required");
             let input_bam = sub_matches.get_one::<String>("BAM").expect("required");

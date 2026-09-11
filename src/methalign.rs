@@ -30,58 +30,69 @@ use crate::core::common_reader;
 use crate::fastx::Fastx;
 use crate::methy::qual_to_prob;
 
+// Preserve the existing permissive bedGraph parsing and start-coordinate semantics.
+fn parse_bedgraph_line(line: &str, cov_cutoff: f64) -> Option<(&str, i64)> {
+    if line.as_bytes().first() == Some(&b'#') { return None; }
+    let mut fields = line.split_ascii_whitespace();
+    let ctg = fields.next()?;
+    let start = fields.next()?;
+    let _end = fields.next();
+    let cov: f64 = fields.next()?.parse().ok()?;
+    if cov < cov_cutoff { return None; }
+    Some((ctg, start.parse().ok()?))
+}
+
 pub fn parse_bedgraph(
     bedgraph: &String,
     cov_cutoff: f64,
 ) -> anyResult<HashMap<String, HashSet<i64>>> {
+    let profile = std::env::var("CPHASING_METH_TIMING").as_deref() == Ok("1");
+    let mut text_time = Duration::ZERO;
+    let mut table_time = Duration::ZERO;
+    let mut lines = 0u64;
+    let mut retained = 0u64;
     let mut fh = common_reader(bedgraph);
     let mut map: HashMap<String, HashSet<i64>> = HashMap::new();
     let mut line = String::new();
+    let mut current_name = String::new();
+    let mut current_sites = HashSet::new();
+    let mut contig_runs = 0u64;
 
     loop {
+        let text_start = profile.then(Instant::now);
         line.clear();
         let n = fh.read_line(&mut line)?;
-        if n == 0 {
-            break;
+        let parsed = if n == 0 { None } else { parse_bedgraph_line(&line, cov_cutoff) };
+        if let Some(start) = text_start { text_time += start.elapsed(); }
+        if n == 0 { break; }
+        lines += 1;
+        if let Some((ctg, s)) = parsed {
+            let table_start = profile.then(Instant::now);
+            if current_name != ctg {
+                // Temporarily own the active set to avoid per-row name allocation
+                // and contig hashing. Revisit an earlier contig by removing its
+                // existing set, preserving duplicates and arbitrarily ordered input.
+                if !current_name.is_empty() {
+                    map.insert(std::mem::take(&mut current_name), std::mem::take(&mut current_sites));
+                }
+                (current_name, current_sites) = map.remove_entry(ctg)
+                    .unwrap_or_else(|| (ctg.to_owned(), HashSet::new()));
+                contig_runs += 1;
+            }
+            current_sites.insert(s);
+            if let Some(start) = table_start { table_time += start.elapsed(); }
+            retained += 1;
         }
-        if line.is_empty() {
-            continue;
-        }
-
-        if line.as_bytes().first() == Some(&b'#') {
-            continue;
-        }
-
-        let mut it = line.split_ascii_whitespace();
-        let ctg = match it.next() {
-            Some(x) => x,
-            None => continue,
-        };
-        let start_str = match it.next() {
-            Some(x) => x,
-            None => continue,
-        };
-        let _end = it.next();
-        let cov_str = match it.next() {
-            Some(x) => x,
-            None => continue,
-        };
-
-        let cov: f64 = match cov_str.parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if cov < cov_cutoff {
-            continue;
-        }
-        let s: i64 = match start_str.parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        map.entry(ctg.to_owned()).or_default().insert(s);
     }
 
+    let table_start = profile.then(Instant::now);
+    if !current_name.is_empty() { map.insert(current_name, current_sites); }
+    if let Some(start) = table_start { table_time += start.elapsed(); }
+    if profile {
+        log::info!("METH_TIMING contig_runs={}", contig_runs);
+        log::info!("METH_TIMING stage=text_read_parse seconds={:.9} lines={}", text_time.as_secs_f64(), lines);
+        log::info!("METH_TIMING stage=site_table seconds={:.9} retained_rows={}", table_time.as_secs_f64(), retained);
+    }
     log::info!(
         "Load {} methylation sites from bedgraph {} after filter by ref_prob_cutoff {}",
         map.values().map(|s| s.len()).sum::<usize>(),
@@ -119,6 +130,8 @@ pub fn split_records(records: Vec<Record>) -> Vec<Vec<Record>> {
 
 pub fn get_as(record: &Record) -> Option<i32> {
     match record.aux(b"AS") {
+        Ok(Aux::I8(val)) => Some(val as i32),
+        Ok(Aux::I16(val)) => Some(val as i32),
         Ok(Aux::I32(val)) => Some(val),
         Ok(Aux::U8(val)) => Some(val as i32),
         Ok(Aux::U16(val)) => Some(val as i32),
@@ -309,65 +322,32 @@ fn get_5mc_sites_from_read(
 
     let c_positions: Vec<i64> = memchr_iter(b'C', read_seq).map(|i| i as i64).collect();
 
-    let mut flags: Vec<i16> = vec![0; c_positions.len()];
-    let mut ml_idx: usize = 0;
-
+    // -1 means unknown; only observed calls (or implicit low-probability
+    // calls under the '.' convention) may contribute to the score.
+    let mut flags: Vec<i16> = vec![-1; c_positions.len()];
+    let mut ml_idx = 0usize;
     for part in mm_s.trim_end_matches(';').split(';') {
-        if part.is_empty() {
-            continue;
-        }
-        let mut it = part.split(',');
-        let head = it.next().unwrap_or("");
-        let head_lc = head.to_ascii_lowercase();
-
-        let is_c_5mc = head_lc.starts_with("c+m") || head_lc.starts_with("c-m");
-        if !is_c_5mc {
-            for tok in it {
-                if tok.is_empty() {
-                    continue;
-                }
-                let has_q = tok.as_bytes().last() == Some(&b'?');
-                let t = tok.trim_end_matches('?');
-                if t.is_empty() {
-                    continue;
-                }
-                if !has_q && t.parse::<i64>().is_ok() {
-                    ml_idx = ml_idx.saturating_add(1);
+        let mut fields = part.split(',');
+        let head = fields.next().unwrap_or("");
+        if head.len() < 3 { continue; }
+        let codes = head[2..].trim_end_matches(['?', '.']);
+        let stride = if codes.bytes().all(|b| b.is_ascii_digit()) { 1 } else { codes.len() };
+        let methyl_index = if head.starts_with("C+") {
+            codes.bytes().position(|b| b == b'm')
+        } else { None };
+        if methyl_index.is_some() && !head.ends_with('?') { flags.fill(0); }
+        let mut next = 0usize;
+        for field in fields {
+            let Ok(skip) = field.parse::<usize>() else { continue; };
+            let Some(pos) = next.checked_add(skip) else { break; };
+            if let Some(k) = methyl_index {
+                if let Some(flag) = flags.get_mut(pos) {
+                    *flag = ml_v.get(ml_idx.saturating_add(k))
+                        .map(|&p| i16::from(p >= prob_cutoff)).unwrap_or(-1);
                 }
             }
-            continue;
-        }
-
-        let mut idx_sum: i64 = 0;
-        let mut n_evt: usize = 0;
-
-        for tok in it {
-            if tok.is_empty() {
-                continue;
-            }
-            let has_q = tok.as_bytes().last() == Some(&b'?');
-            let t = tok.trim_end_matches('?');
-            if t.is_empty() {
-                continue;
-            }
-            let Ok(sh) = t.parse::<i64>() else {
-                continue;
-            };
-
-            idx_sum += sh;
-            let pos_idx = (n_evt as i64 + idx_sum) as usize;
-
-            if pos_idx < flags.len() {
-                if has_q {
-                } else if ml_idx < ml_v.len() && ml_v[ml_idx] >= prob_cutoff {
-                    flags[pos_idx] = 1;
-                }
-            }
-
-            n_evt += 1;
-            if !has_q {
-                ml_idx = ml_idx.saturating_add(1);
-            }
+            next = pos.saturating_add(1);
+            ml_idx = ml_idx.saturating_add(stride);
         }
     }
 
@@ -406,7 +386,7 @@ fn count_5mc_consistency_split(
                     let offset = cpos - q;
                     let rpos = r + offset;
 
-                    if rpos >= 0 && rpos < ref_len {
+                    if meth_flags[i] >= 0 && rpos >= 0 && rpos < ref_len {
                         let rb = ref_bytes[rpos as usize];
                         let is_meth = meth_flags[i] != 0;
                         let hit = if is_fwd {
@@ -649,13 +629,167 @@ fn recalc_score_and_update2(
             _ => 0,
         };
         // let new_as = orig_as - penalty * mismatches;
-        let new_as = orig_as + match_score * mc - read_miss_penalty * mr - ref_miss_penalty * mf;
+        let delta = match_score * mc - read_miss_penalty * mr - ref_miss_penalty * mf;
+        record.remove_aux(b"s0").ok();
+        record.push_aux(b"s0", Aux::I32(orig_as)).ok();
+        record.remove_aux(b"m0").ok();
+        record.push_aux(b"m0", Aux::I32(delta)).ok();
+        let new_as = orig_as + delta;
         record.push_aux(b"MA", Aux::I32(mismatches as i32)).ok();
         record.remove_aux(b"AS").ok();
         record.push_aux(b"AS", Aux::I32(new_as)).ok();
     }
 
     Ok(())
+}
+
+/// Refine a complete read candidate set without BAM I/O or an inner thread pool.
+/// `original` supplies MM/ML in original read coordinates for online alignment.
+fn refine_read_records(
+    records: Vec<Record>, original: Option<&Record>, tid_names: &[String],
+    fa_hash: &HashMap<String, String>, bg_map: &HashMap<String, HashSet<i64>>,
+    match_score: i32, ref_miss_penalty: i32, read_miss_penalty: i32,
+    prob_cutoff: u8, designate_mapq: u8, is_set_y: bool, cpg: bool,
+) -> Vec<Record> {
+    let fa_len = fa_hash.len();
+    let bg_len = bg_map.len();
+    if records.is_empty() {
+        return Vec::<Record>::new();
+    }
+    let source = original.unwrap_or(&records[0]);
+    let (mm_owned, ml_owned, read_seq_raw) =
+        if fa_len > 0 && bg_len > 0 && !is_set_y && is_contain_methylation(source) {
+            let (mm, ml) = get_mm_ml_from_rec(source);
+            let seq = source.seq().as_bytes().to_vec();
+            if source.is_reverse() {
+                (mm, ml, revcomp(&seq))
+            } else {
+                (mm, ml, seq)
+            }
+        } else {
+            (None, None, Vec::new())
+        };
+    let (c_positions_base, meth_flags_base) = get_5mc_sites_from_read(
+        &read_seq_raw, mm_owned.as_deref(), ml_owned.as_deref(), prob_cutoff,
+    );
+    let mut groups = split_records(records);
+
+    if fa_len > 0 && bg_len > 0 {
+        for group in groups.iter_mut() {
+            if group.len() == 1 || group.iter().any(|r| get_as(r).is_none()) {
+                continue;
+            }
+
+            let primary_mapq = group[0].mapq();
+            if primary_mapq >= designate_mapq {
+                continue;
+            }
+
+            if is_set_y {
+                for rec in group.iter_mut() {
+                    let _ = recalc_score_and_update(
+                        rec,
+                        tid_names,
+                        match_score,
+                        ref_miss_penalty,
+                        read_miss_penalty,
+                        prob_cutoff,
+                        fa_hash,
+                        bg_map,
+                        cpg,
+                    );
+                }
+            } else {
+                if c_positions_base.is_empty() {
+                    continue;
+                }
+                let _ = recalc_score_and_update2(
+                    group,
+                    &read_seq_raw,
+                    &c_positions_base,
+                    &meth_flags_base,
+                    tid_names,
+                    match_score,
+                    ref_miss_penalty,
+                    read_miss_penalty,
+                    prob_cutoff,
+                    fa_hash,
+                    bg_map,
+                    cpg,
+                );
+            }
+
+            let as_vec2: Vec<i32> = group.iter().filter_map(|r| get_as(r)).collect();
+            let (best_recs_idx, max_as2) = as_vec2
+                .iter()
+                .copied()
+                .enumerate()
+                .max_by_key(|&(_, v)| v)
+                .unwrap_or((0, i32::MIN));
+            let secondary_as2 = as_vec2
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != best_recs_idx)
+                .map(|(_, &v)| v)
+                .max()
+                .unwrap_or(i32::MIN);
+
+            if max_as2 > secondary_as2 {
+                group[best_recs_idx].set_mapq(designate_mapq);
+                if best_recs_idx != 0 {
+                    group[best_recs_idx].push_aux(b"RF", Aux::String("Y")).ok();
+                    let _primary_flag = group[0].flags();
+                    let _primary_flag0 = _primary_flag & 0x800;
+                    let _flag = group[best_recs_idx].flags();
+
+                    group[best_recs_idx].set_flags((_flag & !(0x100 | 0x800)) | _primary_flag0);
+                    group[0].set_flags((_primary_flag & !0x800) | 0x100);
+                    group[0].set_mapq(0);
+                    group[best_recs_idx].push_aux(b"tp", Aux::String("P")).ok();
+                    group[0].push_aux(b"tp", Aux::String("S")).ok();
+                    group.swap(0, best_recs_idx);
+                }
+            }
+        }
+    } else {
+        for group in groups.iter_mut() {
+            if group.len() == 1 || group.iter().any(|r| get_as(r).is_none()) {
+                continue;
+            }
+
+            let primary_mapq = group[0].mapq();
+            if primary_mapq >= designate_mapq {
+                continue;
+            }
+
+            let as_vec: Vec<i32> = group.iter().filter_map(|r| get_as(r)).collect();
+            if as_vec.len() < 2 {
+                continue;
+            }
+
+            let primary_as = as_vec[0];
+            let (best_idx, max_as) = as_vec
+                .iter()
+                .copied()
+                .enumerate()
+                .max_by_key(|&(_, v)| v)
+                .unwrap_or((0, i32::MIN));
+            let secondary_as = as_vec
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != best_idx)
+                .map(|(_, &v)| v)
+                .max()
+                .unwrap_or(i32::MIN);
+
+            if (primary_as > secondary_as) && (best_idx == 0) {
+                group[0].set_mapq(designate_mapq);
+                group[0].push_aux(b"RF", Aux::String("Y")).ok();
+            }
+        }
+    }
+
+    groups.into_iter().flatten().collect::<Vec<Record>>()
 }
 
 fn process_batch_with_rayon(
@@ -671,160 +805,20 @@ fn process_batch_with_rayon(
     is_set_y: bool,
     cpg: bool,
 ) -> Vec<Record> {
-    let fa_len = fa_hash.len();
-    let bg_len = bg_map.len();
-
-    // let groups: Vec<Vec<Record>> = batch
-    //     .into_iter()
-    //     .flat_map(|(_, recs)| split_records(recs))
-    //     .collect();
-
-    batch
-        .into_par_iter()
-        .map(|(_, records)| {
-            if records.is_empty() {
-                return Vec::<Record>::new();
-            }
-            let (mm_owned, ml_owned, read_seq_raw) =
-                if fa_len > 0 && bg_len > 0 && !is_set_y && is_contain_methylation(&records[0]) {
-                    let (mm, ml) = get_mm_ml_from_rec(&records[0]);
-                    let seq = records[0].seq().as_bytes().to_vec();
-                    if records[0].is_reverse() {
-                        (mm, ml, revcomp(&seq))
-                    } else {
-                        (mm, ml, seq)
-                    }
-                } else {
-                    (None, None, Vec::new())
-                };
-            let primary_record_is_reverse = records[0].is_reverse();
-            let mut groups = split_records(records);
-
-            if fa_len > 0 && bg_len > 0 {
-                for group in groups.iter_mut() {
-                    if group.len() == 1 {
-                        continue;
-                    }
-
-                    let primary_mapq = group[0].mapq();
-                    if primary_mapq >= designate_mapq {
-                        continue;
-                    }
-
-                    if is_set_y {
-                        for rec in group.iter_mut() {
-                            let _ = recalc_score_and_update(
-                                rec,
-                                tid_names,
-                                match_score,
-                                ref_miss_penalty,
-                                read_miss_penalty,
-                                prob_cutoff,
-                                fa_hash,
-                                bg_map,
-                                cpg,
-                            );
-                        }
-                    } else {
-                        let (c_positions_base, meth_flags_base) = get_5mc_sites_from_read(
-                            &read_seq_raw,
-                            mm_owned.as_deref(),
-                            ml_owned.as_deref(),
-                            prob_cutoff,
-                        );
-                        if c_positions_base.is_empty() {
-                            continue;
-                        }
-                        let _ = recalc_score_and_update2(
-                            group,
-                            &read_seq_raw,
-                            &c_positions_base,
-                            &meth_flags_base,
-                            tid_names,
-                            match_score,
-                            ref_miss_penalty,
-                            read_miss_penalty,
-                            prob_cutoff,
-                            fa_hash,
-                            bg_map,
-                            cpg,
-                        );
-                    }
-
-                    let as_vec2: Vec<i32> = group.iter().filter_map(|r| get_as(r)).collect();
-                    let (best_recs_idx, max_as2) = as_vec2
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .max_by_key(|&(_, v)| v)
-                        .unwrap_or((0, i32::MIN));
-                    let secondary_as2 = as_vec2
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| *i != best_recs_idx)
-                        .map(|(_, &v)| v)
-                        .max()
-                        .unwrap_or(i32::MIN);
-
-                    if max_as2 > secondary_as2 {
-                        group[best_recs_idx].set_mapq(designate_mapq);
-                        if best_recs_idx != 0 {
-                            group[best_recs_idx].push_aux(b"RF", Aux::String("Y")).ok();
-                            let _primary_flag = group[0].flags();
-                            let _primary_flag0 = if _primary_flag & 0x0 == 0 { 0x0 } else { 0x800 };
-                            let _flag = group[best_recs_idx].flags();
-
-                            group[best_recs_idx].set_flags((_flag & !0x100) | _primary_flag0);
-                            group[0].set_flags(_primary_flag & !_primary_flag0 | 0x100);
-                            group[0].set_mapq(0);
-                            group[best_recs_idx].push_aux(b"tp", Aux::String("P")).ok();
-                            group[0].push_aux(b"tp", Aux::String("S")).ok();
-                            group.swap(0, best_recs_idx);
-                        }
-                    }
-                }
-            } else {
-                for group in groups.iter_mut() {
-                    if group.len() == 1 {
-                        continue;
-                    }
-
-                    let primary_mapq = group[0].mapq();
-                    if primary_mapq >= designate_mapq {
-                        continue;
-                    }
-
-                    let as_vec: Vec<i32> = group.iter().filter_map(|r| get_as(r)).collect();
-                    if as_vec.len() < 2 {
-                        continue;
-                    }
-
-                    let primary_as = as_vec[0];
-                    let (best_idx, max_as) = as_vec
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .max_by_key(|&(_, v)| v)
-                        .unwrap_or((0, i32::MIN));
-                    let secondary_as = as_vec
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| *i != best_idx)
-                        .map(|(_, &v)| v)
-                        .max()
-                        .unwrap_or(i32::MIN);
-
-                    if (primary_as > secondary_as) && (best_idx == 0) {
-                        group[0].set_mapq(designate_mapq);
-                        group[0].push_aux(b"RF", Aux::String("Y")).ok();
-                    }
-                }
-            }
-
-            groups.into_iter().flatten().collect::<Vec<Record>>()
-        })
-        .flatten()
-        .collect()
+    let target_names: Vec<&[u8]> = tid_names.iter().map(|name| name.as_bytes()).collect();
+    batch.into_par_iter().flat_map(|(_, records)| {
+        let original = records.iter().find(|r| !r.is_secondary() && !r.is_supplementary()
+            && r.seq_len() > 0 && !r.cigar().iter().any(|op| matches!(op, Cigar::HardClip(_))))
+            .cloned();
+        let mut refined = refine_read_records(records, None, tid_names, fa_hash, bg_map,
+            match_score, ref_miss_penalty, read_miss_penalty, prob_cutoff,
+            designate_mapq, is_set_y, cpg);
+        if let Some(original) = original.as_ref() {
+            crate::align::engine::restore_primary_read(&mut refined, original, None);
+        }
+        crate::align::engine::refresh_sa_tags(&mut refined, &target_names);
+        refined
+    }).collect()
 }
 
 pub fn parse_bam(
@@ -977,4 +971,62 @@ pub fn parse_bam(
         "Successfully refined alignments and wrote to {}",
         output_bam
     );
+}
+
+/// Options shared by the online aligner and the standalone methylation refiner.
+#[derive(Debug, Clone)]
+pub struct MethConfig {
+    pub bed: String,
+    pub match_score: i32,
+    pub ref_penalty: i32,
+    pub read_penalty: i32,
+    pub ref_prob_cutoff: f64,
+    pub prob_cutoff: u8,
+    pub designate_mapq: u8,
+    pub cpg: bool,
+}
+
+pub struct MethRefiner {
+    config: MethConfig,
+    reference: HashMap<String, String>,
+    sites: HashMap<String, HashSet<i64>>,
+}
+
+impl MethRefiner {
+    pub fn new(config: MethConfig, sequences: &[(String, Vec<u8>)]) -> anyResult<Self> {
+        Self::from_owned(config, sequences.to_vec())
+    }
+
+    /// Reuse the FASTA buffers after indexing instead of retaining another copy.
+    pub(crate) fn from_owned(config: MethConfig, sequences: Vec<(String, Vec<u8>)>) -> anyResult<Self> {
+        anyhow::ensure!(config.ref_prob_cutoff.is_finite()
+            && (0.0..=100.0).contains(&config.ref_prob_cutoff),
+            "--meth-ref-prob-cutoff must be between 0 and 100");
+        anyhow::ensure!((1..=60).contains(&config.designate_mapq),
+            "--meth-designate-mapq must be between 1 and 60");
+        let sites = parse_bedgraph(&config.bed, config.ref_prob_cutoff)?;
+        let reference_start = (std::env::var("CPHASING_METH_TIMING").as_deref() == Ok("1"))
+            .then(Instant::now);
+        let reference: HashMap<String, String> = sequences.into_iter().map(|(name, seq)| {
+            let mut sequence = String::from_utf8(seq).unwrap_or_else(|error| {
+                String::from_utf8_lossy(error.as_bytes()).into_owned()
+            });
+            sequence.make_ascii_uppercase();
+            (name, sequence)
+        }).collect();
+        if let Some(start) = reference_start {
+            log::info!("METH_TIMING stage=reference_prepare seconds={:.9} contigs={}",
+                start.elapsed().as_secs_f64(), reference.len());
+        }
+        anyhow::ensure!(sites.keys().any(|name| reference.contains_key(name)),
+            "no reference methylation sites remain on matching contigs; check --meth-bed and --meth-ref-prob-cutoff");
+        Ok(Self { config, reference, sites })
+    }
+
+    pub fn refine(&self, records: Vec<Record>, original: &Record, names: &[String]) -> Vec<Record> {
+        let c = &self.config;
+        refine_read_records(records, Some(original), names, &self.reference, &self.sites,
+            c.match_score, c.ref_penalty, c.read_penalty, c.prob_cutoff,
+            c.designate_mapq, false, c.cpg)
+    }
 }
