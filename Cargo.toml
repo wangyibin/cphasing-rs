@@ -1,6 +1,6 @@
 [package]
 name = "cphasing"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 license = "BSD-3-Clause"
 description = "Library of C-Phasing, a polyploids phasing and scaffolding package"
@@ -108,6 +108,6 @@ strip = "symbols"
 [profile.dist]
 inherits = "release"
 lto = true
-opt-level = "z" 
+opt-level = 3
 strip = "symbols"
 codegen-units = 1

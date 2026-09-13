@@ -2710,72 +2710,46 @@ impl PoreCTable {
     }
 
     pub fn intersect_multi_threads(&mut self, hcr_bed: &String, invert: bool, output: &String) {
-        type IvU8 = Interval<usize, u8>;
-        let bed = Bed3::new(hcr_bed);
-        let interval_hash = bed.to_interval_hash();
-        let wtr = common_writer(output);
-
-        let (sender, receiver) = bounded::<Vec<String>>(1000);
-
-        let mut handles = vec![];
-        let wtr = Arc::new(Mutex::new(wtr));
-
-        for _ in 0..10 {
-            let interval_hash = interval_hash.clone();
-            let wtr = Arc::clone(&wtr);
-            let receiver = receiver.clone();
-            handles.push(thread::spawn(move || {
-                while let Ok(records) = receiver.recv() {
-                    let data = records
-                        .par_iter()
-                        .filter_map(|record| {
-                            let record = record.split("\t").collect::<Vec<_>>();
-                            let target_start = record[6].parse::<usize>().unwrap();
-                            let target_end = record[7].parse::<usize>().unwrap();
-
-                            let is_in_regions =
-                                interval_hash.get(record[5]).map_or(false, |interval| {
-                                    interval.count(target_start, target_end) > 0
-                                });
-
-                            if is_in_regions ^ invert {
-                                Some(record.iter().join("\t"))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-
-                    if !data.is_empty() {
-                        let mut wtr = wtr.lock().unwrap();
-                        let data = data.join("\n") + "\n";
-                        wtr.write_all(data.as_bytes()).unwrap();
-                    }
-                }
-            }));
-        }
-
+        let interval_hash = Bed3::new(hcr_bed).to_interval_hash();
+        let mut writer = common_writer(output);
+        let write_batch = |records: &[String], writer: &mut Box<dyn Write + Send>| {
+            let data: Vec<_> = records
+                .par_iter()
+                .filter(|record| {
+                    let mut fields = record.split('\t').skip(5);
+                    let target = fields.next().unwrap();
+                    let start = fields.next().unwrap().parse::<usize>().unwrap();
+                    let end = fields.next().unwrap().parse::<usize>().unwrap();
+                    interval_hash
+                        .get(target)
+                        .map_or(false, |interval| interval.count(start, end) > 0)
+                        ^ invert
+                })
+                .collect();
+            for record in data {
+                writeln!(writer, "{}", record).unwrap();
+            }
+        };
         let batch_size = 10_000;
         let mut batch = Vec::with_capacity(batch_size);
         for (idx, record) in self.parse2().unwrap().lines().enumerate() {
             let record = match record {
                 Ok(v) => v,
                 Err(error) => {
-                    log::warn!("Could not parse line {}", idx + 1);
+                    log::warn!("Could not parse line {}: {}", idx + 1, error);
                     continue;
                 }
             };
             batch.push(record);
             if batch.len() == batch_size {
-                sender.send(std::mem::take(&mut batch)).unwrap();
+                write_batch(&batch, &mut writer);
+                batch.clear();
             }
         }
-
-        drop(sender);
-
-        for handle in handles {
-            handle.join().unwrap();
+        if !batch.is_empty() {
+            write_batch(&batch, &mut writer);
         }
+        writer.flush().unwrap();
 
         log::info!(
             "Successful output intersection porec table into `{}`",
@@ -2816,17 +2790,21 @@ impl PoreCTable {
             num_workers
         );
 
+        // Recycling is opportunistic: blocking here could starve the earliest
+        // pending chunk when later chunks finish first.
+        let (recycled_tx, recycled_rx) = bounded::<Vec<u8>>(num_workers.saturating_mul(2).max(1));
         let mut handles = vec![];
         for _ in 0..num_workers {
             let rx = receiver.clone();
             let tx = out_sender.clone();
+            let recycled = recycled_rx.clone();
             let ih = Arc::clone(&interval_hash);
 
             handles.push(thread::spawn(move || {
-                let mut local_buf = Vec::with_capacity(2 * 1024 * 1024);
                 let mut tab_indices = [0usize; 8];
 
                 while let Ok((chunk_id, records)) = rx.recv() {
+                    let mut local_buf = recycled.try_recv().unwrap_or_default();
                     local_buf.clear();
                     for record in records {
                         let bytes = record.as_bytes();
@@ -2874,7 +2852,7 @@ impl PoreCTable {
                             local_buf.push(b'\n');
                         }
                     }
-                    tx.send((chunk_id, local_buf.clone())).unwrap();
+                    tx.send((chunk_id, local_buf)).unwrap();
                 }
             }));
         }
@@ -2893,6 +2871,7 @@ impl PoreCTable {
                     if !data.is_empty() {
                         writer.write_all(&data).unwrap();
                     }
+                    let _ = recycled_tx.try_send(data);
                     next_chunk += 1;
                 }
             }
@@ -3295,16 +3274,20 @@ impl PoreCTable {
         let (out_sender, out_receiver) = bounded::<(usize, Vec<u8>)>(200);
 
         let num_workers = threads;
+        // Recycling is opportunistic: blocking here could starve the earliest
+        // pending chunk when later chunks finish first.
+        let (recycled_tx, recycled_rx) = bounded::<Vec<u8>>(num_workers.saturating_mul(2).max(1));
         let mut handles = vec![];
 
         for _ in 0..num_workers {
             let rx = receiver.clone();
             let tx = out_sender.clone();
+            let recycled = recycled_rx.clone();
             let ih = Arc::clone(&interval_hash);
 
             handles.push(thread::spawn(move || {
-                let mut local_buf = Vec::with_capacity(1024 * 1024);
                 while let Ok((chunk_id, batch)) = rx.recv() {
+                    let mut local_buf = recycled.try_recv().unwrap_or_default();
                     local_buf.clear();
                     for line in batch {
                         let trimmed = line.trim_end();
@@ -3365,7 +3348,7 @@ impl PoreCTable {
                             local_buf.push(b'\n');
                         }
                     }
-                    tx.send((chunk_id, local_buf.clone())).unwrap();
+                    tx.send((chunk_id, local_buf)).unwrap();
                 }
             }));
         }
@@ -3378,6 +3361,7 @@ impl PoreCTable {
                 pending.insert(chunk_id, data);
                 while let Some(data) = pending.remove(&next_chunk) {
                     writer.write_all(&data).unwrap();
+                    let _ = recycled_tx.try_send(data);
                     next_chunk += 1;
                 }
             }
@@ -3610,16 +3594,20 @@ impl PoreCTable {
         let (out_sender, out_receiver) = bounded::<(usize, Vec<u8>)>(200);
 
         log::info!("Converting chromosome-level Pore-C alignments to contig-level in parallel...");
+        // Recycling is opportunistic: blocking here could starve the earliest
+        // pending chunk when later chunks finish first.
+        let (recycled_tx, recycled_rx) = bounded::<Vec<u8>>(threads.saturating_mul(2).max(1));
         let mut handles = vec![];
 
         for _ in 0..threads {
             let rx = receiver.clone();
             let tx = out_sender.clone();
+            let recycled = recycled_rx.clone();
             let ci = Arc::clone(&chrom_intervals);
 
             handles.push(thread::spawn(move || {
-                let mut local_buf = Vec::with_capacity(1024 * 1024);
                 while let Ok((chunk_id, batch)) = rx.recv() {
+                    let mut local_buf = recycled.try_recv().unwrap_or_default();
                     local_buf.clear();
                     for line in batch {
                         let trimmed = line.trim_end();
@@ -3676,7 +3664,7 @@ impl PoreCTable {
                             }
                         }
                     }
-                    tx.send((chunk_id, local_buf.clone())).unwrap();
+                    tx.send((chunk_id, local_buf)).unwrap();
                 }
             }));
         }
@@ -3689,6 +3677,7 @@ impl PoreCTable {
                 pending.insert(chunk_id, data);
                 while let Some(data) = pending.remove(&next_chunk) {
                     writer.write_all(&data).unwrap();
+                    let _ = recycled_tx.try_send(data);
                     next_chunk += 1;
                 }
             }

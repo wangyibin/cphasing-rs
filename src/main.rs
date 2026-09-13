@@ -1973,14 +1973,15 @@ fn main() {
                 match p.is_pqs() {
                     true => {
                         if *split_num > 1 {
-                            let _ = p.to_split_contacts(
+                            p.to_split_contacts(
                                 *min_contacts,
                                 *split_num,
                                 *min_quality,
                                 &output,
-                            );
+                            )
+                            .unwrap();
                         } else {
-                            let _ = p.to_contacts(*min_contacts, *min_quality, &output);
+                            p.to_contacts(*min_contacts, *min_quality, &output).unwrap();
                         }
                     }
                     false => {
